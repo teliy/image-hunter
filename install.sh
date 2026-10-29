@@ -5,8 +5,9 @@
 #  Установка одной строкой:
 #    curl -fsSL https://raw.githubusercontent.com/teliy/image-hunter/main/install.sh | bash
 #
-#  Для приватного репозитория:
-#    IH_GH_TOKEN=ghp_xxx bash -c "$(curl -fsSL https://raw.githubusercontent.com/teliy/image-hunter/main/install.sh)"
+#  Для приватного репозитория (raw.githubusercontent отдаёт 404 без токена):
+#    export IH_GH_TOKEN=ghp_xxx
+#    curl -fsSL -H "Authorization: token $IH_GH_TOKEN" https://raw.githubusercontent.com/teliy/image-hunter/main/install.sh | bash
 #
 #  Неинтерактивный режим (все вопросы — по умолчанию):
 #    IH_ASSUME_YES=1 bash install.sh

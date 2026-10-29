@@ -58,18 +58,24 @@ curl -fsSL https://raw.githubusercontent.com/teliy/image-hunter/main/install.sh 
 | Удалить | `ImageHunter.bat uninstall` | `image-hunter uninstall` |
 | Версия | `ImageHunter.bat version` | `image-hunter --version` |
 
-Для **приватного** репозитория однострочник требует токен:
+### Установка из приватного репозитория (с токеном)
+
+Для **приватного** репозитория GitHub не отдаёт файлы через `raw.githubusercontent.com` без авторизации — обычный однострочник вернёт `404: Not Found` ещё до запуска установщика. Нужно скачать установщик с заголовком `Authorization` и запустить его локально.
+
+**Windows** (PowerShell, одной строкой — подставьте свой токен):
 
 ```powershell
-# Windows
-$env:IH_GH_TOKEN="ghp_xxx"; irm https://raw.githubusercontent.com/teliy/image-hunter/main/install.ps1 | iex
-```
-```bash
-# Linux
-IH_GH_TOKEN=ghp_xxx bash -c "$(curl -fsSL https://raw.githubusercontent.com/teliy/image-hunter/main/install.sh)"
+$t="ghp_ВАШ_ТОКЕН"; iwr https://raw.githubusercontent.com/teliy/image-hunter/main/install.ps1 -Headers @{Authorization="token $t"} -UseBasicParsing -OutFile "$env:TEMP\ih-install.ps1"; $env:IH_GH_TOKEN=$t; powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\ih-install.ps1"
 ```
 
-Токен сохраняется в папку установки (`.gh_token`) для будущих авто-обновлений; удалите файл, если это не нужно.
+**Linux** (bash):
+
+```bash
+export IH_GH_TOKEN=ghp_ВАШ_ТОКЕН
+curl -fsSL -H "Authorization: token $IH_GH_TOKEN" https://raw.githubusercontent.com/teliy/image-hunter/main/install.sh | bash
+```
+
+Токен нужен с правом чтения репозитория: classic — scope `repo`, fine-grained — «Contents: Read-only». Установщик сохранит токен в `.gh_token` внутри папки установки для будущих авто-обновлений; удалите файл, если это не нужно.
 Переменные для неинтерактивной работы: `IH_ASSUME_YES=1` (все ответы «по умолчанию»), `IH_DIR=<путь>`.
 
 ### Установка вручную

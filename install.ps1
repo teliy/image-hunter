@@ -1,11 +1,11 @@
 ﻿# ============================================================================
 #  Image Hunter — автоматический установщик для Windows
 #
-#  Установка одной строкой (PowerShell):
+#  Установка одной строкой (PowerShell) — для ПУБЛИЧНОГО репозитория:
 #    irm https://raw.githubusercontent.com/teliy/image-hunter/main/install.ps1 | iex
 #
-#  Для приватного репозитория:
-#    $env:IH_GH_TOKEN="ghp_xxx"; irm https://raw.githubusercontent.com/teliy/image-hunter/main/install.ps1 | iex
+#  Для ПРИВАТНОГО репозитория (raw.githubusercontent отдаёт 404 без токена):
+#    $t="ghp_xxx"; iwr https://raw.githubusercontent.com/teliy/image-hunter/main/install.ps1 -Headers @{Authorization="token $t"} -UseBasicParsing -OutFile "$env:TEMP\ih-install.ps1"; $env:IH_GH_TOKEN=$t; powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\ih-install.ps1"
 #
 #  Параметры: -InstallDir <путь>  -Update  -Uninstall  -Token <ghp_...>  -AssumeYes
 # ============================================================================
