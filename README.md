@@ -26,7 +26,53 @@
 - имена файлов берутся из URL, расширение уточняется по `Content-Type`;
 - выбор папки сохранения (по умолчанию `Изображения\ImageHunter`), лимит 100 МБ на файл.
 
-## Установка и запуск
+## Установка
+
+### Установка одной строкой (рекомендуется)
+
+Установщик сам спросит папку установки, создаст виртуальное окружение, скачает зависимости и создаст ярлыки.
+
+**Windows** (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/teliy/image-hunter/main/install.ps1 | iex
+```
+
+**Linux** (bash):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/teliy/image-hunter/main/install.sh | bash
+```
+
+Что делает установщик:
+- проверит Python 3.10–3.13 и при необходимости предложит установку (winget на Windows / пакетный менеджер на Linux);
+- спросит, куда устанавливать (по умолчанию `%LOCALAPPDATA%\ImageHunter` / `~/.local/share/image-hunter`);
+- скачает код (git не нужен), создаст `.venv`, поставит зависимости;
+- создаст ярлык в меню «Пуск» (Windows) / `.desktop`-ярлык и команду `image-hunter` (Linux).
+
+**Обновление и удаление:**
+
+| Действие | Windows | Linux |
+|---|---|---|
+| Обновиться | `ImageHunter.bat update` (в папке установки) или повторить однострочник | `image-hunter update` |
+| Удалить | `ImageHunter.bat uninstall` | `image-hunter uninstall` |
+| Версия | `ImageHunter.bat version` | `image-hunter --version` |
+
+Для **приватного** репозитория однострочник требует токен:
+
+```powershell
+# Windows
+$env:IH_GH_TOKEN="ghp_xxx"; irm https://raw.githubusercontent.com/teliy/image-hunter/main/install.ps1 | iex
+```
+```bash
+# Linux
+IH_GH_TOKEN=ghp_xxx bash -c "$(curl -fsSL https://raw.githubusercontent.com/teliy/image-hunter/main/install.sh)"
+```
+
+Токен сохраняется в папку установки (`.gh_token`) для будущих авто-обновлений; удалите файл, если это не нужно.
+Переменные для неинтерактивной работы: `IH_ASSUME_YES=1` (все ответы «по умолчанию»), `IH_DIR=<путь>`.
+
+### Установка вручную
 
 Требуется Windows 10/11 и Python 3.10–3.13 (64-бит).
 
@@ -50,6 +96,8 @@ python main.py
 
 ```
 image-hunter/
+├── install.sh                 # установщик для Linux (curl | bash)
+├── install.ps1                # установщик для Windows (irm | iex)
 ├── main.py                    # точка входа
 ├── requirements.txt
 └── app/
