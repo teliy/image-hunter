@@ -371,6 +371,16 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ru": "Поисковый запрос… (Enter — искать)",
         "en": "Search query… (Enter to search)",
         "zh": "搜索关键词…（回车搜索）"},
+    "ws.all_query_ph": {
+        "ru": "Запрос для всех поисковиков… (Enter — искать везде)",
+        "en": "Query for all search engines… (Enter to search everywhere)",
+        "zh": "所有搜索引擎共用关键词…（回车全局搜索）"},
+    "ws.all_find": {
+        "ru": "🔎 Найти везде", "en": "🔎 Search everywhere", "zh": "🔎 全局搜索"},
+    "ws.all_find_tip": {
+        "ru": "Открыть этот запрос во всех {n} поисковиках сразу — по вкладке на каждый;\nвкладки, уже открытые для этих поисковиков, обновят выдачу",
+        "en": "Run this query in all {n} search engines at once — a tab per engine;\ntabs already open for these engines reload their results",
+        "zh": "一次在全部 {n} 个搜索引擎中搜索该关键词 — 每个引擎一个标签页；\n已打开的标签页会重新加载搜索结果"},
     "ws.engine_tip": {
         "ru": "Поисковая система", "en": "Search engine", "zh": "搜索引擎"},
     "ws.cb_title": {
@@ -561,6 +571,10 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ru": "Достигнут предел вкладок поиска ({n})",
         "en": "Search tab limit reached ({n})",
         "zh": "已达到搜索标签页上限（{n}）"},
+    "log.event.search_all": {
+        "ru": "Поиск везде «{q}»: поисковиков {n}, открыто вкладок {opened}",
+        "en": "Search everywhere “{q}”: {n} engines, {opened} tabs opened",
+        "zh": "全局搜索“{q}”：{n} 个搜索引擎，新开 {opened} 个标签页"},
     "log.event.drag_start": {
         "ru": "Перетаскивание начато: {n} файлов → {names}",
         "en": "Drag started: {n} files → {names}",

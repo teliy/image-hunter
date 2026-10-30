@@ -1,5 +1,8 @@
 """Мультивкладки поиска — «как в браузере» внутри вкладки «Поиск картинок».
 
+Над вкладками — общее поле запроса: один ввод открывает поиск сразу во
+ВСЕХ поисковиках, по вкладке на каждый («Найти везде» или Enter).
+
 Каждая вложенная вкладка — самостоятельный WebSearch: своя строка поиска,
 свой поисковик и свой встроенный браузер. Умеет то же, что браузер:
 
@@ -22,6 +25,8 @@ from __future__ import annotations
 from PySide6.QtCore import QSettings, Qt, Signal
 from PySide6.QtGui import QColor, QIcon, QKeySequence, QPainter, QPixmap, QShortcut
 from PySide6.QtWidgets import (
+    QHBoxLayout,
+    QLineEdit,
     QMenu,
     QTabWidget,
     QToolButton,
@@ -35,7 +40,7 @@ from app.core.image_saver import SAVE_FORMATS
 from app.ui.web_search import ENGINES, WebSearch
 
 MAX_TABS = 16   # каждая вкладка — целый браузер; больше не открываем
-                # (поисковиков 13 — каждому хватит своей вкладки)
+                # (поисковиков 13 — «Найти везде» открывает их все сразу)
 SETTINGS_KEY = "web/tabs"
 _SEP = "|"      # разделитель списка поисковиков в настройках
 
@@ -71,7 +76,6 @@ class SearchTabs(QWidget):
         self.tabs.setMovable(True)             # вкладки перетаскиваются мышью
         self.tabs.setTabsClosable(True)        # крестик на каждой вкладке
         self.tabs.setDocumentMode(True)        # плоские вкладки «как в браузере»
-        lay.addWidget(self.tabs)
 
         # «＋» в правом углу полосы вкладок — новая вкладка
         self.btn_new = QToolButton()
@@ -80,6 +84,25 @@ class SearchTabs(QWidget):
         self.btn_new.setToolTip(tr("ws.tab_new_tip"))
         self.btn_new.clicked.connect(lambda: self.add_tab())
         self.tabs.setCornerWidget(self.btn_new, Qt.Corner.TopRightCorner)
+
+        # общее поле запроса над вкладками: один ввод — поиск во ВСЕХ
+        # поисковиках («Найти везде» или Enter), по вкладке на каждый
+        allbar = QHBoxLayout()
+        allbar.setContentsMargins(6, 4, 6, 2)
+        self.global_query = QLineEdit()
+        self.global_query.setPlaceholderText(tr("ws.all_query_ph"))
+        self.global_query.setToolTip(tr("ws.all_find_tip", n=len(ENGINES)))
+        self.global_query.setClearButtonEnabled(True)
+        self.global_query.returnPressed.connect(self.search_everywhere)
+        self.btn_all = QToolButton()
+        self.btn_all.setText(tr("ws.all_find"))
+        self.btn_all.setToolTip(tr("ws.all_find_tip", n=len(ENGINES)))
+        self.btn_all.clicked.connect(self.search_everywhere)
+        allbar.addWidget(self.global_query, 1)
+        allbar.addWidget(self.btn_all)
+
+        lay.addLayout(allbar)
+        lay.addWidget(self.tabs)
 
         self.tabs.tabCloseRequested.connect(self._close_tab)
         bar = self.tabs.tabBar()
@@ -105,6 +128,40 @@ class SearchTabs(QWidget):
             applog.event("log.event.search_tabs_restored", n=restored)
 
         i18n.signals.changed.connect(self._retranslate)
+
+    # ---------- поиск сразу во всех поисковиках ----------
+
+    def search_everywhere(self) -> None:
+        """Запрос из общего поля — во все поисковики, по вкладке на каждый.
+
+        Для каждого поисковика из ENGINES открывается своя вкладка (если
+        она уже открыта — используется существующая), в неё подставляется
+        запрос и запускается поиск. Лишние вкладки одного поисковика
+        тоже получат запрос — ничего не оставляем без выдачи.
+        """
+        text = self.global_query.text().strip()
+        if not text:
+            self.global_query.setFocus()
+            return
+        # у части поисковиков вкладка уже открыта — остальные откроем
+        have: set[str] = set()
+        for i in range(self.tabs.count()):
+            ws = self.tabs.widget(i)
+            if isinstance(ws, WebSearch):
+                have.add(ws.engine_meta()[0])
+        opened = 0
+        for name, _tpl, _short, _color in ENGINES:
+            if name not in have and self.add_tab(
+                    engine_name=name, focus=False, quiet=True) is not None:
+                opened += 1
+        # каждому поисковику — свой запрос в его вкладке
+        for i in range(self.tabs.count()):
+            ws = self.tabs.widget(i)
+            if isinstance(ws, WebSearch):
+                ws.query.setText(text)
+                ws.search()
+        applog.event("log.event.search_all",
+                     n=len(ENGINES), opened=opened, q=text)
 
     # ---------- создание/закрытие вкладок ----------
 
@@ -244,3 +301,7 @@ class SearchTabs(QWidget):
 
     def _retranslate(self, *_args) -> None:
         self.btn_new.setToolTip(tr("ws.tab_new_tip"))
+        self.global_query.setPlaceholderText(tr("ws.all_query_ph"))
+        self.global_query.setToolTip(tr("ws.all_find_tip", n=len(ENGINES)))
+        self.btn_all.setText(tr("ws.all_find"))
+        self.btn_all.setToolTip(tr("ws.all_find_tip", n=len(ENGINES)))

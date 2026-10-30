@@ -53,6 +53,9 @@ Image Hunter was written from day one for the scenario “photos live on a netwo
 
 **🌐 Image Search** — built-in Chromium browser:
 - **browser-like multiple tabs**: “＋”/Ctrl+T opens another search tab, each with its own engine and browser; right-click a tab to duplicate / close / close others / close to the right; the × closes a tab (closing the last one spawns a fresh one), tabs are draggable; the tab title is the selected engine and the colored dot is its brand color (Yandex — red, DuckDuckGo — orange, Google — blue, Bing — green); open tabs are restored on the next start;
+- **one box — all engines**: a shared query bar above the tabs; press Enter or
+  **“🔎 Search everywhere”** and the query opens in all 13 search engines at once,
+  each in its own tab (tabs that are already open reload with the new results);
 - engines (13): Yandex Images, Google, Bing, DuckDuckGo (safe mode),
   Brave, Yahoo, Ecosia, Startpage, Mojeek, Baidu, Sogou, Naver, Mail.ru;
 - Yandex captcha can be entered right in the built-in browser;
@@ -148,6 +151,7 @@ python main.py
 ## How to use
 
 1. **Find images:** “Image Search” tab → type the query → pick the engine → “Search”.
+   Or type it into the shared bar above the tabs — “🔎 Search everywhere” opens it in all engines at once.
 2. **Collect links:** wait for the results page (you can scroll down) → “📋 Collect links”. The list goes to the “Downloads” tab automatically and the download starts right away.
 3. **Save manually:** “Downloads” tab → paste direct links → “⬇ Download links”.
 4. **See what you got:** the “Open” button opens the download folder; the same folder can be opened on the “My Pictures” tab.
