@@ -1,8 +1,10 @@
 """Оффлайн-тест сохранения отмеченных картинок как WebP.
 
 Проверяет: правила имён (название.webp, название-1.webp, название-2.webp…),
-пропуск занятых имён (в т.ч. без учёта регистра), перекодирование в WebP
-и полный конвейер WebpSaver на локальном HTTP-сервере (без реальной сети).
+пропуск занятых имён (в т.ч. без учёта регистра), отказ от перезаписи
+существующих файлов в момент записи (чужой файл уцелел), точечные проверки
+когда листинг папки недоступен, перекодирование в WebP и полный конвейер
+WebpSaver на локальном HTTP-сервере (без реальной сети).
 
 Запуск: QT_QPA_PLATFORM=offscreen python scripts/test_webp_save.py
 """
@@ -95,6 +97,20 @@ def main() -> int:
         check("коллизия без учёта регистра",
               names3 == ["кот.webp", "кот-2.webp"], str(names3))
 
+        # 4b. листинг папки недоступен — точечные проверки кандидатов всё равно
+        # находят занятое имя (chmod 333: listdir запрещён, lexists работает)
+        probe_dir = tempfile.mkdtemp(prefix="ih_webp_p_", dir=tmp)
+        open(os.path.join(probe_dir, "кот-1.webp"), "wb").close()
+        os.chmod(probe_dir, 0o333)
+        try:
+            check("листинг недоступной папки → None",
+                  webp_saver._existing_lower_names(probe_dir) is None)
+            names_p = webp_saver.assign_webp_names(probe_dir, "кот", 2)
+            check("точечные проверки пропускают занятое имя",
+                  names_p == ["кот.webp", "кот-2.webp"], str(names_p))
+        finally:
+            os.chmod(probe_dir, 0o755)
+
         # 5. перекодирование PNG-байтов → файл WebP
         out = os.path.join(tmp, "conv.webp")
         w, h = webp_saver.decode_to_webp(image_bytes("PNG"), out)
@@ -129,7 +145,6 @@ def main() -> int:
             app.processEvents()
             time.sleep(0.02)
             app.processEvents()
-        server.shutdown()
 
         check("конвейер: 2 сохранено, 1 ошибка",
               done.get("ok") == 2 and done.get("fail") == 1, str(done))
@@ -147,6 +162,36 @@ def main() -> int:
         errs = [r for r in results if not r[1]]
         check("ошибка 404 доложена в file_done", len(errs) == 1, str(errs))
         check("после пачки saver не занят", not saver.is_busy())
+
+        # 7. перезапись невозможна и в момент записи: чужой файл появился
+        # уже ПОСЛЕ выдачи имён (как будто его создала другая программа)
+        race_dir = tempfile.mkdtemp(prefix="ih_webp_r_", dir=tmp)
+        urls2 = [base + "/a.png", base + "/b.jpg"]   # оба живые (без 404 из теста 6)
+        names5 = webp_saver.assign_webp_names(race_dir, "кот", 2)  # кот.webp, кот-1.webp
+        foreign = os.path.join(race_dir, "кот.webp")
+        open(foreign, "wb").close()
+        saver2 = webp_saver.WebpSaver()
+        done2: dict = {}
+        saver2.finished.connect(lambda ok, fail, f: done2.update(ok=ok, fail=fail))
+        saver2.start(list(zip(urls2, names5)), None, race_dir, "кот")
+        deadline = time.time() + 30
+        while "ok" not in done2 and time.time() < deadline:
+            app.processEvents()
+            time.sleep(0.02)
+            app.processEvents()
+        check("гонка записи: 2 сохранено, 0 ошибок",
+              done2.get("ok") == 2 and done2.get("fail") == 0, str(done2))
+        check("чужой файл не перезаписан (0 байт)", os.path.getsize(foreign) == 0,
+              str(os.path.getsize(foreign)))
+        saved2 = sorted(os.listdir(race_dir))
+        check("новые файлы уехали на кот-1 и кот-2",
+              saved2 == ["кот-1.webp", "кот-2.webp", "кот.webp"], str(saved2))
+        check("кот-1.webp — 800×600 (второй URL)",
+              QImage(os.path.join(race_dir, "кот-1.webp")).height() == 600)
+        check("кот-2.webp — 320×240 (первый URL уехал на свободный номер)",
+              QImage(os.path.join(race_dir, "кот-2.webp")).height() == 240)
+        server.shutdown()
+        server.server_close()
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

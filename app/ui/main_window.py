@@ -138,7 +138,7 @@ class MainWindow(QMainWindow):
         self._webp_saver = webp_saver.WebpSaver(self)
         self._webp_saver.file_done.connect(self._on_webp_file_done)
         self._webp_saver.finished.connect(self._on_webp_finished)
-        self._webp_saver.start(list(zip(urls, names)), referer or None, folder)
+        self._webp_saver.start(list(zip(urls, names)), referer or None, folder, base)
         self._status.showMessage(f"Сохраняю как WebP: 0 из {self._webp_total}…")
 
     def _on_webp_file_done(self, _index: int, ok: bool, info: str) -> None:

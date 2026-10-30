@@ -5,14 +5,22 @@ Downloader), декодируются Qt — QImage можно использо�
 QImageReader с AutoTransform разворачивает фото по EXIF — и записываются
 как WebP в папку, открытую во вкладке «Мои картинки».
 
-Правила имён: название.webp, название-1.webp, название-2.webp и так далее;
-если имя занято существующим файлом папки, счётчик просто продолжается.
+Правила имён: название.webp, название-1.webp, название-2.webp и так далее.
+Существующие файлы никогда не перезаписываются:
+• при выдаче имён пачке занятое имя пропускается (сравнение без регистра,
+  как на дисках Windows; снимок папки — один os.listdir);
+• если листинг не удался (моргнул сетевой диск) — каждый кандидат проверяется
+  точечно os.path.lexists();
+• и в момент записи имя перепроверяется: если файл с таким именем появился
+  в папке после выдачи имён, задача молча уезжает на следующий свободный
+  номер (название-3.webp и далее).
 """
 
 from __future__ import annotations
 
 import os
 import re
+import threading
 
 import requests
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
@@ -35,28 +43,41 @@ def sanitize_base_name(name: str) -> str:
     return name[:120]
 
 
-def _existing_lower_names(folder: str) -> set[str]:
-    """Имена файлов папки в нижнем регистре (одно os.listdir на пачку)."""
+def _existing_lower_names(folder: str) -> set[str] | None:
+    """Имена файлов папки в нижнем регистре (одно os.listdir на пачку).
+
+    ``None`` — листинг не удался (например, сетевой диск моргнул):
+    next_webp_name перейдёт на точечные проверки os.path.lexists().
+    """
     try:
         return {n.lower() for n in os.listdir(folder)}
     except OSError:
-        return set()
+        return None
 
 
 def next_webp_name(folder: str, base: str, used: set[str],
                    existing_lower: set[str] | None = None) -> str:
     """Первое свободное имя: base.webp, затем base-1.webp, base-2.webp…
 
-    Учитывает и уже существующие файлы папки (сравнение без регистра —
-    как на дисках Windows), и имена, выданные в текущей пачке.
+    Никогда не возвращает имя существующего файла: сверяется со снимком папки
+    (сравнение без регистра — как на дисках Windows) и с именами, выданными
+    в текущей пачке (``used``). Если снимок получить не удалось (``None``),
+    каждый кандидат проверяется точечно через os.path.lexists().
     """
     if existing_lower is None:
-        existing_lower = _existing_lower_names(folder)
+        existing_lower = _existing_lower_names(folder)   # None → листинг не удался
     lower_used = {u.lower() for u in used}
+
+    def taken(candidate: str) -> bool:
+        if candidate.lower() in lower_used:
+            return True
+        if existing_lower is None:
+            return os.path.lexists(os.path.join(folder, candidate))
+        return candidate.lower() in existing_lower
+
     candidate = f"{base}.webp"
     n = 0
-    while (candidate.lower() in lower_used
-           or candidate.lower() in existing_lower):
+    while taken(candidate):
         n += 1
         candidate = f"{base}-{n}.webp"
     used.add(candidate)
@@ -95,7 +116,7 @@ class _WebpTask(QRunnable):
     """Скачивание одного оригинала в память + запись WebP под готовое имя."""
 
     def __init__(self, owner: "WebpSaver", index: int, url: str, filename: str,
-                 folder: str, referer: str | None):
+                 folder: str, referer: str | None, base: str):
         super().__init__()
         self.owner = owner
         self.index = index
@@ -103,6 +124,7 @@ class _WebpTask(QRunnable):
         self.filename = filename
         self.folder = folder
         self.referer = referer
+        self.base = base
 
     def run(self) -> None:  # рабочий поток
         if self.owner.is_stopped():
@@ -126,9 +148,11 @@ class _WebpTask(QRunnable):
                     raise ValueError("файл слишком большой (>100 МБ)")
             if not buf:
                 raise ValueError("пустой ответ")
-            size = decode_to_webp(bytes(buf), os.path.join(self.folder, self.filename))
+            # существующие файлы не перезаписываем: перепроверка прямо перед записью
+            target = self.owner._free_write_name(self.folder, self.filename, self.base)
+            size = decode_to_webp(bytes(buf), os.path.join(self.folder, target))
             self.owner._task_done(self.index, True,
-                                  f"{self.filename} ({size[0]}×{size[1]})")
+                                  f"{target} ({size[0]}×{size[1]})")
         except Exception as exc:  # noqa: BLE001 — текст ошибки уходит в статус
             self.owner._task_done(self.index, False, str(exc)[:200])
 
@@ -148,9 +172,17 @@ class WebpSaver(QObject):
         self._ok = 0
         self._fail = 0
         self._folder = ""
+        self._name_lock = threading.Lock()
+        self._used: set[str] = set()
 
-    def start(self, jobs: list[tuple[str, str]], referer: str | None, folder: str) -> None:
-        """jobs: [(url, имя_файла)] — имена уже выданы assign_webp_names()."""
+    def start(self, jobs: list[tuple[str, str]], referer: str | None, folder: str,
+              base: str = "") -> None:
+        """jobs: [(url, имя_файла)] — имена уже выданы assign_webp_names().
+
+        ``base`` — базовое имя без расширения: если файл с выданным именем
+        появится в папке до момента записи (создан другой программой), задача
+        уедет на следующий свободный base-N.webp, не тронув чужой файл.
+        """
         if not jobs:
             return
         os.makedirs(folder, exist_ok=True)
@@ -159,8 +191,12 @@ class WebpSaver(QObject):
         self._pending = len(jobs)
         self._ok = 0
         self._fail = 0
+        if not base:
+            first = jobs[0][1]
+            base = first[:-5] if first.lower().endswith(".webp") else first
+        self._used = {name.lower() for _, name in jobs}
         for index, (url, filename) in enumerate(jobs):
-            self._pool.start(_WebpTask(self, index, url, filename, folder, referer))
+            self._pool.start(_WebpTask(self, index, url, filename, folder, referer, base))
 
     def stop(self) -> None:
         self._stopped = True
@@ -172,6 +208,25 @@ class WebpSaver(QObject):
         return self._pending > 0
 
     # ---------- внутреннее (вызывается из рабочих потоков) ----------
+
+    def _free_write_name(self, folder: str, wanted: str, base: str) -> str:
+        """Гарантия «существующие файлы не перезаписываются» в момент записи.
+
+        Вызывается из рабочего потока непосредственно перед img.save():
+        если ``wanted`` уже есть на диске (появился после выдачи имён),
+        берётся первое свободное base-N.webp, резервируясь за пачкой.
+        """
+        with self._name_lock:
+            if not os.path.lexists(os.path.join(folder, wanted)):
+                return wanted
+            candidate = f"{base}.webp"
+            n = 0
+            while (candidate.lower() in self._used
+                   or os.path.lexists(os.path.join(folder, candidate))):
+                n += 1
+                candidate = f"{base}-{n}.webp"
+            self._used.add(candidate)
+            return candidate
 
     def _task_done(self, index: int, ok: bool, info: str) -> None:
         if ok:
