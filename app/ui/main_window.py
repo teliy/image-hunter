@@ -187,6 +187,7 @@ class MainWindow(QMainWindow):
         base = image_saver.sanitize_base_name(base) or "image"
 
         names = image_saver.assign_image_names(folder, base, ext, len(urls))
+        self._img_urls = list(urls)   # для журнала: какая ссылка не сохранилась
         self._img_folder = folder
         self._img_total = len(names)
         self._img_saved = 0
@@ -197,10 +198,13 @@ class MainWindow(QMainWindow):
         self._status.showMessage(
             tr("main.saving", fmt=fmt, done=0, total=self._img_total))
 
-    def _on_save_file_done(self, _index: int, ok: bool, info: str) -> None:
+    def _on_save_file_done(self, index: int, ok: bool, info: str) -> None:
         if ok:
             self._img_saved += 1
         else:
+            # причина ошибки — в журнал (в статус-баре она мелькает лишь 8 секунд)
+            url = (self._img_urls[index] if 0 <= index < len(self._img_urls) else "?")
+            applog.error(tr("log.event.save_file_err", url=url, err=info))
             self._status.showMessage(tr("main.save_err", info=info), 8000)
             return
         self._status.showMessage(

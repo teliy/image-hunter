@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.core import i18n
+from app.core import applog, i18n
 from app.core.downloader import Downloader, saved_download_dir, store_download_dir
 from app.core.i18n import tr
 
@@ -174,6 +174,9 @@ class DownloadsView(QWidget):
         elif status == "error":
             self._fail += 1
             self._ok_color(status_item, "#c62828")
+            # причина ошибки — в журнал: в таблице виден только короткий текст
+            applog.error(tr("log.event.dl_file_err",
+                            url=url_item.text() if url_item else "?", err=detail))
         self._update_summary()
 
     def _on_batch_finished(self, ok: int, fail: int) -> None:

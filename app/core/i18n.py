@@ -255,6 +255,18 @@ _STRINGS: dict[str, dict[str, str]] = {
         "zh": "未找到同名文件夹"},
     "viewer.folders_trunc": {
         "ru": " (показаны первые {n})", "en": " (first {n} shown)", "zh": "（仅显示前 {n} 个）"},
+    "viewer.ignore_dash": {
+        "ru": "игнорировать дефис", "en": "ignore hyphens", "zh": "忽略连字符"},
+    "viewer.ignore_dash_tip": {
+        "ru": "Искать, не различая дефисы: запрос «23542-23523» найдёт и «2354223523»,\n"
+              "и «23542-23523», и наоборот — дефис может стоять не там или отсутствовать.\n"
+              "Удобно для артикулов запчастей. Настройка запоминается.",
+        "en": "Match without hyphens: the query “23542-23523” finds “2354223523”\n"
+              "and “23542-23523” alike — the hyphen may sit elsewhere or be missing.\n"
+              "Handy for part numbers. The setting is remembered.",
+        "zh": "匹配时不区分连字符：查询“23542-23523”同样能找到“2354223523”\n"
+              "和“23542-23523”，反之亦然 — 连字符可能位置不同或没有。\n"
+              "适用于零件编号。设置会被记住。"},
     "unit.b": {"ru": "Б", "en": "B", "zh": "B"},
     "unit.kb": {"ru": "КБ", "en": "KB", "zh": "KB"},
     "unit.mb": {"ru": "МБ", "en": "MB", "zh": "MB"},
@@ -410,6 +422,14 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ru": "Поиск папок «{q}»: найдено {n}",
         "en": "Folder search “{q}”: found {n}",
         "zh": "文件夹搜索“{q}”：找到 {n}"},
+    "log.event.save_file_err": {
+        "ru": "ОШИБКА сохранения: {url} — {err}",
+        "en": "SAVE ERROR: {url} — {err}",
+        "zh": "保存错误：{url} — {err}"},
+    "log.event.dl_file_err": {
+        "ru": "ОШИБКА скачивания: {url} — {err}",
+        "en": "DOWNLOAD ERROR: {url} — {err}",
+        "zh": "下载错误：{url} — {err}"},
     "log.event.drag_start": {
         "ru": "Перетаскивание начато: {n} файлов → {names}",
         "en": "Drag started: {n} files → {names}",

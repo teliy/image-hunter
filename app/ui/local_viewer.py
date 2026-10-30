@@ -42,6 +42,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QFileDialog,
     QHBoxLayout,
     QLabel,
@@ -272,17 +273,31 @@ class _SearchHandle:
 class _SearchTask(QRunnable):
     """Рекурсивный поиск по имени файла от текущей папки вниз, одним os.scandir
     на папку, без лишних stat() (важно для сетевых дисков). Отдаёт результаты
-    порциями, не дожидаясь конца обхода."""
+    порциями, не дожидаясь конца обхода.
+
+    ``ignore_dash`` — искать, не различая дефисы: запрос «23542-23523»
+    найдёт и «2354223523», и «23542-23523» (артикулы запчастей пишут
+    то с дефисом, то без, и не всегда на том же месте)."""
 
     MAX_RESULTS = 5000    # предел выдачи
     MAX_FOLDERS = 20000   # предел обхода (страховка от гигантских деревьев)
     BATCH = 50
 
     def __init__(self, base: str, needle: str, gen: int,
-                 signals: _SearchSignals, handle: _SearchHandle):
+                 signals: _SearchSignals, handle: _SearchHandle,
+                 ignore_dash: bool = False):
         super().__init__()
         self.base, self.needle = base, needle
         self.gen, self.signals, self.handle = gen, signals, handle
+        self.ignore_dash = ignore_dash
+        self.needle_plain = needle.replace("-", "") if ignore_dash else needle
+
+    def _match(self, name: str) -> bool:
+        """Подстрока в имени; в режиме «игнорировать дефис» — без дефисов с обеих сторон."""
+        name_l = name.lower()
+        if self.ignore_dash:
+            return self.needle_plain in name_l.replace("-", "")
+        return self.needle in name_l
 
     def run(self) -> None:
         found: list[tuple[str, int, float]] = []
@@ -310,7 +325,7 @@ class _SearchTask(QRunnable):
                             if entry.is_dir(follow_symlinks=False):
                                 dirs.append(entry.path)
                             elif (os.path.splitext(name)[1].lower() in IMAGE_EXTS
-                                  and self.needle in name.lower()):
+                                  and self._match(name)):
                                 st = entry.stat(follow_symlinks=False)
                                 matches.append((entry.path, st.st_size, st.st_mtime))
                         except OSError:
@@ -746,6 +761,13 @@ class LocalViewer(QWidget):
         self.search_edit.textChanged.connect(self._on_search_text_changed)
         self.search_edit.returnPressed.connect(self._start_search_now)
         bar.addWidget(self.search_edit)
+        # «игнорировать дефис»: артикулы пишут то с дефисом, то без — ищем без различий
+        self.ignore_dash_box = QCheckBox(tr("viewer.ignore_dash"))
+        self.ignore_dash_box.setToolTip(tr("viewer.ignore_dash_tip"))
+        self.ignore_dash_box.setChecked(QSettings("ImageHunter", "ImageHunter").value(
+            "viewer/search_ignore_dash", False, type=bool))
+        self.ignore_dash_box.toggled.connect(self._on_ignore_dash_toggled)
+        bar.addWidget(self.ignore_dash_box)
         esc = QShortcut(QKeySequence("Esc"), self)
         esc.activated.connect(self._escape_search)   # Esc чистит то поле, где фокус
         bar.addStretch(1)
@@ -906,6 +928,8 @@ class LocalViewer(QWidget):
             b.setToolTip(tr(tip_key))
         self.search_edit.setPlaceholderText(tr("viewer.search_ph"))
         self.search_edit.setToolTip(tr("viewer.search_tip"))
+        self.ignore_dash_box.setText(tr("viewer.ignore_dash"))
+        self.ignore_dash_box.setToolTip(tr("viewer.ignore_dash_tip"))
         self.folder_search.setPlaceholderText(tr("viewer.folders_search_ph"))
         self.folder_search.setToolTip(tr("viewer.folders_search_tip"))
         self.list.setToolTip(tr("viewer.dnd_tip"))
@@ -1060,7 +1084,15 @@ class LocalViewer(QWidget):
         self._movie = None
         self.status.setText(tr("viewer.searching", q=needle))
         QThreadPool.globalInstance().start(
-            _SearchTask(base, needle.lower(), self._gen, self._search_signals, handle))
+            _SearchTask(base, needle.lower(), self._gen, self._search_signals, handle,
+                        ignore_dash=self.ignore_dash_box.isChecked()))
+
+    def _on_ignore_dash_toggled(self, checked: bool) -> None:
+        """Переключили чекбокс — запомнить и перезапустить текущий поиск."""
+        QSettings("ImageHunter", "ImageHunter").setValue(
+            "viewer/search_ignore_dash", bool(checked))
+        if self.search_edit.text().strip():
+            self._start_search_now()
 
     def _on_search_batch(self, gen: int, items: list) -> None:
         if gen != self._gen or not items:

@@ -193,6 +193,22 @@ def main() -> int:
         check("запись из фонового потока дошла до журнала",
               "потоковая запись" in log_text and "из фонового потока" in log_text,
               log_text[:120])
+
+        # 8. ошибка сохранения попадает в журнал: ссылка + причина
+        win.log_view.btn_clear.click()
+        pump(app, 100)
+        win._img_urls = ["http://x/good.png", "http://x/bad.png"]
+        win._img_total = 2
+        win._img_saved = 0
+        win._on_save_file_done(1, False, "не изображение (text/html)")
+        win._on_save_file_done(0, True, "good.webp (800×600)")
+        pump(app, 300)
+        log_text = win.log_view.text.toPlainText()
+        check("ошибка сохранения записана в журнал (ссылка + причина)",
+              "http://x/bad.png" in log_text and "не изображение" in log_text,
+              log_text[:160])
+        check("успешное сохранение не пачкает журнал ошибкой",
+              "http://x/good.png" not in log_text)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

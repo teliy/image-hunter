@@ -35,7 +35,7 @@ Image Hunter was written from day one for the scenario “photos live on a netwo
 - **quick folder search**: the “🔍 Search folders…” box above the tree finds a folder by part of its name — across all drives and quick links, at any depth; matches appear in the tree as the background scan goes (name + parent path in gray), a click opens the folder, Enter opens the first match, Esc resets; case-insensitive, hidden folders are not scanned, results and scan time are capped — even a huge disk cannot freeze the window;
 - **lazy thumbnails** (see the network section above) and the “🖼 Thumbnails” on/off toggle;
 - **multi-select and drag'n'drop**: select images in the strip (Ctrl/Shift, like in Explorer) and drag them into Explorer, e-mail or any other application — the original files are passed on (`text/uri-list`); the drag start is backed by three independent paths (event filter, own mouse-move tracking, built-in Qt mechanics) and every step is written to the Log; **if dragging does not work — a no-drag fallback:** `Ctrl+C` (or right-click → “Copy selected files”), then paste them wherever needed — `Ctrl+V` into Explorer or a browser;
-- **search by file name**: type part of the name — all images in the current folder and all subfolders are found; no masks or stars, case-insensitive, results appear as the scan goes;
+- **search by file name**: type part of the name — all images in the current folder and all subfolders are found; no masks or stars, case-insensitive, results appear as the scan goes; the **“ignore hyphens”** checkbox matches without hyphens — the query “23542-23523” finds “2354223523” and “23542-23523” alike (part numbers are written with the hyphen elsewhere or not at all); the checkbox state is remembered;
 - the last folder reopens automatically on start (if it holds up to 2000 images);
 - full-screen view, zoom (`+` / `−` / `Ctrl+wheel`), “fit to window”, “100%”;
 - navigation with ←/→, human-friendly sorting (file2 < file10);
@@ -60,7 +60,7 @@ Image Hunter was written from day one for the scenario “photos live on a netwo
 - download folder picker (default `Pictures\ImageHunter`), 100 MB per-file limit.
 
 **📜 Log** — the activity chronicle (tab added on the right):
-- which folders were opened, what the search found, which files were dragged and how the drag ended, how much was downloaded/saved, which errors happened;
+- which folders were opened, what the search found, which files were dragged and how the drag ended, how much was downloaded/saved, which errors happened; if a specific file failed to download or save, the log shows both the link and the reason (e.g. “not an image (text/html)”, timeout, “file too large”);
 - errors are highlighted red, warnings orange; the log keeps the last 5000 lines;
 - “🧹 Clear” and “📋 Copy all” buttons — easy to attach the log to a bug report; uncaught exceptions land in the log too;
 - the main-window tabs can be dragged with the mouse and rearranged in any order.
