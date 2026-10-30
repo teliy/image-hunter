@@ -151,9 +151,15 @@ _STRINGS: dict[str, dict[str, str]] = {
         "en": "🔍 Search folder and subfolders…",
         "zh": "🔍 搜索文件夹及子文件夹…"},
     "viewer.search_tip": {
-        "ru": "Введите часть имени файла — найдутся все картинки в текущей папке\nи всех подпапках. Без масок и звёздочек, регистр не важен. Esc — сброс.",
-        "en": "Type part of a file name — all images in the current folder\nand its subfolders will be found. No masks or stars, case-insensitive. Esc — reset.",
-        "zh": "输入文件名的一部分 — 将找到当前文件夹\n及所有子文件夹中的图片。无需通配符，不区分大小写。Esc — 重置。"},
+        "ru": "Введите часть имени файла — найдутся все картинки в текущей папке\n"
+              "и всех подпапках. Без масок и звёздочек, регистр не важен. Esc — сброс.\n"
+              "Потяните мышью за левый или правый край поля, чтобы сделать его шире или уже.",
+        "en": "Type part of a file name — all images in the current folder\n"
+              "and its subfolders will be found. No masks or stars, case-insensitive. Esc — reset.\n"
+              "Drag the left or right edge of the box to make it wider or narrower.",
+        "zh": "输入文件名的一部分 — 将找到当前文件夹\n"
+              "及所有子文件夹中的图片。无需通配符，不区分大小写。Esc — 重置。\n"
+              "拖动输入框的左或右边缘，可以调宽或调窄。"},
     "viewer.dnd_tip": {
         "ru": "Выделите картинки (Ctrl/Shift) и перетащите их мышью в Проводник,\nпочту или другое приложение — передаются оригинальные файлы.",
         "en": "Select images (Ctrl/Shift) and drag them into Explorer,\ne-mail or any other app — the original files are passed on.",

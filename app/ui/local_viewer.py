@@ -358,6 +358,89 @@ class _ThumbList(QListWidget):
         drag.exec(Qt.CopyAction)
 
 
+class _GripEdit(QLineEdit):
+    """Однострочное поле, ширину которого меняют мышью за левый или правый край.
+
+    У краёв (6 px) курсор превращается в «↔»; зажали мышь у края — тянете,
+    ширина меняется на ходу и запоминается в QSettings. В середине поле
+    работает как обычный QLineEdit: ввод, выделение, двойной клик.
+    """
+
+    EDGE = 6        # ширина зоны захвата у края, px
+    MIN_W = 170     # уже не сузить (чтобы поле не потерялось на панели)
+    MAX_W = 640     # шире не растянуть (иначе вытеснит соседние кнопки)
+
+    def __init__(self, settings_key: str, default_w: int = 220, parent=None):
+        super().__init__(parent)
+        self._key = settings_key
+        self._default_w = default_w
+        self._grip = ""          # "l" | "r" | "" — тянем ли сейчас за край
+        self._press_x = 0        # глобальный X в момент захвата
+        self._start_w = 0        # ширина в момент захвата
+        self.setMouseTracking(True)   # движение без кнопки — для курсора-захвата
+        saved = QSettings("ImageHunter", "ImageHunter").value(
+            settings_key, default_w, int)
+        try:
+            saved = int(saved)
+        except (TypeError, ValueError):
+            saved = default_w
+        self.setFixedWidth(max(self.MIN_W, min(self.MAX_W, saved)))
+
+    def _edge_at(self, pos) -> str:
+        """Зона захвата под курсором: «l», «r» или пусто — середина."""
+        if pos.x() <= self.EDGE:
+            return "l"
+        if pos.x() >= self.width() - self.EDGE:
+            return "r"
+        return ""
+
+    def mousePressEvent(self, ev) -> None:  # noqa: N802 (Qt API)
+        if ev.button() == Qt.MouseButton.LeftButton:
+            edge = self._edge_at(ev.position().toPoint())
+            if edge:
+                self._grip = edge
+                self._press_x = int(ev.globalPosition().x())
+                self._start_w = self.width()
+                ev.accept()
+                return
+        super().mousePressEvent(ev)
+
+    def mouseMoveEvent(self, ev) -> None:  # noqa: N802 (Qt API)
+        if self._grip:
+            dx = int(ev.globalPosition().x()) - self._press_x
+            delta = dx if self._grip == "r" else -dx
+            new_w = max(self.MIN_W, min(self.MAX_W, self._start_w + delta))
+            if new_w != self.width():
+                self.setFixedWidth(new_w)
+            ev.accept()
+            return
+        # просто наведение: подсказываем захват у краёв
+        edge = self._edge_at(ev.position().toPoint())
+        self.setCursor(Qt.CursorShape.SizeHorCursor if edge
+                       else Qt.CursorShape.IBeamCursor)
+        super().mouseMoveEvent(ev)
+
+    def mouseReleaseEvent(self, ev) -> None:  # noqa: N802 (Qt API)
+        if self._grip:
+            self._grip = ""
+            QSettings("ImageHunter", "ImageHunter").setValue(
+                self._key, self.width())
+            ev.accept()
+            return
+        super().mouseReleaseEvent(ev)
+
+    def mouseDoubleClickEvent(self, ev) -> None:  # noqa: N802 (Qt API)
+        if self._edge_at(ev.position().toPoint()):
+            ev.accept()   # у края двойной клик — это захват, а не выделение слова
+            return
+        super().mouseDoubleClickEvent(ev)
+
+    def leaveEvent(self, ev) -> None:  # noqa: N802 (Qt API)
+        if not self._grip:
+            self.setCursor(Qt.CursorShape.IBeamCursor)
+        super().leaveEvent(ev)
+
+
 class LocalViewer(QWidget):
     """Слева дерево дисков/папок, затем лента миниатюр, справа просмотр выбранной картинки."""
 
@@ -425,10 +508,9 @@ class LocalViewer(QWidget):
         bar.addSpacing(8)
         btn("viewer.reveal", "viewer.reveal_tip", self.reveal_folder)
         bar.addSpacing(8)
-        self.search_edit = QLineEdit()
+        self.search_edit = _GripEdit("viewer/search_width", default_w=220)
         self.search_edit.setPlaceholderText(tr("viewer.search_ph"))
         self.search_edit.setClearButtonEnabled(True)
-        self.search_edit.setMaximumWidth(220)
         self.search_edit.setToolTip(tr("viewer.search_tip"))
         self.search_edit.textChanged.connect(self._on_search_text_changed)
         self.search_edit.returnPressed.connect(self._start_search_now)
