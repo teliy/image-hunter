@@ -1,9 +1,11 @@
 """Вкладка «Поиск картинок»: встроенный браузер поисковиков + сбор ссылок.
 
-Два способа отправить картинки на вкладку «Загрузки»:
+Три способа отправить картинки дальше:
 1. «Собрать ссылки» — все картинки текущей страницы выдачи (превью);
 2. «Скачать отмеченные» — только отмеченные галочками плитки, причём
-   для каждой берётся большой оригинал (origUrl / img_url), а не превью.
+   для каждой берётся большой оригинал (origUrl / img_url), а не превью;
+3. «WebP в папку» — отмеченные плитки перекодируются в WebP и сохраняются
+   в папку, открытую во вкладке «Мои картинки» (название.webp, название-1.webp…).
 """
 
 from __future__ import annotations
@@ -64,6 +66,7 @@ class WebSearch(QWidget):
 
     images_found = Signal(list, str)  # (ссылки, URL страницы-источника)
     checked_count_changed = Signal(int)  # сколько плиток отмечено
+    save_webp_requested = Signal(list, str)  # (оригиналы отмеченных, referer)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -100,11 +103,21 @@ class WebSearch(QWidget):
         self.btn_checked.setEnabled(False)
         self.btn_checked.clicked.connect(self.download_checked)
 
+        self.btn_webp = QToolButton()
+        self.btn_webp.setText("💾 WebP в папку")
+        self.btn_webp.setToolTip(
+            "Отмеченные плитки перекодируются в WebP и сохраняются в папку,\n"
+            "открытую во вкладке «Мои картинки»: название.webp, название-1.webp…\n"
+            "Имя спросит при сохранении. Если папка не открыта — предложит выбрать.")
+        self.btn_webp.setEnabled(False)
+        self.btn_webp.clicked.connect(self.save_checked_as_webp)
+
         bar.addWidget(self.query, 1)
         bar.addWidget(self.engine)
         bar.addWidget(go)
         bar.addWidget(collect)
         bar.addWidget(self.btn_checked)
+        bar.addWidget(self.btn_webp)
 
         self.view = QWebEngineView()
         self.view.setUrl(QUrl("https://ya.ru/images/"))
@@ -140,6 +153,10 @@ class WebSearch(QWidget):
         """Отправить в загрузки оригиналы отмеченных галочками плиток."""
         fetch_checked_selections(self.view.page(), self._on_checked)
 
+    def save_checked_as_webp(self) -> None:
+        """Отмеченные плитки → перекодировать в WebP → папка из «Моих картинок»."""
+        fetch_checked_selections(self.view.page(), self._on_checked_webp)
+
     # ---------- внутреннее ----------
 
     def _on_collected(self, urls: list[str]) -> None:
@@ -151,15 +168,25 @@ class WebSearch(QWidget):
     def _on_checked(self, items: list[dict]) -> None:
         best = [it["best"] for it in items if it.get("best")]
         if not best:
-            QMessageBox.information(
-                self,
-                "Image Hunter",
-                "Нет отмеченных картинок.\n\n"
-                "Отметьте оранжевыми галочками плитки с нужными картинками "
-                "прямо на странице выдачи — на кнопке появится счётчик.",
-            )
+            self._info_no_checked()
             return
         self.images_found.emit(best, self.view.url().toString())
+
+    def _on_checked_webp(self, items: list[dict]) -> None:
+        best = [it["best"] for it in items if it.get("best")]
+        if not best:
+            self._info_no_checked()
+            return
+        self.save_webp_requested.emit(best, self.view.url().toString())
+
+    def _info_no_checked(self) -> None:
+        QMessageBox.information(
+            self,
+            "Image Hunter",
+            "Нет отмеченных картинок.\n\n"
+            "Отметьте оранжевыми галочками плитки с нужными картинками "
+            "прямо на странице выдачи — на кнопке появится счётчик.",
+        )
 
     def _info_no_links(self) -> None:
         QMessageBox.information(
@@ -203,4 +230,8 @@ class WebSearch(QWidget):
                 f"⬇ Скачать отмеченные ({count})" if count else "⬇ Скачать отмеченные"
             )
             self.btn_checked.setEnabled(count > 0)
+            self.btn_webp.setText(
+                f"💾 WebP в папку ({count})" if count else "💾 WebP в папку"
+            )
+            self.btn_webp.setEnabled(count > 0)
             self.checked_count_changed.emit(count)

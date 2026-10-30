@@ -517,6 +517,15 @@ class LocalViewer(QWidget):
             self._cancel_search()
             self.load_folder(folder, sync_tree=True)
 
+    def current_folder(self) -> str:
+        """Папка, открытая сейчас во вкладке (используется для сохранения WebP)."""
+        return self._folder
+
+    def refresh(self) -> None:
+        """Пересканировать текущую папку (например, после сохранения в неё WebP)."""
+        if self._folder and os.path.isdir(self._folder):
+            self.load_folder(self._folder)
+
     def load_folder(self, folder: str, entries: list[tuple[str, int, float]] | None = None,
                     sync_tree: bool = False) -> None:
         self._cancel_search()
