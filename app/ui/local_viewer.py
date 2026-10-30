@@ -9,6 +9,7 @@ import re
 import tempfile
 
 from PySide6.QtCore import (
+    QEvent,
     QObject,
     QMimeData,
     QPoint,
@@ -46,6 +47,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QMenu,
     QMessageBox,
     QScrollArea,
     QSizePolicy,
@@ -58,7 +60,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.core import i18n
+from app.core import applog, i18n
 from app.core.i18n import tr
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"}
@@ -339,14 +341,33 @@ def make_file_urls_mime(paths: list[str]) -> QMimeData:
     return mime
 
 
+def _drag_action_name(action) -> str:
+    """Человеческое название того, чем закончилось перетаскивание."""
+    if action == Qt.DropAction.CopyAction:
+        return tr("log.act.copy")
+    if action == Qt.DropAction.MoveAction:
+        return tr("log.act.move")
+    return tr("log.act.cancel")
+
+
 class _ThumbList(QListWidget):
     """Список миниатюр: перетаскивание выделенных файлов мышью в другие приложения.
 
     Зажали кнопку на плитке и потянули — полетели все выделенные файлы
-    (Ctrl и Shift выделяют, как в Проводнике). Перетаскивание запускается
-    вручную из mousePressEvent/mouseMoveEvent: встроенная механика QListWidget
-    (dragEnabled → startDrag) в режиме IconMode срабатывает не во всех сборках
-    Qt, поэтому не полагаемся на неё — она оставлена лишь запасным путём.
+    (Ctrl и Shift выделяют, как в Проводнике). Запуск драга подстрахован
+    тремя независимыми путями — хотя бы один да сработает:
+
+      1. eventFilter на viewport — самый ранний перехват движения мыши;
+      2. собственные mousePressEvent/mouseMoveEvent с порогом в 12 px;
+      3. встроенная механика QListWidget (dragEnabled → startDrag).
+
+    Если событие нажатия до нас не доехало (перехвачено чужим обработчиком,
+    потеряно при передаче между виджетами), первый же перенос мыши с зажатой
+    кнопкой восстанавливает точку нажатия — и перетаскивание всё равно
+    начнётся. Каждый шаг пишется в «Журнал»: по нему видно, начался ли драг
+    и почему нет. Если перетаскивание не срабатывает совсем — есть путь
+    без драга: Ctrl+C (или правый клик → «Копировать выделенные файлы»),
+    затем вставить файлы куда нужно (Ctrl+V).
     """
 
     DRAG_THRESHOLD = 12        # px манхэттенского смещения, после которого тянем
@@ -356,22 +377,31 @@ class _ThumbList(QListWidget):
         super().__init__(parent)
         self._press_index = None     # плитка, на которой зажали мышь
         self._press_pos = None       # точка нажатия в координатах виджета
+        self._press_max = 0          # наибольшее смещение с момента нажатия, px
+        self._press_skip = ""        # почему в этом нажатии драг не начинался
         self._dragging = False
+        # слой 1: события viewport ловим до того, как их раздаст QListWidget
+        self.viewport().installEventFilter(self)
 
-    def _selected_paths(self) -> list[str]:
+    def selected_paths(self) -> list[str]:
+        """Пути файлов, лежащие в выделенных плитках."""
         return [it.data(Qt.UserRole) for it in self.selectedItems()
                 if it.data(Qt.UserRole)]
+
+    # ---------- запуск перетаскивания (общий для всех трёх слоёв) ----------
 
     def startDrag(self, actions) -> None:  # noqa: N802 (Qt API)
         if self._dragging:
             return   # в этом нажатии уже потащили — второй раз не стартуем
         self.exec_drag()
 
-    def exec_drag(self) -> None:
-        """Собрать выделенные файлы и запустить перетаскивание."""
-        paths = self._selected_paths()
+    def exec_drag(self) -> bool:
+        """Собрать выделенные файлы и запустить перетаскивание.
+
+        Возвращает True, если перетаскивание действительно началось."""
+        paths = self.selected_paths()
         if not paths:
-            return
+            return False
         drag = self.DRAG_FACTORY(self)
         mime = make_file_urls_mime(paths)
         # запасной формат для программ, которые не понимают uri-list
@@ -385,35 +415,93 @@ class _ThumbList(QListWidget):
                 drag.setPixmap(pix.scaled(96, 96, Qt.KeepAspectRatio,
                                           Qt.SmoothTransformation))
         self._dragging = True
-        drag.exec(Qt.CopyAction)
+        applog.event("log.event.drag_start", n=len(paths),
+                     names=", ".join(os.path.basename(p) for p in paths[:3]))
+        action = drag.exec(Qt.CopyAction, Qt.CopyAction)
+        applog.event("log.event.drag_end", action=_drag_action_name(action))
+        return True
 
-    # ---------- ручной запуск перетаскивания мышью ----------
+    # ---------- слой 2: собственный запуск по нажатию и движению мыши ----------
+
+    def _remember_press(self, pos: QPoint) -> None:
+        """Запомнить плитку и точку нажатия — от них отсчитывается порог."""
+        idx = self.indexAt(pos)
+        self._press_index = idx if idx.isValid() else None
+        self._press_pos = pos
+        self._press_max = 0
+        self._press_skip = ""
+
+    def _track_distance(self, pos: QPoint) -> None:
+        dist = (pos - self._press_pos).manhattanLength()
+        if dist > self._press_max:
+            self._press_max = dist
 
     def mousePressEvent(self, ev) -> None:  # noqa: N802 (Qt API)
         self._dragging = False
         if ev.button() == Qt.MouseButton.LeftButton:
-            idx = self.indexAt(ev.position().toPoint())
-            self._press_index = idx if idx.isValid() else None
-            self._press_pos = ev.position().toPoint()
+            self._remember_press(ev.position().toPoint())
         super().mousePressEvent(ev)   # выделение работает как раньше
+
+    def _try_start_drag(self) -> bool:
+        """Порог пройден и плитка выделена — начать перетаскивание."""
+        item = self.itemFromIndex(self._press_index)
+        if item is None or not item.isSelected():
+            # причину запоминаем именно сейчас: встроенная механика Qt при
+            # движении может перевыбрать плитку, и к отпусканию кнопки
+            # isSelected() уже не скажет, почему драг не начался
+            self._press_skip = tr("log.why.not_selected")
+            return False
+        started = self.exec_drag()      # блокирует до отпускания кнопки
+        self._press_index = None
+        return started
 
     def mouseMoveEvent(self, ev) -> None:  # noqa: N802 (Qt API)
         if (self._press_index is not None and not self._dragging
                 and ev.buttons() & Qt.MouseButton.LeftButton
-                and self._press_pos is not None
-                and (ev.position().toPoint() - self._press_pos).manhattanLength()
-                > self.DRAG_THRESHOLD):
-            item = self.itemFromIndex(self._press_index)
-            if item is not None and item.isSelected():
-                self.exec_drag()      # блокирует до отпускания кнопки
-                self._press_index = None
-                ev.accept()
-                return
+                and self._press_pos is not None):
+            self._track_distance(ev.position().toPoint())
+            if self._press_max > self.DRAG_THRESHOLD:
+                if self._try_start_drag():
+                    ev.accept()
+                    return
         super().mouseMoveEvent(ev)
 
     def mouseReleaseEvent(self, ev) -> None:  # noqa: N802 (Qt API)
+        # диагностика для «Журнала»: плитку зажали и ощутимо повели,
+        # а перетаскивание так и не началось — объясняем почему
+        if (self._press_index is not None and not self._dragging
+                and self._press_max > self.DRAG_THRESHOLD
+                and ev.button() == Qt.MouseButton.LeftButton
+                and self._press_skip):
+            applog.event("log.event.drag_no", why=self._press_skip)
         self._press_index = None
+        self._press_pos = None
+        self._press_max = 0
+        self._press_skip = ""
+        self._dragging = False   # жест окончен — при следующем нажатии можно тащить
         super().mouseReleaseEvent(ev)
+
+    # ---------- слой 1: самый ранний перехват событий viewport ----------
+
+    def eventFilter(self, obj, ev) -> bool:  # noqa: N802 (Qt API)
+        if obj is self.viewport() and not self._dragging:
+            ev_type = ev.type()
+            if (ev_type == QEvent.Type.MouseButtonPress
+                    and ev.button() == Qt.MouseButton.LeftButton):
+                self._remember_press(ev.position().toPoint())
+            elif (ev_type == QEvent.Type.MouseMove
+                    and ev.buttons() & Qt.MouseButton.LeftButton):
+                if self._press_pos is None:
+                    # нажатие не дошло до нас (потерялось по пути) —
+                    # восстанавливаем точку нажатия по текущему положению мыши
+                    self._remember_press(ev.position().toPoint())
+                elif self._press_index is not None:
+                    self._track_distance(ev.position().toPoint())
+                    if self._press_max > self.DRAG_THRESHOLD:
+                        if self._try_start_drag():
+                            ev.accept()
+                            return True      # драг начался — движение обработано
+        return super().eventFilter(obj, ev)
 
 
 class _GripEdit(QLineEdit):
@@ -594,6 +682,11 @@ class LocalViewer(QWidget):
         self.list.setDragEnabled(True)
         self.list.setDragDropMode(QListWidget.DragOnly)
         self.list.setToolTip(tr("viewer.dnd_tip"))
+        # запасной перенос без драга: Ctrl+C или правый клик — файлы в буфер обмена
+        sc_copy = QShortcut(QKeySequence(QKeySequence.StandardKey.Copy), self.list)
+        sc_copy.activated.connect(self.copy_selected_files)
+        self.list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.list.customContextMenuRequested.connect(self._list_context_menu)
         self.list.currentRowChanged.connect(self._show_index)
         self.list.itemDoubleClicked.connect(
             lambda item: QDesktopServices.openUrl(QUrl.fromLocalFile(item.data(Qt.UserRole)))
@@ -728,6 +821,37 @@ class LocalViewer(QWidget):
         if self._folder and os.path.isdir(self._folder):
             self.load_folder(self._folder)
 
+    # ---------- запасной перенос файлов: через буфер обмена ----------
+
+    def copy_selected_files(self) -> None:
+        """Выделенные файлы — в буфер обмена, без перетаскивания.
+
+        Работает даже там, где драг мышью почему-то не срабатывает:
+        вставить можно в Проводник, браузер или письмо (Ctrl+V)."""
+        paths = self.list.selected_paths()
+        if not paths:
+            self.status.setText(tr("viewer.copy_nothing"))
+            return
+        mime = make_file_urls_mime(paths)
+        mime.setText("\n".join(paths))
+        QApplication.clipboard().setMimeData(mime)
+        applog.event("log.event.copy_files", n=len(paths))
+        self.status.setText(tr("viewer.copied_status", n=len(paths)))
+
+    def _list_context_menu(self, pos) -> None:
+        """Правый клик на ленте: открыть / копировать выделенные файлы."""
+        menu = QMenu(self)
+        act_open = menu.addAction(tr("viewer.ctx_open"))
+        act_copy = menu.addAction(tr("viewer.ctx_copy"))
+        act_copy.setToolTip(tr("viewer.ctx_copy_tip"))
+        chosen = menu.exec(self.list.mapToGlobal(pos))
+        if chosen is act_open:
+            item = self.list.currentItem()
+            if item is not None and item.data(Qt.UserRole):
+                QDesktopServices.openUrl(QUrl.fromLocalFile(item.data(Qt.UserRole)))
+        elif chosen is act_copy:
+            self.copy_selected_files()
+
     def load_folder(self, folder: str, entries: list[tuple[str, int, float]] | None = None,
                     sync_tree: bool = False) -> None:
         self._cancel_search()
@@ -738,6 +862,7 @@ class LocalViewer(QWidget):
         self._pool.clear()   # не начатые миниатюры прошлой папки больше не нужны
         self._paths = [p for p, _s, _m in entries]
         self._meta = [(s, m) for _p, s, m in entries]
+        applog.event("log.event.folder", folder=folder, n=len(self._paths))
         self.list.clear()
         self._pending_thumbs.clear()
         self._thumb_queued.clear()
@@ -842,6 +967,7 @@ class LocalViewer(QWidget):
         tail = tr("viewer.search_trunc") if truncated else ""
         self.status.setText(tr("viewer.search_done", q=self._search_needle,
                                n=total, tail=tail))
+        applog.event("log.event.search_done", q=self._search_needle, n=total)
 
     # ---------- ленивые миниатюры: грузим только видимую часть ----------
 

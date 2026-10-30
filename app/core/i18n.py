@@ -26,6 +26,10 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ru": "🌐 Поиск картинок", "en": "🌐 Image Search", "zh": "🌐 图片搜索"},
     "tab.downloads": {
         "ru": "⬇️ Загрузки", "en": "⬇️ Downloads", "zh": "⬇️ 下载"},
+    "tab.log": {
+        "ru": "📜 Журнал", "en": "📜 Log", "zh": "📜 日志"},
+    "tab.log": {
+        "ru": "📜 Журнал", "en": "📜 Log", "zh": "📜 日志"},
     "main.ready": {
         "ru": "Готово: откройте папку на вкладке «Мои картинки» или найдите картинки во вкладке «Поиск».",
         "en": "Ready: open a folder on the “My Pictures” tab or search for images on the “Search” tab.",
@@ -161,9 +165,36 @@ _STRINGS: dict[str, dict[str, str]] = {
               "及所有子文件夹中的图片。无需通配符，不区分大小写。Esc — 重置。\n"
               "拖动输入框的左或右边缘，可以调宽或调窄。"},
     "viewer.dnd_tip": {
-        "ru": "Выделите картинки (Ctrl/Shift) и перетащите их мышью в Проводник,\nпочту или другое приложение — передаются оригинальные файлы.",
-        "en": "Select images (Ctrl/Shift) and drag them into Explorer,\ne-mail or any other app — the original files are passed on.",
-        "zh": "选中图片（Ctrl/Shift）后拖动到文件管理器、\n邮件或其他应用程序 — 传递的是原始文件。"},
+        "ru": "Выделите картинки (Ctrl/Shift) и перетащите их мышью в Проводник,\n"
+              "почту или другое приложение — передаются оригинальные файлы.\n"
+              "Если тянуть не получается: Ctrl+C (или правый клик → «Копировать\n"
+              "выделенные файлы»), затем вставьте их там, где нужно (Ctrl+V).",
+        "en": "Select images (Ctrl/Shift) and drag them into Explorer,\n"
+              "e-mail or any other app — the original files are passed on.\n"
+              "If dragging does not work: Ctrl+C (or right-click → “Copy\n"
+              "selected files”), then paste them where needed (Ctrl+V).",
+        "zh": "选中图片（Ctrl/Shift）后拖动到文件管理器、\n"
+              "邮件或其他应用程序 — 传递的是原始文件。\n"
+              "如果无法拖动：Ctrl+C（或右键 →“复制所选文件”），\n"
+              "然后在需要的地方粘贴 (Ctrl+V)。"},
+    "viewer.ctx_open": {
+        "ru": "Открыть", "en": "Open", "zh": "打开"},
+    "viewer.ctx_copy": {
+        "ru": "Копировать выделенные файлы", "en": "Copy selected files", "zh": "复制所选文件"},
+    "viewer.ctx_copy_tip": {
+        "ru": "Файлы лягут в буфер обмена как обычные скопированные файлы —\n"
+              "можно вставить в Проводник или браузер (Ctrl+V)",
+        "en": "The files go to the clipboard as normal copied files —\n"
+              "paste them into Explorer or a browser (Ctrl+V)",
+        "zh": "文件将以常规复制方式放入剪贴板 —\n可粘贴到文件管理器或浏览器 (Ctrl+V)"},
+    "viewer.copy_nothing": {
+        "ru": "Ничего не выделено — копировать нечего",
+        "en": "Nothing is selected — nothing to copy",
+        "zh": "未选择任何内容 — 没有可复制的"},
+    "viewer.copied_status": {
+        "ru": "Скопировано: {n} — вставьте в Проводник или браузер (Ctrl+V)",
+        "en": "Copied: {n} — paste into Explorer or a browser (Ctrl+V)",
+        "zh": "已复制：{n} — 可粘贴到文件管理器或浏览器 (Ctrl+V)"},
     "viewer.pick": {
         "ru": "Выберите диск или папку в дереве слева, либо «Открыть папку…» (Ctrl+O)",
         "en": "Pick a drive or folder in the tree on the left, or use “Open Folder…” (Ctrl+O)",
@@ -308,6 +339,93 @@ _STRINGS: dict[str, dict[str, str]] = {
         "zh": "已添加 {added}/{total} — 其余已在队列中。"},
     "dl.pick_folder": {
         "ru": "Папка для сохранения", "en": "Folder to save to", "zh": "保存文件夹"},
+    # ---------- вкладка «Журнал» и события журнала ----------
+    "log.title": {
+        "ru": "Журнал работы", "en": "Activity log", "zh": "运行日志"},
+    "log.empty": {
+        "ru": "Здесь появится хроника работы: открытие папок, поиск,\n"
+              "перетаскивание, загрузки и ошибки.",
+        "en": "The activity log will appear here: folder opening, search,\n"
+              "drag-and-drop, downloads and errors.",
+        "zh": "这里将显示运行记录：打开文件夹、搜索、\n拖放、下载和错误。"},
+    "log.clear": {
+        "ru": "🧹 Очистить", "en": "🧹 Clear", "zh": "🧹 清空"},
+    "log.clear_tip": {
+        "ru": "Очистить журнал", "en": "Clear the log", "zh": "清空日志"},
+    "log.copy": {
+        "ru": "📋 Копировать всё", "en": "📋 Copy all", "zh": "📋 复制全部"},
+    "log.copy_tip": {
+        "ru": "Скопировать весь журнал в буфер обмена — удобно приложить к отчёту об ошибке",
+        "en": "Copy the whole log to the clipboard — handy to attach to a bug report",
+        "zh": "将整个日志复制到剪贴板 — 便于附在错误报告中"},
+    "log.copied": {
+        "ru": "Журнал скопирован в буфер обмена ({n} строк)",
+        "en": "Log copied to the clipboard ({n} lines)",
+        "zh": "日志已复制到剪贴板（{n} 行）"},
+    "log.cleared": {
+        "ru": "Журнал очищен", "en": "Log cleared", "zh": "日志已清空"},
+    "log.event.tab_opened": {
+        "ru": "Журнал готов", "en": "Log is ready", "zh": "日志已就绪"},
+    "log.event.start": {
+        "ru": "Image Hunter {version} запущен",
+        "en": "Image Hunter {version} started",
+        "zh": "Image Hunter {version} 已启动"},
+    "log.event.folder": {
+        "ru": "Открыта папка: {folder} — {n} картинок",
+        "en": "Folder opened: {folder} — {n} images",
+        "zh": "已打开文件夹：{folder} — {n} 张图片"},
+    "log.event.search_done": {
+        "ru": "Поиск «{q}»: найдено {n}",
+        "en": "Search “{q}”: found {n}",
+        "zh": "搜索“{q}”：找到 {n}"},
+    "log.event.drag_start": {
+        "ru": "Перетаскивание начато: {n} файлов → {names}",
+        "en": "Drag started: {n} files → {names}",
+        "zh": "拖放开始：{n} 个文件 → {names}"},
+    "log.event.drag_end": {
+        "ru": "Перетаскивание завершено: {action}",
+        "en": "Drag finished: {action}",
+        "zh": "拖放结束：{action}"},
+    "log.event.drag_no": {
+        "ru": "Плитку зажали и повели, но перетаскивание не началось: {why}",
+        "en": "The tile was pressed and moved, but the drag did not start: {why}",
+        "zh": "卡片被按住并移动，但拖放未开始：{why}"},
+    "log.why.not_selected": {
+        "ru": "плитка не выделена",
+        "en": "the tile is not selected",
+        "zh": "卡片未被选中"},
+    "log.act.copy": {
+        "ru": "копирование", "en": "copy", "zh": "复制"},
+    "log.act.move": {
+        "ru": "перемещение", "en": "move", "zh": "移动"},
+    "log.act.cancel": {
+        "ru": "отменено (файл не брошен)",
+        "en": "cancelled (nothing dropped)",
+        "zh": "已取消（未放下文件）"},
+    "log.event.copy_files": {
+        "ru": "Скопировано в буфер обмена: {n} файлов",
+        "en": "Copied to clipboard: {n} files",
+        "zh": "已复制到剪贴板：{n} 个文件"},
+    "log.event.collect": {
+        "ru": "Собрано ссылок с выдачи: {total}, добавлено в загрузки: {added}",
+        "en": "Links collected: {total}, added to downloads: {added}",
+        "zh": "已收集链接：{total}，加入下载：{added}"},
+    "log.event.dl_done": {
+        "ru": "Загрузка завершена: скачано {ok}, ошибок {fail}",
+        "en": "Download batch finished: {ok} downloaded, {fail} errors",
+        "zh": "下载批次完成：已下载 {ok} 个，失败 {fail} 个"},
+    "log.event.save_done": {
+        "ru": "Сохранение завершено: {ok} успешно, ошибок {fail} → {folder}",
+        "en": "Saving finished: {ok} saved, {fail} errors → {folder}",
+        "zh": "保存完成：成功 {ok} 个，失败 {fail} 个 → {folder}"},
+    "log.event.upd_latest": {
+        "ru": "Обновления: последняя версия {version} уже установлена",
+        "en": "Updates: the latest version {version} is already installed",
+        "zh": "更新：已安装最新版本 {version}"},
+    "log.event.upd_available": {
+        "ru": "Доступна новая версия: {remote}",
+        "en": "New version available: {remote}",
+        "zh": "发现新版本：{remote}"},
 }
 
 # кэш текущего языка: читается на каждый tr() — QSettings трогаем один раз

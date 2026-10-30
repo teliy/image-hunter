@@ -8,7 +8,11 @@
 5. зажали плитку и потянули мышь — перетаскивание стартует (ручной запуск,
    не полагающийся на встроенную механику QListWidget);
 6. короткое движение, нажатие на пустое место и «нажал-отпустил» не тянут файлы;
-7. подсказка о перетаскивании локализована.
+7. подсказка о перетаскивании локализована;
+8. нажатие потерялось — первый же перенос мыши с кнопкой восстанавливает точку
+   и перетаскивание всё равно стартует (самовосстановление слоя-фильтра);
+9. каждый шаг драга пишется в журнал (applog): начало, завершение, причина отказа;
+10. запасной путь без драга: copy_selected_files кладёт файлы в буфер обмена.
 
 Запуск: QT_QPA_PLATFORM=offscreen python scripts/test_dnd.py
 """
@@ -27,7 +31,7 @@ from PySide6.QtCore import QEvent, QPoint, QPointF, QSettings, Qt, QUrl  # noqa:
 from PySide6.QtGui import QImage, QMouseEvent  # noqa: E402
 from PySide6.QtWidgets import QApplication, QListWidget  # noqa: E402
 
-from app.core import i18n  # noqa: E402
+from app.core import applog, i18n  # noqa: E402
 from app.ui.local_viewer import _ThumbList, make_file_urls_mime  # noqa: E402
 
 FAILURES: list[str] = []
@@ -98,8 +102,13 @@ def main() -> int:
     app = QApplication.instance() or QApplication(sys.argv)
     i18n.set_lang("ru", persist=False)
     QSettings("ImageHunter", "ImageHunter").setValue("viewer/thumbs", True)
+    applog.setup()
 
     from app.ui.local_viewer import LocalViewer
+
+    # собираем строки журнала — по ним проверяем диагностику перетаскивания
+    log_lines: list[str] = []
+    applog.bridge.record.connect(lambda lvl, line: log_lines.append(line))
 
     tmp = tempfile.mkdtemp(prefix="ih_dnd_")
     try:
@@ -225,13 +234,89 @@ def main() -> int:
               and [u.toLocalFile() for u in FakeDrag.instances[0].mime.urls()]
               == [os.path.join(tmp, "pic_1.png")])
 
-        # 7. подсказка локализована
+        # 7. подсказка локализована и упоминает запасной путь через Ctrl+C
         check("подсказка про перетаскивание (ru)",
-              "перетащите" in lst.toolTip(), lst.toolTip()[:60])
+              "перетащите" in lst.toolTip() and "Ctrl+C" in lst.toolTip(),
+              lst.toolTip()[:60])
         i18n.set_lang("en", persist=False)
         check("подсказка про перетаскивание (en)",
-              "drag" in lst.toolTip().lower(), lst.toolTip()[:60])
+              "drag" in lst.toolTip().lower() and "Ctrl+C" in lst.toolTip(),
+              lst.toolTip()[:60])
         i18n.set_lang("ru", persist=False)
+
+        # 8. нажатие потерялось: шлём ТОЛЬКО переносы мыши с зажатой кнопкой —
+        # слой-фильтр восстанавливает точку нажатия и драг всё равно стартует
+        lst._dragging = False   # прямой startDrag в п.6 — не жест мыши, сбросим вручную
+        FakeDrag.instances.clear()
+        lst.clearSelection()
+        lst.item(2).setSelected(True)
+        pump(app, 100)
+        c2 = lst.visualItemRect(lst.item(2)).center()
+        send_mouse(lst.viewport(), QEvent.Type.MouseMove, c2,
+                   Qt.MouseButton.NoButton, Qt.MouseButton.LeftButton)
+        send_mouse(lst.viewport(), QEvent.Type.MouseMove, c2 + QPoint(30, 0),
+                   Qt.MouseButton.NoButton, Qt.MouseButton.LeftButton)
+        send_mouse(lst.viewport(), QEvent.Type.MouseButtonRelease, c2 + QPoint(30, 0),
+                   Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton)
+        check("нажатие потеряно — драг всё равно стартовал",
+              len(FakeDrag.instances) == 1, str(len(FakeDrag.instances)))
+
+        # 9. шаги драга пишутся в журнал
+        log_lines.clear()
+        lst.clearSelection()
+        lst.item(0).setSelected(True)
+        lst.item(1).setSelected(True)
+        lst.exec_drag()
+        joined = "\n".join(log_lines)
+        check("в журнале есть начало перетаскивания",
+              any("Перетаскивание начато: 2 файлов" in ln for ln in log_lines),
+              joined[-200:])
+        check("в журнале есть имена файлов и завершение",
+              "pic_0.png" in joined and "Перетаскивание завершено" in joined,
+              joined[-200:])
+        # провал: тянем невыделенную плитку — в журнал падает причина
+        FakeDrag.instances.clear()
+        log_lines.clear()
+        lst.clearSelection()
+        c3 = lst.visualItemRect(lst.item(3)).center()
+        send_mouse(lst.viewport(), QEvent.Type.MouseButtonPress, c3,
+                   Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton)
+        item3 = lst.item(3)
+        item3.setSelected(False)   # нажали с Ctrl и сняли выделение
+        send_mouse(lst.viewport(), QEvent.Type.MouseMove, c3 + QPoint(40, 0),
+                   Qt.MouseButton.NoButton, Qt.MouseButton.LeftButton)
+        send_mouse(lst.viewport(), QEvent.Type.MouseButtonRelease, c3 + QPoint(40, 0),
+                   Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton)
+        check("невыделенная плитка не тянется", len(FakeDrag.instances) == 0,
+              str(len(FakeDrag.instances)))
+        check("в журнале объяснение, почему драг не начался",
+              any("не началось" in ln for ln in log_lines),
+              "\n".join(log_lines)[-200:])
+
+        # 10. запасной путь без драга: копирование выделенных файлов в буфер обмена
+        lst.clearSelection()
+        lst.item(1).setSelected(True)
+        lst.item(2).setSelected(True)
+        log_lines.clear()
+        viewer.copy_selected_files()
+        cb = QApplication.clipboard()
+        cb_paths = [u.toLocalFile() for u in cb.mimeData().urls()]
+        check("буфер обмена содержит выделенные файлы",
+              cb_paths == [os.path.join(tmp, "pic_1.png"),
+                           os.path.join(tmp, "pic_2.png")], str(cb_paths))
+        check("буфер обмена понимает и текстовый формат",
+              cb.text().splitlines() == [os.path.join(tmp, "pic_1.png"),
+                                         os.path.join(tmp, "pic_2.png")])
+        check("копирование записано в журнал",
+              any("Скопировано в буфер обмена: 2 файлов" in ln for ln in log_lines),
+              "\n".join(log_lines)[-200:])
+        check("в статусе подсказка про вставку (Ctrl+V)",
+              "Ctrl+V" in viewer.status.text(), viewer.status.text())
+        # пустое выделение — копировать нечего, сообщение без ошибки
+        lst.clearSelection()
+        viewer.copy_selected_files()
+        check("пустое выделение: копировать нечего",
+              "нечего" in viewer.status.text(), viewer.status.text())
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

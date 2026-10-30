@@ -2,7 +2,7 @@
 
 **English** | [中文](README.zh.md) | [Русский](README.md)
 
-Local image browser **+ image search in search engines + bulk saving by links** — all in one window, on three tabs. For Windows and Linux.
+Local image browser **+ image search in search engines + bulk saving by links** — all in one window, on four tabs (the fourth is “📜 Log”: a chronicle of everything the app does). For Windows and Linux.
 
 Written in Python + PySide6 (Qt6): heavy operations (rendering, network, image decoding) are done by native Qt, so the interface is fast and responsive.
 
@@ -33,7 +33,7 @@ Image Hunter was written from day one for the scenario “photos live on a netwo
 **📁 My Pictures** — local viewer:
 - **drive and folder tree on the left**: mounted drives and devices (free space in the tooltip), quick links “Home” and “Pictures”; folders expand lazily, a click on a folder shows its images right away; the panel width is adjusted with the mouse; the “⟳” button refreshes the drive list (after plugging in a USB stick);
 - **lazy thumbnails** (see the network section above) and the “🖼 Thumbnails” on/off toggle;
-- **multi-select and drag'n'drop**: select images in the strip (Ctrl/Shift, like in Explorer) and drag them into Explorer, e-mail or any other application — the original files are passed on (`text/uri-list`);
+- **multi-select and drag'n'drop**: select images in the strip (Ctrl/Shift, like in Explorer) and drag them into Explorer, e-mail or any other application — the original files are passed on (`text/uri-list`); the drag start is backed by three independent paths (event filter, own mouse-move tracking, built-in Qt mechanics) and every step is written to the Log; **if dragging does not work — a no-drag fallback:** `Ctrl+C` (or right-click → “Copy selected files”), then paste them wherever needed — `Ctrl+V` into Explorer or a browser;
 - **search by file name**: type part of the name — all images in the current folder and all subfolders are found; no masks or stars, case-insensitive, results appear as the scan goes;
 - the last folder reopens automatically on start (if it holds up to 2000 images);
 - full-screen view, zoom (`+` / `−` / `Ctrl+wheel`), “fit to window”, “100%”;
@@ -57,6 +57,14 @@ Image Hunter was written from day one for the scenario “photos live on a netwo
 - session link de-duplication, no file overwriting (`-1`, `-2`… suffixes);
 - file names come from the URL, the extension is refined by `Content-Type`;
 - download folder picker (default `Pictures\ImageHunter`), 100 MB per-file limit.
+
+**📜 Log** — the activity chronicle (tab added on the right):
+- which folders were opened, what the search found, which files were dragged and how the drag ended, how much was downloaded/saved, which errors happened;
+- errors are highlighted red, warnings orange; the log keeps the last 5000 lines;
+- “🧹 Clear” and “📋 Copy all” buttons — easy to attach the log to a bug report; uncaught exceptions land in the log too;
+- the main-window tabs can be dragged with the mouse and rearranged in any order.
+
+The app icon (“a photo with a magnifier”) is drawn programmatically and embedded into the window; a multi-size `app_icon.ico` for Windows ships with the app.
 
 ## Interface languages
 

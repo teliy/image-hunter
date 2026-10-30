@@ -1,4 +1,8 @@
-"""Главное окно Image Hunter: три вкладки — просмотр, поиск, загрузки."""
+"""Главное окно Image Hunter: вкладки — просмотр, поиск, загрузки и журнал.
+
+Вкладки можно перетаскивать мышью и переставлять (setMovable), вкладка
+«Журнал» добавлена самой правой: в ней видна хроника всей работы.
+"""
 
 from __future__ import annotations
 
@@ -19,11 +23,13 @@ from PySide6.QtWidgets import (
 )
 
 from app import __version__
-from app.core import i18n, image_saver, updates
+from app.core import applog, i18n, image_saver, updates
 from app.core.downloader import Downloader
 from app.core.i18n import lang_name, tr
+from app.ui.app_icon import icon as app_icon
 from app.ui.downloads import DownloadsView
 from app.ui.local_viewer import LocalViewer
+from app.ui.log_view import LogView
 from app.ui.web_search import WebSearch
 
 
@@ -31,20 +37,28 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(f"Image Hunter {__version__}")
+        self.setWindowIcon(app_icon())
         self.resize(1280, 820)
         self.setMinimumSize(QSize(960, 600))
 
         self._downloader = Downloader(self)
 
         self.tabs = QTabWidget()
+        self.tabs.setMovable(True)   # вкладки перетаскиваются мышью и переставляются
         self.local = LocalViewer()
         self.web = WebSearch()
         self.downloads = DownloadsView(self._downloader)
+        self.log_view = LogView()
 
         self.tabs.addTab(self.local, tr("tab.pictures"))
         self.tabs.addTab(self.web, tr("tab.search"))
         self.tabs.addTab(self.downloads, tr("tab.downloads"))
+        self.tabs.addTab(self.log_view, tr("tab.log"))   # журнал — самой правой
         self.setCentralWidget(self.tabs)
+
+        # порядок вкладок мог измениться — заголовки ищем по виджету, не по номеру
+        self._tab_keys = ((self.local, "tab.pictures"), (self.web, "tab.search"),
+                          (self.downloads, "tab.downloads"), (self.log_view, "tab.log"))
 
         self._status = QStatusBar()
         self.setStatusBar(self._status)
@@ -87,13 +101,19 @@ class MainWindow(QMainWindow):
         code = i18n.LANG_ITEMS[index][0]
         i18n.set_lang(code)   # сигнал changed перетранслирует все окна
         self._status.showMessage(tr("main.lang_changed", name=lang_name(code)), 5000)
+        applog.event("main.lang_changed", name=lang_name(code))
 
     def _retranslate(self, *_args) -> None:
-        """Обновить статические надписи (i18n вызывает при смене языка)."""
+        """Обновить статические надписи (i18n вызывает при смене языка).
+
+        Заголовки вкладок ищутся по виджету (indexOf), а не по номеру:
+        вкладки перетаскиваются мышью, и их порядок мог поменяться."""
         self.setWindowTitle(f"Image Hunter {__version__}")
-        self.tabs.setTabText(0, tr("tab.pictures"))
-        self.tabs.setTabText(1, tr("tab.search"))
-        self.tabs.setTabText(2, tr("tab.downloads"))
+        for widget, key in self._tab_keys:
+            index = self.tabs.indexOf(widget)
+            if index >= 0:
+                self.tabs.setTabText(index, tr(key))
+        self.log_view.retranslate()
         self.btn_upd.setText("🔄 " + tr("main.update"))
         self.btn_upd.setToolTip(tr("main.update_tip"))
         self.lang_box.setToolTip(tr("main.lang_tip"))
@@ -105,6 +125,7 @@ class MainWindow(QMainWindow):
 
     def check_updates(self) -> None:
         self._status.showMessage(tr("main.upd_checking"))
+        applog.event("main.upd_checking")
         self._upd_signals = updates.UpdatesSignals()
         self._upd_signals.done.connect(self._on_version_checked)
         QThreadPool.globalInstance().start(updates.VersionCheckTask(self._upd_signals))
@@ -112,13 +133,16 @@ class MainWindow(QMainWindow):
     def _on_version_checked(self, remote: str) -> None:
         if not remote:
             self._status.clearMessage()
+            applog.warning(tr("main.upd_check_fail"))
             QMessageBox.warning(self, tr("main.upd_title"), tr("main.upd_check_fail"))
             return
         if not updates.is_newer(remote, __version__):
             self._status.clearMessage()
+            applog.event("log.event.upd_latest", version=__version__)
             QMessageBox.information(self, tr("main.upd_title"),
                                     tr("main.upd_latest", version=__version__))
             return
+        applog.event("log.event.upd_available", remote=remote)
         ans = QMessageBox.question(
             self, tr("main.upd_title"),
             tr("main.upd_available", remote=remote, current=__version__))
@@ -187,6 +211,7 @@ class MainWindow(QMainWindow):
         tail = tr("main.save_done_tail", fail=fail) if fail else ""
         self._status.showMessage(
             tr("main.save_done", ok=ok, tail=tail, folder=folder), 15000)
+        applog.event("log.event.save_done", ok=ok, fail=fail, folder=folder)
         if fail:
             QMessageBox.warning(
                 self, tr("main.save_title", fmt=self.web.current_format()),
@@ -203,6 +228,7 @@ class MainWindow(QMainWindow):
     def _on_images_found(self, urls: list, referer: str) -> None:
         added = self.downloads.add_urls(urls, referer=referer or None)
         self.tabs.setCurrentWidget(self.downloads)
+        applog.event("log.event.collect", total=len(urls), added=added)
         if added:
             self._status.showMessage(tr("main.collected", n=added), 8000)
         else:
@@ -210,3 +236,4 @@ class MainWindow(QMainWindow):
 
     def _on_batch_finished(self, ok: int, fail: int) -> None:
         self._status.showMessage(tr("dl.summary_ready", ok=ok, fail=fail), 10000)
+        applog.event("log.event.dl_done", ok=ok, fail=fail)
