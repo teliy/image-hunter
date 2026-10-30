@@ -186,32 +186,31 @@ _STRINGS: dict[str, dict[str, str]] = {
               "paste them into Explorer or a browser (Ctrl+V)",
         "zh": "文件将以常规复制方式放入剪贴板 —\n可粘贴到文件管理器或浏览器 (Ctrl+V)"},
     "viewer.ctx_delete": {
-        "ru": "🗑 Удалить в корзину", "en": "🗑 Move to Recycle Bin", "zh": "🗑 移入回收站"},
+        "ru": "🗑 Удалить", "en": "🗑 Delete", "zh": "🗑 删除"},
     "viewer.ctx_delete_tip": {
         "ru": "Delete — переместить выделенные файлы в корзину.\n"
-              "Восстановить можно из корзины Проводника.\n"
-              "Внимание: на сетевых дисках корзины может не быть — там удаление окончательное.",
+              "На дисках без корзины (сетевые, часть съёмных)\n"
+              "программа предложит удалить их окончательно.",
         "en": "Delete — move the selected files to the Recycle Bin.\n"
-              "They can be restored from Explorer's Recycle Bin.\n"
-              "Note: network drives may have no Recycle Bin — there deletion is permanent.",
+              "On drives without a Recycle Bin (network, some removable)\n"
+              "ImageHunter offers to delete them permanently.",
         "zh": "Delete — 将所选文件移入回收站。\n"
-              "之后可以在资源管理器的回收站中还原。\n"
-              "注意：网络驱动器可能没有回收站 — 在那里删除是永久的。"},
+              "在没有回收站的磁盘上（网络磁盘、部分移动设备），\n"
+              "程序会建议永久删除。"},
     "viewer.del_title": {
         "ru": "Удаление файлов", "en": "Delete files", "zh": "删除文件"},
     "viewer.del_confirm": {
         "ru": "Переместить в корзину выбранные файлы ({n} шт.)?\n\n"
               "Их можно будет восстановить из корзины Проводника.\n"
-              "Внимание: на сетевых дисках корзины может не быть —\n"
-              "там файлы удаляются окончательно.",
+              "Если на диске нет корзины, программа предложит\n"
+              "удалить их окончательно.",
         "en": "Move the selected files ({n}) to the Recycle Bin?\n\n"
               "You can restore them from Explorer's Recycle Bin.\n"
-              "Note: network drives may have no Recycle Bin —\n"
-              "there the files are deleted permanently.",
+              "If the drive has no Recycle Bin, ImageHunter will offer\n"
+              "to delete them permanently.",
         "zh": "将所选文件（{n} 个）移入回收站？\n\n"
               "之后可以在资源管理器的回收站中还原。\n"
-              "注意：网络驱动器可能没有回收站 —\n"
-              "在那里文件将被永久删除。"},
+              "如果磁盘没有回收站，程序会建议永久删除。"},
     "viewer.del_nothing": {
         "ru": "Нечего удалять — выделите картинки в ленте",
         "en": "Nothing to delete — select images in the strip first",
@@ -228,6 +227,37 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ru": "не удалось переместить в корзину (проверьте права доступа или наличие корзины на диске)",
         "en": "could not move to the Recycle Bin (check permissions or whether the drive has one)",
         "zh": "无法移入回收站（请检查权限或该磁盘是否有回收站）"},
+    "viewer.del_perm_title": {
+        "ru": "На диске нет корзины", "en": "No Recycle Bin on this drive",
+        "zh": "磁盘没有回收站"},
+    "viewer.del_perm_confirm": {
+        "ru": "На диске с выбранными файлами нет корзины.\n"
+              "Удалить их ({n} шт.) НАВСЕГДА, без возможности восстановления?",
+        "en": "The drive holding the selected files has no Recycle Bin.\n"
+              "Delete them ({n}) PERMANENTLY? This cannot be undone.",
+        "zh": "所选文件所在的磁盘没有回收站。\n"
+              "永久删除这 {n} 个文件？此操作无法撤销。"},
+    "viewer.del_perm_ask_title": {
+        "ru": "Не удалось переместить в корзину",
+        "en": "Could not move to the Recycle Bin",
+        "zh": "无法移入回收站"},
+    "viewer.del_perm_ask": {
+        "ru": "Не удалось переместить в корзину {n} шт. —\n"
+              "на этом диске нет корзины или файл занят.\n\n"
+              "Удалить их окончательно, без возможности восстановления?",
+        "en": "Could not move {n} file(s) to the Recycle Bin —\n"
+              "the drive has no Recycle Bin or a file is in use.\n\n"
+              "Delete them permanently? This cannot be undone.",
+        "zh": "有 {n} 个文件无法移入回收站 —\n"
+              "该磁盘没有回收站，或文件被占用。\n\n"
+              "是否永久删除？此操作无法撤销。"},
+    "viewer.del_done_perm": {
+        "ru": "Удалено окончательно: {n}", "en": "Deleted permanently: {n}",
+        "zh": "已永久删除：{n}"},
+    "viewer.del_done_mixed": {
+        "ru": "Удалено: {n} (в корзину {t}, окончательно {p})",
+        "en": "Deleted: {n} ({t} to Recycle Bin, {p} permanently)",
+        "zh": "已删除：{n}（回收站 {t}，永久 {p}）"},
     "viewer.copy_nothing": {
         "ru": "Ничего не выделено — копировать нечего",
         "en": "Nothing is selected — nothing to copy",
@@ -563,6 +593,10 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ru": "ОШИБКА удаления: {path} — {err}",
         "en": "DELETE ERROR: {path} — {err}",
         "zh": "删除错误：{path} — {err}"},
+    "log.event.delete_perm": {
+        "ru": "Удалено окончательно (диск без корзины): {n} — {folder}",
+        "en": "Deleted permanently (no Recycle Bin): {n} — {folder}",
+        "zh": "已永久删除（磁盘无回收站）：{n} — {folder}"},
     "log.event.collect": {
         "ru": "Собрано ссылок с выдачи: {total}, добавлено в загрузки: {added}",
         "en": "Links collected: {total}, added to downloads: {added}",

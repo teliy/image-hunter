@@ -6,6 +6,8 @@ import hashlib
 import os
 import random
 import re
+import stat
+import sys
 import tempfile
 import time
 
@@ -142,6 +144,59 @@ def scan_image_entries(folder: str) -> list[tuple[str, int, float]]:
 
 def list_image_files(folder: str) -> list[str]:
     return [p for p, _size, _mtime in scan_image_entries(folder)]
+
+
+# ---------- удаление: корзина, а на дисках без неё — окончательно ----------
+
+def _drive_has_trash(path: str) -> bool | None:
+    """Есть ли на диске с этим файлом корзина (Windows; None — неизвестно).
+
+    Сетевые и часть съёмных дисков корзины не имеют — там moveToTrash
+    всегда падает, и честнее сразу спрашивать про окончательное удаление.
+    Отказ корзины спрашивает SHQueryRecycleBinW (0 — корзина есть)."""
+    if sys.platform != "win32" or not path:
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class _RBInfo(ctypes.Structure):
+            _fields_ = [("cbSize", wintypes.DWORD),
+                        ("i64Size", ctypes.c_int64),
+                        ("i64NumItems", ctypes.c_int64)]
+
+        root = os.path.splitdrive(path)[0]
+        if len(root) < 2:          # относительный путь или что-то странное
+            return None
+        info = _RBInfo()
+        info.cbSize = ctypes.sizeof(info)
+        hr = ctypes.windll.shell32.SHQueryRecycleBinW(root + "\\",
+                                                      ctypes.byref(info))
+        return hr == 0
+    except Exception:              # noqa: BLE001 — не удалось выяснить
+        return None
+
+
+def _remove_forever(path: str) -> tuple[bool, str]:
+    """Удалить файл окончательно. Сначала снимаем «только чтение» —
+    скачанные webp бывают read-only, и remove падает из-за атрибута."""
+    try:
+        if not os.path.isfile(path):
+            return False, tr("viewer.del_missing")
+        try:
+            os.chmod(path, stat.S_IWRITE)
+        except OSError:
+            pass   # атрибут не критичен — попробуем удалить как есть
+        try:
+            os.remove(path)
+            return True, ""
+        except OSError as exc:
+            f = QFile(path)        # запасной путь средствами Qt
+            if f.remove():
+                return True, ""
+            return False, (f.errorString() or str(exc))
+    except Exception as exc:       # noqa: BLE001 — причина уйдёт в журнал
+        return False, str(exc)
 
 
 # ---------- фоновые миниатюры с постоянным кэшем на диске ----------
@@ -1030,27 +1085,56 @@ class LocalViewer(QWidget):
         applog.event("log.event.copy_files", n=len(paths))
         self.status.setText(tr("viewer.copied_status", n=len(paths)))
 
-    def delete_selected_files(self) -> None:
-        """Удалить выделенные файлы — переместить в корзину (Delete).
+    def _delete_row_forever(self, r: int, path: str,
+                            deleted: set[str]) -> bool:
+        """Окончательно удалить файл в строке r; успех — убрать из ленты."""
+        ok, err = _remove_forever(path)
+        if ok:
+            deleted.add(os.path.normcase(os.path.normpath(path)))
+            self.list.takeItem(r)
+        else:
+            applog.error(tr("log.event.trash_err", path=path, err=err))
+        return ok
 
-        Корзина восстановима, но на дисках без корзины (часть сетевых)
-        файл удаляется окончательно — потому подтверждение и запись
-        каждой неудачи в журнал."""
+    def delete_selected_files(self) -> None:
+        """Удалить выделенные файлы (Delete или контекстное меню).
+
+        По умолчанию — в корзину (восстановимо). На дисках без корзины
+        (сетевые, часть съёмных) сразу предлагается окончательное удаление;
+        если корзина откажала — тоже спрашивается второе подтверждение.
+        Каждая неудача пишется в журнал с причиной."""
         items = [it for it in self.list.selectedItems() if it.data(Qt.UserRole)]
         if not items:
             self.status.setText(tr("viewer.del_nothing"))
             return
-        ans = QMessageBox.question(
-            self, tr("viewer.del_title"), tr("viewer.del_confirm", n=len(items)),
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No)   # по умолчанию — безопасное «Нет»
+        paths = [self._paths[self.list.row(it)] for it in items]
+        # диск без корзины? честнее сразу спросить про окончательное удаление
+        force_perm = all(_drive_has_trash(p) is False for p in paths)
+        if force_perm:
+            ans = QMessageBox.question(
+                self, tr("viewer.del_perm_title"),
+                tr("viewer.del_perm_confirm", n=len(items)),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No)   # по умолчанию — безопасное «Нет»
+        else:
+            ans = QMessageBox.question(
+                self, tr("viewer.del_title"), tr("viewer.del_confirm", n=len(items)),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No)
         if ans != QMessageBox.StandardButton.Yes:
             return
         rows = sorted({self.list.row(it) for it in items}, reverse=True)
-        done, failed = 0, []
+        trash_n, perm_n, failed_n = 0, 0, 0
         deleted: set[str] = set()
+        retry: list[tuple[int, str]] = []   # корзина отказала — попытка 2
         for r in rows:
             path = self._paths[r]
+            if force_perm:
+                if self._delete_row_forever(r, path, deleted):
+                    perm_n += 1
+                else:
+                    failed_n += 1
+                continue
             ok, err = False, ""
             try:
                 if not os.path.isfile(path):
@@ -1064,14 +1148,34 @@ class LocalViewer(QWidget):
             except Exception as exc:   # noqa: BLE001 — причина уйдёт в журнал
                 err = str(exc)
             if ok:
-                done += 1
+                trash_n += 1
                 deleted.add(os.path.normcase(os.path.normpath(path)))
                 self.list.takeItem(r)
             else:
-                failed.append(os.path.basename(path))
                 applog.error(tr("log.event.trash_err", path=path, err=err))
+                retry.append((r, path))
+        if retry:
+            ans = QMessageBox.question(
+                self, tr("viewer.del_perm_ask_title"),
+                tr("viewer.del_perm_ask", n=len(retry)),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No)
+            if ans == QMessageBox.StandardButton.Yes:
+                for r, path in retry:
+                    if self._delete_row_forever(r, path, deleted):
+                        perm_n += 1
+                    else:
+                        failed_n += 1
+            else:
+                failed_n += len(retry)
+        done = trash_n + perm_n
         if done:
-            applog.event("log.event.trash", n=done, folder=self._folder or "—")
+            if trash_n:
+                applog.event("log.event.trash", n=trash_n,
+                             folder=self._folder or "—")
+            if perm_n:
+                applog.event("log.event.delete_perm", n=perm_n,
+                             folder=self._folder or "—")
             keep = [i for i, p in enumerate(self._paths)
                     if os.path.normcase(os.path.normpath(p)) not in deleted]
             self._paths = [self._paths[i] for i in keep]
@@ -1087,9 +1191,14 @@ class LocalViewer(QWidget):
                 self._pixmap = None
                 self._movie = None
                 self.view_label.setText(tr("viewer.no_images"))
-        if failed:
-            self.status.setText(tr("viewer.del_done_err", n=done, m=len(failed)))
-        else:
+        if failed_n:
+            self.status.setText(tr("viewer.del_done_err", n=done, m=failed_n))
+        elif perm_n and trash_n:
+            self.status.setText(tr("viewer.del_done_mixed",
+                                   n=done, t=trash_n, p=perm_n))
+        elif perm_n:
+            self.status.setText(tr("viewer.del_done_perm", n=perm_n))
+        elif done:
             self.status.setText(tr("viewer.del_done", n=done))
 
     def _list_context_menu(self, pos) -> None:

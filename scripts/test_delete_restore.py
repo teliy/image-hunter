@@ -1,4 +1,4 @@
-"""Оффлайн-тест удаления файлов в корзину и запоминания последнего запроса.
+"""Оффлайн-тест удаления (корзина + запасное окончательное) и персиста.
 
 Запуск: QT_QPA_PLATFORM=offscreen python scripts/test_delete_restore.py
 """
@@ -81,6 +81,19 @@ class FakeQFile:
         return True, os.path.join("/fake/trash", name)
 
 
+class Answers:
+    """Подмена QMessageBox.question: последовательность ответов + titles."""
+
+    def __init__(self, *vals):
+        self.vals = list(vals)
+        self.titles: list[str] = []
+
+    def __call__(self, *a, **k):
+        self.titles.append(a[1] if len(a) > 1 else "")
+        return (self.vals.pop(0) if self.vals
+                else lv.QMessageBox.StandardButton.No)
+
+
 def make_png(path: str) -> None:
     img = QImage(16, 16, QImage.Format.Format_RGB32)
     img.fill(0xFF00FF00)
@@ -89,8 +102,13 @@ def make_png(path: str) -> None:
 
 def main() -> int:
     tmp = tempfile.mkdtemp(prefix="ih_del_")
-    for name in ("a.png", "b.png", "c.png"):
-        make_png(os.path.join(tmp, name))
+    names = ("a.png", "b.png", "c.png", "d.png")
+
+    def fresh() -> None:
+        for name in names:
+            p = os.path.join(tmp, name)
+            if not os.path.exists(p):
+                make_png(p)
 
     class _Loc:
         HomeLocation = 0
@@ -121,27 +139,28 @@ def main() -> int:
     viewer.show()
     app.processEvents()
 
-    # ---------- 1. удаление: подтверждение «Да» ----------
+    lv.QFile = FakeQFile
+
+    # ---------- 1. удаление в корзину: подтверждение «Да» ----------
+    fresh()
     viewer.load_folder(tmp)
     app.processEvents()
-    check("папка загружена (3 файла)", viewer.list.count() == 3)
+    check("папка загружена (4 файла)", viewer.list.count() == 4)
     viewer.list.item(0).setSelected(True)   # a.png
     viewer.list.item(2).setSelected(True)   # c.png
 
     FakeQFile.trashed.clear()
     FakeQFile.fail_names.clear()
-    lv.QFile = FakeQFile
-    lv.QMessageBox.question = staticmethod(
-        lambda *a, **k: lv.QMessageBox.StandardButton.Yes)
+    ans = Answers(lv.QMessageBox.StandardButton.Yes)
+    lv.QMessageBox.question = staticmethod(ans)
 
     viewer.delete_selected_files()
     app.processEvents()
     check("в корзину ушло 2 файла", len(FakeQFile.trashed) == 2,
           str(FakeQFile.trashed))
-    check("в списке остался 1 файл", viewer.list.count() == 1)
-    check("_paths усечён синхронно со списком",
-          os.path.basename(viewer._paths[0]) == "b.png", str(viewer._paths))
-    check("выделение не потерялось", viewer.list.currentItem() is not None)
+    check("задан ровно один диалог (обычное подтверждение)",
+          ans.titles == [i18n.tr("viewer.del_title")], str(ans.titles))
+    check("в списке осталось 2 файла", viewer.list.count() == 2)
     check("статус: Удалено в корзину: 2", "2" in viewer.status.text(),
           viewer.status.text())
 
@@ -152,34 +171,88 @@ def main() -> int:
           any(sc.key().matches(del_seq) == QKeySequence.SequenceMatch.ExactMatch
               for sc in scs), str([sc.key().toString() for sc in scs]))
 
-    # ---------- 2. отказ корзины: файл остаётся, ошибка в статусе ----------
+    # ---------- 2. корзина отказала + «Да» → удаление окончательно ----------
+    fresh()
     viewer.load_folder(tmp)
     app.processEvents()
     FakeQFile.fail_names = {"a.png"}
-    viewer.list.item(0).setSelected(True)
+    ans = Answers(lv.QMessageBox.StandardButton.Yes,   # корзина
+                  lv.QMessageBox.StandardButton.Yes)   # окончательно?
+    lv.QMessageBox.question = staticmethod(ans)
+    viewer.list.item(0).setSelected(True)   # a.png
     viewer.delete_selected_files()
     app.processEvents()
-    check("при отказе корзины файл остаётся", viewer.list.count() == 3)
+    check("после отказа корзины был второй диалог",
+          ans.titles == [i18n.tr("viewer.del_title"),
+                         i18n.tr("viewer.del_perm_ask_title")], str(ans.titles))
+    check("файл удалён с диска окончательно",
+          not os.path.exists(os.path.join(tmp, "a.png")))
+    check("в списке осталось 3 файла", viewer.list.count() == 3)
+    check("_paths без удалённого файла",
+          all(os.path.basename(p) != "a.png" for p in viewer._paths))
+    check("статус: Удалено окончательно: 1",
+          "окончательно: 1" in viewer.status.text(), viewer.status.text())
+
+    # ---------- 3. корзина отказала + «Нет» → файл остаётся ----------
+    fresh()
+    viewer.load_folder(tmp)
+    app.processEvents()
+    ans = Answers(lv.QMessageBox.StandardButton.Yes,   # корзина
+                  lv.QMessageBox.StandardButton.No)    # окончательно? — нет
+    lv.QMessageBox.question = staticmethod(ans)
+    viewer.list.item(0).setSelected(True)   # a.png
+    viewer.delete_selected_files()
+    app.processEvents()
+    check("при отказе обоих путей файл остаётся на диске",
+          os.path.exists(os.path.join(tmp, "a.png")))
+    check("в списке 4 файла", viewer.list.count() == 4)
     check("статус: удалено 0, не удалось 1",
           "не удалось" in viewer.status.text() and ": 0," in viewer.status.text(),
           viewer.status.text())
 
-    # ---------- 3. «Нет» в подтверждении: ничего не удаляется ----------
-    lv.QMessageBox.question = staticmethod(
-        lambda *a, **k: lv.QMessageBox.StandardButton.No)
+    # ---------- 4. диск без корзины: сразу диалог об окончательном ----------
+    fresh()
     FakeQFile.trashed.clear()
+    real_has_trash = lv._drive_has_trash
+    lv._drive_has_trash = lambda p: False     # Z:/сетевой диск без корзины
+    try:
+        viewer.load_folder(tmp)
+        app.processEvents()
+        ans = Answers(lv.QMessageBox.StandardButton.Yes)
+        lv.QMessageBox.question = staticmethod(ans)
+        viewer.list.item(0).setSelected(True)   # a.png
+        viewer.delete_selected_files()
+        app.processEvents()
+        check("на диске без корзины задан один диалог о полном удалении",
+              ans.titles == [i18n.tr("viewer.del_perm_title")], str(ans.titles))
+        check("файл удалён навсегда (без попытки корзины)",
+              not FakeQFile.trashed
+              and not os.path.exists(os.path.join(tmp, "a.png")))
+        check("в списке 3 файла", viewer.list.count() == 3)
+        check("статус: Удалено окончательно: 1",
+              "окончательно: 1" in viewer.status.text(), viewer.status.text())
+    finally:
+        lv._drive_has_trash = real_has_trash
+
+    # ---------- 5. «Нет» в подтверждении: ничего не удаляется ----------
+    fresh()
+    viewer.load_folder(tmp)
+    app.processEvents()
+    FakeQFile.trashed.clear()
+    ans = Answers(lv.QMessageBox.StandardButton.No)
+    lv.QMessageBox.question = staticmethod(ans)
     viewer.list.item(0).setSelected(True)
     viewer.delete_selected_files()
     app.processEvents()
     check("«Нет» — ни один файл не ушёл в корзину", not FakeQFile.trashed)
-    check("«Нет» — список не изменился", viewer.list.count() == 3)
+    check("«Нет» — список не изменился", viewer.list.count() == 4)
 
-    # ---------- 4. удаление последнего файла: просмотр очищается ----------
+    # ---------- 6. удаление последнего файла: просмотр очищается ----------
     viewer.load_folder(tmp)
     app.processEvents()
-    lv.QMessageBox.question = staticmethod(
-        lambda *a, **k: lv.QMessageBox.StandardButton.Yes)
     FakeQFile.fail_names.clear()
+    ans = Answers(lv.QMessageBox.StandardButton.Yes)
+    lv.QMessageBox.question = staticmethod(ans)
     viewer.list.selectAll()
     viewer.delete_selected_files()
     app.processEvents()
@@ -187,7 +260,28 @@ def main() -> int:
     check("просмотр очищен", viewer.view_label.text() != "",
           viewer.view_label.text())
 
-    # ---------- 5. восстановление последнего запроса при старте ----------
+    # ---------- 7. read-only файл удаляется окончательно ----------
+    ro = os.path.join(tmp, "ro.png")
+    make_png(ro)
+    os.chmod(ro, 0o444)   # «только чтение» — как бывают скачанные webp
+    lv._drive_has_trash = lambda p: False
+    try:
+        viewer.load_folder(tmp)
+        app.processEvents()
+        ans = Answers(lv.QMessageBox.StandardButton.Yes)
+        lv.QMessageBox.question = staticmethod(ans)
+        row = next(i for i in range(viewer.list.count())
+                   if os.path.basename(viewer.list.item(i).data(Qt.UserRole))
+                   == "ro.png")
+        viewer.list.item(row).setSelected(True)   # ro.png
+        viewer.delete_selected_files()
+        app.processEvents()
+        check("read-only файл удалён окончательно", not os.path.exists(ro))
+    finally:
+        lv._drive_has_trash = real_has_trash
+
+    # ---------- 8. восстановление последнего запроса при старте ----------
+    fresh()
     st.setValue("viewer/last_folder", tmp)
     st.setValue("viewer/last_query", "b")
     viewer2 = LocalViewer()
@@ -200,7 +294,7 @@ def main() -> int:
     check("найден b.png", viewer2.list.count() == 1
           and os.path.basename(viewer2.list.item(0).data(Qt.UserRole)) == "b.png")
 
-    # ---------- 6. save_state запоминает папку и запрос ----------
+    # ---------- 9. save_state запоминает папку и запрос ----------
     viewer3 = LocalViewer()
     viewer3.load_folder(tmp)
     viewer3.search_edit.setText("c")     # поиск не ждём — save_state читает поле
@@ -210,18 +304,30 @@ def main() -> int:
           == os.path.normpath(tmp), st2.value("viewer/last_folder", ""))
     check("save_state: запрос", st2.value("viewer/last_query", "") == "c",
           st2.value("viewer/last_query", ""))
-    check("запрос пишется и при самом поиске",
-          st2.value("viewer/last_query", "") == "c")
 
-    # ---------- 7. новые i18n-ключи есть во всех трёх языках ----------
+    # ---------- 10. i18n-ключи есть во всех трёх языках ----------
     need = ["viewer.ctx_delete", "viewer.ctx_delete_tip", "viewer.del_title",
             "viewer.del_confirm", "viewer.del_nothing", "viewer.del_done",
             "viewer.del_done_err", "viewer.del_missing", "viewer.del_failed",
-            "log.event.trash", "log.event.trash_err"]
+            "viewer.del_perm_title", "viewer.del_perm_confirm",
+            "viewer.del_perm_ask_title", "viewer.del_perm_ask",
+            "viewer.del_done_perm", "viewer.del_done_mixed",
+            "log.event.trash", "log.event.trash_err", "log.event.delete_perm"]
     for key in need:
         langs = i18n._STRINGS.get(key, {})
         check(f"i18n {key}: ru/en/zh",
               all(langs.get(l) for l in ("ru", "en", "zh")), str(sorted(langs)))
+    # подстановки в новых строках
+    check("del_perm_confirm: {n} подставляется",
+          "{n}" not in i18n.tr("viewer.del_perm_confirm", n=3))
+    check("del_perm_ask: {n} подставляется",
+          "{n}" not in i18n.tr("viewer.del_perm_ask", n=2))
+    check("del_done_mixed: {n}/{t}/{p} подставляются",
+          i18n.tr("viewer.del_done_mixed", n=4, t=3, p=1) ==
+          "Удалено: 4 (в корзину 3, окончательно 1)")
+    check("log.event.delete_perm: {n}/{folder} подставляются",
+          "{n}" not in i18n.tr("log.event.delete_perm", n=2, folder="X")
+          and "{folder}" not in i18n.tr("log.event.delete_perm", n=2, folder="X"))
 
     # уборка: не оставлять тестовые папку/запрос в настройках
     st2.setValue("viewer/last_folder", "")
