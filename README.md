@@ -177,10 +177,12 @@ curl -fsSL https://raw.githubusercontent.com/teliy/image-hunter/main/install.sh 
 ```
 
 Что делает установщик:
-- проверит Python 3.10–3.13 и при необходимости предложит установку (winget на Windows / пакетный менеджер на Linux);
+- проверит Python 3.10–3.14 и при необходимости предложит установку (winget на Windows / пакетный менеджер на Linux);
 - спросит, куда устанавливать (по умолчанию `%LOCALAPPDATA%\ImageHunter` / `~/.local/share/image-hunter`);
 - скачает код (git не нужен), создаст `.venv`, поставит зависимости;
 - создаст ярлык в меню «Пуск» (Windows) / `.desktop`-ярлык и команду `image-hunter` (Linux).
+
+> **Alpine Linux (musl):** установщик понимает `apk` и принимает Python 3.10–3.14 (в stable это 3.12, в edge — 3.14). У PySide6 нет musl-сборок, поэтому установщик ставит `gcompat` и разрешает pip'у glibc-колёса — обычно этого достаточно, но QtWebEngine на musl может не запуститься; надёжный вариант — Docker или дистрибутив на базе glibc (Debian, Ubuntu, Fedora).
 
 **Обновление и удаление:**
 
@@ -216,11 +218,11 @@ curl -fsSL -H "Authorization: token $IH_GH_TOKEN" https://raw.githubusercontent.
 ```
 
 Токен нужен с правом чтения репозитория: classic — scope `repo`, fine-grained — «Contents: Read-only». Установщик сохранит токен в `.gh_token` внутри папки установки для будущих авто-обновлений; удалите файл, если это не нужно.
-Переменные для неинтерактивной работы: `IH_ASSUME_YES=1` (все ответы «по умолчанию»), `IH_DIR=<путь>`.
+Переменные для неинтерактивной работы: `IH_ASSUME_YES=1` (все ответы «по умолчанию»), `IH_DIR=<путь>`, `IH_PYTHON=/путь/к/python` (указать интерпретатор вручную, если авто-поиск не устраивает).
 
 ### Установка вручную
 
-Требуется Windows 10/11 и Python 3.10–3.13 (64-бит).
+Требуется Windows 10/11 и Python 3.10–3.14 (64-бит).
 
 ```bat
 git clone https://github.com/teliy/image-hunter.git

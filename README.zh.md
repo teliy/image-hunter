@@ -103,7 +103,9 @@ irm https://codeload.github.com/teliy/image-hunter/zip/refs/heads/main -OutFile 
 curl -fsSL https://raw.githubusercontent.com/teliy/image-hunter/main/install.sh | bash
 ```
 
-安装程序检查 Python 3.10–3.13（缺失时提议安装），询问安装位置，下载代码（无需 git），创建 `.venv`，安装依赖，并创建开始菜单快捷方式（Windows）或 `.desktop` 条目与 `image-hunter` 命令（Linux）。
+安装程序检查 Python 3.10–3.14（缺失时提议安装），询问安装位置，下载代码（无需 git），创建 `.venv`，安装依赖，并创建开始菜单快捷方式（Windows）或 `.desktop` 条目与 `image-hunter` 命令（Linux）。
+
+> **Alpine Linux (musl)：** 安装程序支持 `apk` 并接受 Python 3.10–3.14（stable 为 3.12，edge 为 3.14）。PySide6 没有 musl 轮子，因此安装程序会安装 `gcompat` 并允许 pip 选用 glibc 轮子——通常足够，但 QtWebEngine 在 musl 上仍可能无法启动；更稳妥的方案是使用 Docker 或基于 glibc 的发行版（Debian、Ubuntu、Fedora）。
 
 **更新与卸载：**
 
@@ -131,11 +133,11 @@ curl -fsSL -H "Authorization: token $IH_GH_TOKEN" https://raw.githubusercontent.
 ```
 
 令牌需要仓库读取权限：classic — `repo` scope；fine-grained — “Contents: Read-only”。安装程序将令牌保存在安装文件夹内的 `.gh_token` 中以便日后自动更新；不需要时请删除该文件。
-非交互运行变量：`IH_ASSUME_YES=1`、`IH_DIR=<路径>`。
+非交互运行变量：`IH_ASSUME_YES=1`、`IH_DIR=<路径>`、`IH_PYTHON=/path/to/python`（自动探测不合意时手动指定解释器）。
 
 ### 手动安装
 
-需要 Windows 10/11 和 Python 3.10–3.13（64 位）。
+需要 Windows 10/11 和 Python 3.10–3.14（64 位）。
 
 ```bat
 git clone https://github.com/teliy/image-hunter.git

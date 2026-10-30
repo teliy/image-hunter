@@ -422,6 +422,32 @@ class _SearchTask(QRunnable):
 
 # ---------- фоновый поиск папок для дерева «Диски и папки» ----------
 
+# Мусорные папки, вырезаемые из обхода на любой глубине (пользовательские
+# картинки там не хранят, а деревья гигантские); сравнение без регистра.
+_JUNK_DIRS = frozenset({"node_modules", "__pycache__"})
+
+# Системные папки в КОРНЕ диска («/», «C:\», UNC-шара). Именно их обход делает
+# глобальный поиск папок долгим (C:\Windows\WinSxS, /usr/share, /var/lib…),
+# а пользовательские картинки там не ищут. Вырезаются ТОЛЬКО на верхнем
+# уровне диска: в домашней папке и на обычных носителях эти имена не трогаем.
+_SYSTEM_ROOT_DIRS = frozenset({
+    # Windows
+    "windows", "program files", "program files (x86)", "programdata",
+    "perflogs", "$recycle.bin", "system volume information",
+    # Linux и macOS
+    "usr", "etc", "var", "opt", "boot", "run", "proc", "sys", "dev",
+    "snap", "flatpak", "lib", "lib32", "lib64", "bin", "sbin", "tmp",
+    "lost+found", "applications", "library", "system", "private",
+    "cores", "volumes", "net", "home",
+})
+
+
+def _is_disk_root(path: str) -> bool:
+    """Корень диска («/», «C:\», UNC-шара \\srv\share): dirname совпадает с путём."""
+    p = os.path.normpath(path)
+    return os.path.dirname(p) == p
+
+
 class _FolderSearchSignals(QObject):
     batch = Signal(int, list)            # поколение поиска, порция [путь]
     done = Signal(int, int, bool)        # поколение, всего найдено, усечено ли
@@ -432,7 +458,9 @@ class _FolderSearchTask(QRunnable):
     иначе от корней дерева (Домой, Изображения, все диски). Один os.scandir
     на папку, без stat() на каждый элемент — важно для сетевых дисков.
     Совпадения отдаются порциями, не дожидаясь конца обхода. Симлинки не
-    разворачиваются (нет циклов), скрытые папки пропускаются. Пределы
+    разворачиваются (нет циклов), скрытые папки пропускаются. В корне диска
+    системные папки (Windows, Program Files, /usr, /var…) вырезаются — без
+    этого глобальный поиск часами крутит WinSxS и /usr/share. Пределы
     количества/времени страхуют от гигантских деревьев и медленных носителей:
     поиск всегда завершается сам."""
 
@@ -448,6 +476,10 @@ class _FolderSearchTask(QRunnable):
         self.roots = list(roots)
         self.needle = needle.lower()
         self.gen, self.signals, self.handle = gen, signals, handle
+        # корни-диски (/, C:\, UNC-шары) — в них вырезаем системные папки;
+        # обычный атрибут экземпляра: тесты подменяют его для проверки обрезки
+        self._disk_roots = {os.path.normcase(os.path.normpath(r))
+                            for r in self.roots if _is_disk_root(r)}
 
     def run(self) -> None:
         found = 0
@@ -470,11 +502,15 @@ class _FolderSearchTask(QRunnable):
                 continue
             seen.add(key)
             scanned += 1
+            at_disk = key in self._disk_roots   # в корне диска вырезаем системные папки
             subdirs: list[str] = []
             try:
                 with os.scandir(path) as it:
                     for entry in it:
                         if entry.name.startswith(".") or _is_hidden_entry(entry):
+                            continue
+                        low = entry.name.lower()
+                        if low in _JUNK_DIRS or (at_disk and low in _SYSTEM_ROOT_DIRS):
                             continue
                         try:
                             if entry.is_dir(follow_symlinks=False):

@@ -106,7 +106,9 @@ irm https://codeload.github.com/teliy/image-hunter/zip/refs/heads/main -OutFile 
 curl -fsSL https://raw.githubusercontent.com/teliy/image-hunter/main/install.sh | bash
 ```
 
-The installer checks Python 3.10–3.13 (offers to install it if missing), asks where to install, downloads the code (no git needed), creates `.venv`, installs dependencies and creates a Start-menu shortcut (Windows) or a `.desktop` entry and the `image-hunter` command (Linux).
+The installer checks Python 3.10–3.14 (offers to install it if missing), asks where to install, downloads the code (no git needed), creates `.venv`, installs dependencies and creates a Start-menu shortcut (Windows) or a `.desktop` entry and the `image-hunter` command (Linux).
+
+> **Alpine Linux (musl):** the installer understands `apk` and accepts Python 3.10–3.14 (3.12 in stable, 3.14 in edge). PySide6 ships no musl wheels, so the installer adds `gcompat` and lets pip pick glibc wheels — usually enough, but QtWebEngine may still fail to start on musl; the reliable option is Docker or a glibc-based distro (Debian, Ubuntu, Fedora).
 
 **Update and uninstall:**
 
@@ -134,11 +136,11 @@ curl -fsSL -H "Authorization: token $IH_GH_TOKEN" https://raw.githubusercontent.
 ```
 
 The token needs read access to the repository: classic — the `repo` scope, fine-grained — “Contents: Read-only”. The installer stores the token in `.gh_token` inside the installation folder for future auto-updates; delete the file if that is not wanted.
-Variables for non-interactive runs: `IH_ASSUME_YES=1`, `IH_DIR=<path>`.
+Variables for non-interactive runs: `IH_ASSUME_YES=1`, `IH_DIR=<path>`, `IH_PYTHON=/path/to/python` (set the interpreter manually if the auto-detection does not fit).
 
 ### Manual installation
 
-Requires Windows 10/11 and Python 3.10–3.13 (64-bit).
+Requires Windows 10/11 and Python 3.10–3.14 (64-bit).
 
 ```bat
 git clone https://github.com/teliy/image-hunter.git

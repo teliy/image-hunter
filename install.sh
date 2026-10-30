@@ -77,26 +77,48 @@ confirm() {
   esac
 }
 
+# ---------------------------------------------------------------- права
+# SUDO: sudo, doas (Alpine/BusyBox) или пусто (уже root)
+if [ "$(id -u)" = "0" ]; then SUDO=""
+elif command -v sudo >/dev/null 2>&1; then SUDO="sudo"
+elif command -v doas >/dev/null 2>&1; then SUDO="doas"
+else SUDO=""; fi
+
 # ---------------------------------------------------------------- python
+# Диапазон 3.10–3.14: PySide6 6.11 официально собирается под 3.10–3.14
+# (requires_python >=3.10,<3.15, колёса cp310-abi3 работают на всём диапазоне).
+# Alpine stable несёт python3 = 3.12, edge — 3.14: оба принимаются.
 find_python() {
-  local cand v major minor
-  for cand in python3.13 python3.12 python3.11 python3.10 python3; do
+  local cand v
+  # IH_PYTHON — явное указание интерпретатора пользователем (перекрывает авто-поиск)
+  if [ -n "${IH_PYTHON:-}" ]; then
+    if command -v "$IH_PYTHON" >/dev/null 2>&1 || [ -x "$IH_PYTHON" ]; then
+      v="$("$IH_PYTHON" -c 'import sys;print("%d.%d"%sys.version_info[:2])' 2>/dev/null)" || v=""
+      case "$v" in
+        3.1[0-4]) printf '%s' "$IH_PYTHON"; return 0 ;;
+        *) warn "IH_PYTHON=$IH_PYTHON — Python ${v:-?} не подходит (нужен 3.10–3.14), ищу другие…" ;;
+      esac
+    else
+      warn "IH_PYTHON=$IH_PYTHON не найден, ищу другие…"
+    fi
+  fi
+  for cand in python3.14 python3.13 python3.12 python3.11 python3.10 python3 python; do
     command -v "$cand" >/dev/null 2>&1 || continue
     v="$("$cand" -c 'import sys;print("%d.%d"%sys.version_info[:2])' 2>/dev/null)" || continue
-    major="${v%%.*}"; minor="${v#*.}"
-    if [ "$major" = "3" ] && [ "$minor" -ge 10 ] && [ "$minor" -le 13 ]; then
-      printf '%s' "$cand"; return 0
-    fi
+    case "$v" in
+      3.1[0-4]) printf '%s' "$cand"; return 0 ;;
+    esac
   done
   return 1
 }
 
 install_python() {
-  log "Python 3.10–3.13 не найден — пробую установить через пакетный менеджер…"
+  log "Python 3.10–3.14 не найден — пробую установить через пакетный менеджер…"
   local pkgs="python3 python3-venv python3-pip"
-  local SUDO=""
-  command -v sudo >/dev/null 2>&1 && [ "$(id -u)" != "0" ] && SUDO="sudo"
-  if command -v apt-get >/dev/null 2>&1; then
+  if command -v apk >/dev/null 2>&1; then
+    # Alpine: venv/pip входят в сам python3, отдельно нужен только py3-pip
+    $SUDO apk add --no-cache python3 py3-pip
+  elif command -v apt-get >/dev/null 2>&1; then
     $SUDO apt-get update -y && $SUDO apt-get install -y $pkgs
   elif command -v dnf >/dev/null 2>&1; then
     $SUDO dnf install -y python3
@@ -105,7 +127,27 @@ install_python() {
   elif command -v zypper >/dev/null 2>&1; then
     $SUDO zypper install -y python3
   else
-    die "Не найден пакетный менеджер. Установите Python 3.10–3.13 вручную и запустите установщик снова."
+    die "Не найден пакетный менеджер. Установите Python 3.10–3.14 вручную (или задайте IH_PYTHON=/путь/к/python) и запустите установщик снова."
+  fi
+}
+
+is_musl() {  # musl-системы (Alpine): у PySide6 нет musl-сборок — нужен gcompat
+  ldd --version 2>/dev/null | head -n1 | grep -qi musl
+}
+
+prepare_musl() {  # $1 = venv: gcompat + разрешение pip'у брать glibc-колёса
+  warn "musl (Alpine) обнаружен: у PySide6 нет musl-сборок — ставлю gcompat (glibc-совместимость)…"
+  if command -v apk >/dev/null 2>&1; then
+    $SUDO apk add --no-cache gcompat libstdc++ >/dev/null 2>&1 \
+      || warn "не удалось поставить gcompat/libstdc++ — приложение может не запуститься"
+  fi
+  # официально-документированный способ разрешить pip выбирать manylinux-колёса
+  # на не-glibc системах (см. «Per-project overrides» в документации pip)
+  local site
+  site="$("$1/bin/python" -c 'import sysconfig;print(sysconfig.get_paths()["purelib"])' 2>/dev/null)" || site=""
+  if [ -n "$site" ]; then
+    printf 'def manylinux_compatible(tag, glibc_version, arch):\n    return True\n' \
+      > "$site/_manylinux.py" 2>/dev/null || true
   fi
 }
 
@@ -122,14 +164,14 @@ ensure_venv() {  # $1 = python, $2 = путь venv
 ensure_gui_libs() {  # Qt ≥6.5 на Linux требует libxcb-cursor
   ldconfig -p 2>/dev/null | grep -q libxcb-cursor && return 0
   warn "Отсутствует libxcb-cursor (нужна для окна приложения) — пробую доустановить…"
-  local SUDO=""
-  command -v sudo >/dev/null 2>&1 && [ "$(id -u)" != "0" ] && SUDO="sudo"
   if command -v apt-get >/dev/null 2>&1; then
     $SUDO apt-get install -y libxcb-cursor0 2>/dev/null || warn "Установите пакет libxcb-cursor0 вручную"
   elif command -v dnf >/dev/null 2>&1; then
     $SUDO dnf install -y xcb-util-cursor 2>/dev/null || warn "Установите пакет xcb-util-cursor вручную"
   elif command -v pacman >/dev/null 2>&1; then
     $SUDO pacman -S --needed --noconfirm xcb-util-cursor 2>/dev/null || warn "Установите пакет xcb-util-cursor вручную"
+  elif command -v apk >/dev/null 2>&1; then
+    $SUDO apk add --no-cache xcb-util-cursor 2>/dev/null || warn "Установите пакет xcb-util-cursor вручную"
   fi
 }
 
@@ -239,9 +281,16 @@ do_install() {
     log "Создаю виртуальное окружение (.venv)…"
     ensure_venv "$PYTHON" "$d/.venv" || die "Сбой создания venv"
   fi
+  if is_musl; then prepare_musl "$d/.venv"; fi
   log "Устанавливаю зависимости (это может занять 1–2 минуты)…"
   "$d/.venv/bin/python" -m pip install --upgrade pip --quiet || true
-  "$d/.venv/bin/python" -m pip install -r "$d/requirements.txt" || die "Не удалось установить зависимости"
+  if ! "$d/.venv/bin/python" -m pip install -r "$d/requirements.txt"; then
+    if is_musl; then
+      err "На musl (Alpine) у PySide6 нет нативных сборок — даже с gcompat QtWebEngine"
+      err "может не запуститься. Надёжнее ставить в Docker или дистрибутив на glibc."
+    fi
+    die "Не удалось установить зависимости"
+  fi
 
   # лаунчер
   install_launcher "$d"
@@ -330,7 +379,7 @@ printf "${C_G}══════════════════════
 printf "   %s — установщик (Linux)\n" "$APP_NAME"
 printf "${C_G}════════════════════════════════════════${C_0}\n\n"
 
-log "Ищу Python 3.10–3.13…"
+log "Ищу Python 3.10–3.14…"
 if PYTHON="$(find_python)"; then
   log "Найден: $PYTHON ($($PYTHON -c 'import sys;print("%d.%d"%sys.version_info[:2])'))"
 else

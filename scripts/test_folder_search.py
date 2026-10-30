@@ -355,6 +355,39 @@ def main() -> int:
           and {np(p) for p in flat4} == {np(target_two), np(deeper)},
           f"{dones} {flat4}")
 
+    # 22. юнит: в КОРНЕ диска системные и мусорные папки вырезаются —
+    #     именно их обход (C:\Windows\WinSxS, /usr/share…) тормозил глобальный поиск
+    sys_root = tempfile.mkdtemp(prefix="ih_fs_sysroot_")
+    for rel in ("usr/TargetInUsr", "etc/TargetInEtc", "MyPics/TargetOk",
+                "node_modules/TargetJunk", "обычные/TargetUsual"):
+        os.makedirs(os.path.join(sys_root, rel), exist_ok=True)
+    batches.clear(); dones.clear()
+    task5 = lv._FolderSearchTask([sys_root], "target", 5, sig, lv._SearchHandle())
+    task5._disk_roots = {np(sys_root)}   # имитируем корень диска («/» или «C:\»)
+    task5.run()
+    flat5 = [p for b in batches for p in b]
+    check("корень диска: системные (usr, etc) и мусор (node_modules) вырезаны",
+          dones and dones[0][0] == 2
+          and {np(os.path.dirname(p)) for p in flat5}
+          == {np(os.path.join(sys_root, "MyPics")), np(os.path.join(sys_root, "обычные"))},
+          f"{dones} {flat5}")
+
+    # 23. юнит: та же папка БЕЗ статуса «корень диска» — системные имена не режутся
+    batches.clear(); dones.clear()
+    task6 = lv._FolderSearchTask([sys_root], "target", 6, sig, lv._SearchHandle())
+    task6.run()
+    flat6 = [p for b in batches for p in b]
+    check("не-корень диска: usr/etc не вырезаны, node_modules вырезан всегда",
+          dones and dones[0][0] == 4 and len(flat6) == 4
+          and not any("node_modules" in p for p in flat6), f"{dones}")
+
+    # 24. юнит: _is_disk_root различает корень диска и пользовательские пути
+    check("_is_disk_root: «/» — да", lv._is_disk_root("/"))
+    check("_is_disk_root: /home/user — нет", not lv._is_disk_root("/home/user"))
+    check("_is_disk_root: относительный путь — нет", not lv._is_disk_root("pics/cats"))
+    if os.name == "nt":
+        check("_is_disk_root: C:\\ — да", lv._is_disk_root("C:\\"))
+
     print()
     if FAILURES:
         print(f"ПРОВАЛЕНО: {len(FAILURES)} -> {FAILURES}")

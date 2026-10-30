@@ -87,7 +87,8 @@ function Get-ValidPython {
     try { $v = & $exe -c "import sys;print('%d.%d'%sys.version_info[:2])" 2>$null } catch { continue }
     if (-not $v) { continue }
     $parts = $v.Split('.'); $major = [int]$parts[0]; $minor = [int]$parts[1]
-    if ($major -eq 3 -and $minor -ge 10 -and $minor -le 13) {
+    # 3.10–3.14: PySide6 6.11 официально поддерживает весь диапазон (cp310-abi3)
+    if ($major -eq 3 -and $minor -ge 10 -and $minor -le 14) {
       Write-Step ("Найден Python {0} ({1})" -f $v, $exe)
       return $exe
     }
@@ -96,14 +97,14 @@ function Get-ValidPython {
 }
 
 function Install-Python {
-  Write-Step "Python 3.10–3.13 не найден — устанавливаю…"
+  Write-Step "Python 3.10–3.14 не найден — устанавливаю…"
   if (Get-Command winget -ErrorAction SilentlyContinue) {
     & winget install -e --id Python.Python.3.12 --scope user --accept-package-agreements --accept-source-agreements
     # обновляем PATH текущей сессии
     $env:Path = "$env:Path;$env:LOCALAPPDATA\Programs\Python\Python312\;$env:LOCALAPPDATA\Programs\Python\Python312\Scripts\"
   } else {
     Start-Process 'https://www.python.org/downloads/'
-    Write-Err2 "winget не найден. Установите Python 3.10–3.13 (64-bit) с открытой страницы,"
+    Write-Err2 "winget не найден. Установите Python 3.10–3.14 (64-bit) с открытой страницы,"
     Write-Err2 "обязательно отметьте галочку 'Add python.exe to PATH', затем запустите установщик снова."
     exit 1
   }
@@ -324,7 +325,7 @@ Write-Host "   $AppName — установщик (Windows)"
 Write-Host '════════════════════════════════════════' -ForegroundColor Green
 Write-Host ''
 
-Write-Step 'Ищу Python 3.10–3.13…'
+Write-Step 'Ищу Python 3.10–3.14…'
 $Python = Get-ValidPython
 if (-not $Python) {
   Install-Python
