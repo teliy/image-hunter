@@ -170,7 +170,10 @@ function New-StartMenuShortcut([string]$dir) {
     $sc.TargetPath       = Join-Path $dir '.venv\Scripts\pythonw.exe'
     $sc.Arguments        = '"' + (Join-Path $dir 'main.py') + '"'
     $sc.WorkingDirectory = $dir
-    $sc.IconLocation     = (Join-Path $dir '.venv\Scripts\pythonw.exe') + ',0'
+    # значок ярлыка — иконка приложения (многоразмерный ICO из ресурсов);
+    # раньше ярлык указывал на иконку pythonw.exe — выглядело стандартно
+    $ico = Join-Path $dir 'app\resources\app_icon.ico'
+    $sc.IconLocation = if (Test-Path $ico) { "$ico,0" } else { (Join-Path $dir '.venv\Scripts\pythonw.exe') + ',0' }
     $sc.Save()
     Write-Step "Ярлык создан: меню Пуск → Image Hunter"
   } catch { Write-Warn2 "Не удалось создать ярлык: $_" }
@@ -276,14 +279,22 @@ start "" "%DIR%.venv\Scripts\pythonw.exe" "%DIR%main.py" %*
     Write-Warn2 'Лаунчер ImageHunter.bat заменится через 2–3 секунды (сейчас файл используется этим окном).'
   }
 
-  # ярлык: создаём при первой установке или если пропал
+  # ярлык: создаём при первой установке, если пропал, или если значок устарел
+  # (ярлыки старых версий указывали на иконку pythonw.exe — обновляем их)
   $lnk = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Image Hunter.lnk'
-  if ($mode -eq 'install' -or -not (Test-Path $lnk)) {
-    if ($mode -eq 'install') {
+  $staleIcon = $false
+  if (Test-Path $lnk) {
+    try {
+      $old = (New-Object -ComObject WScript.Shell).CreateShortcut($lnk)
+      if ($old.IconLocation -notmatch 'app_icon\.ico') { $staleIcon = $true }
+    } catch { $staleIcon = $true }
+  }
+  if ($mode -eq 'install') {
+    if (-not (Test-Path $lnk) -or $staleIcon) {
       if (Confirm2 "Создать ярлык в меню «Пуск»?" $true) { New-StartMenuShortcut $dir }
-    } else {
-      New-StartMenuShortcut $dir
     }
+  } elseif (-not (Test-Path $lnk) -or $staleIcon) {
+    New-StartMenuShortcut $dir
   }
 
   Remove-Item $tmpRoot -Recurse -Force -ErrorAction SilentlyContinue
