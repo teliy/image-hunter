@@ -41,10 +41,10 @@
 **Windows** (PowerShell — скопируйте строку целиком):
 
 ```powershell
-irm https://raw.githubusercontent.com/teliy/image-hunter/main/install.ps1 -OutFile "$env:TEMP\ih-install.ps1"; powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\ih-install.ps1"
+Remove-Item "$env:TEMP\ih-install.ps1" -ErrorAction SilentlyContinue; irm "https://raw.githubusercontent.com/teliy/image-hunter/main/install.ps1?v=$(Get-Random)" -OutFile "$env:TEMP\ih-install.ps1"; powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\ih-install.ps1"
 ```
 
-> Почему не `irm … | iex`: установщик сохранён с UTF-8 BOM (для корректной кириллицы при запуске файлом), а PowerShell 5.1 при выполнении через `iex` ломается на BOM-символе — сбивается разбор `param()` и установка получает мусорные параметры. Файловый запуск (`-File`) работает всегда.
+> Почему так, а не `irm … | iex`: установщик сохранён с UTF-8 BOM (нужен для кириллицы при запуске файлом), а PowerShell 5.1 при `iex` ломается на BOM-символе — сбивается разбор `param()`. Файловый запуск (`-File`) работает всегда. Параметр `?v=$(Get-Random)` обходит 5-минутный кэш GitHub (max-age=300) и системный кэш Windows — без него повторный запуск вскоре после обновления репозитория может скачать старую копию.
 
 **Linux** (bash):
 

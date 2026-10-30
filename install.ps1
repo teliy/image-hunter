@@ -2,9 +2,10 @@
 #  Image Hunter — автоматический установщик для Windows
 #
 #  Установка одной строкой (PowerShell) — для ПУБЛИЧНОГО репозитория:
-#    irm https://raw.githubusercontent.com/teliy/image-hunter/main/install.ps1 -OutFile "$env:TEMP\ih-install.ps1"; powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\ih-install.ps1"
-#  ВАЖНО: не заменяйте это на "irm ... | iex" — PowerShell 5.1 при iex ломается на
-#  BOM-символе (кириллица) и разборе param(), параметры получают мусорные значения.
+#    Remove-Item "$env:TEMP\ih-install.ps1" -ErrorAction SilentlyContinue; irm "https://raw.githubusercontent.com/teliy/image-hunter/main/install.ps1?v=$(Get-Random)" -OutFile "$env:TEMP\ih-install.ps1"; powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\ih-install.ps1"
+#  ВАЖНО: 1) не заменяйте это на "irm ... | iex" — PowerShell 5.1 при iex ломается на
+#  BOM-символе (кириллица) и разборе param(); 2) ?v=$(Get-Random) обходит 5-минутный
+#  кэш GitHub (cache-control: max-age=300) и кэш Windows при повторных запусках.
 #
 #  Для ПРИВАТНОГО репозитория (raw.githubusercontent отдаёт 404 без токена):
 #    $t="ghp_xxx"; iwr https://raw.githubusercontent.com/teliy/image-hunter/main/install.ps1 -Headers @{Authorization="token $t"} -UseBasicParsing -OutFile "$env:TEMP\ih-install.ps1"; $env:IH_GH_TOKEN=$t; powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\ih-install.ps1"
