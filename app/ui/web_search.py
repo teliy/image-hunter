@@ -4,15 +4,16 @@
 1. «Собрать ссылки» — все картинки текущей страницы выдачи (превью);
 2. «Скачать отмеченные» — только отмеченные галочками плитки, причём
    для каждой берётся большой оригинал (origUrl / img_url), а не превью;
-3. «WebP в папку» — отмеченные плитки перекодируются в WebP и сохраняются
-   в папку, открытую во вкладке «Мои картинки» (название.webp, название-1.webp…).
+3. «Сохранить в папку» — отмеченные плитки перекодируются в выбранный
+   формат (WebP/PNG/JPEG/BMP/TIFF) и сохраняются в папку, открытую
+   во вкладке «Мои картинки» (название.ext, название-1.ext…).
 """
 
 from __future__ import annotations
 
 from urllib.parse import parse_qs, quote_plus, urlparse
 
-from PySide6.QtCore import QTimer, QUrl, Signal
+from PySide6.QtCore import QSettings, QTimer, QUrl, Signal
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import (
     QComboBox,
@@ -24,6 +25,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.core import i18n
 from app.core.extractor import (
     collect_image_urls,
     fetch_checked_selections,
@@ -31,6 +33,8 @@ from app.core.extractor import (
     rescan_checkbox_ui,
     uncheck_all_selections,
 )
+from app.core.i18n import tr
+from app.core.image_saver import SAVE_FORMATS
 
 ENGINES = [
     ("Яндекс.Картинки", "https://ya.ru/images/search?text={}"),
@@ -67,7 +71,7 @@ class WebSearch(QWidget):
 
     images_found = Signal(list, str)  # (ссылки, URL страницы-источника)
     checked_count_changed = Signal(int)  # сколько плиток отмечено
-    save_webp_requested = Signal(list, str)  # (оригиналы отмеченных, referer)
+    save_requested = Signal(list, str)  # (оригиналы отмеченных, referer)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -76,56 +80,57 @@ class WebSearch(QWidget):
         bar.setContentsMargins(6, 4, 6, 4)
 
         self.query = QLineEdit()
-        self.query.setPlaceholderText("Поисковый запрос… (Enter — искать)")
+        self.query.setPlaceholderText(tr("ws.query_ph"))
         self.query.returnPressed.connect(self.search)
 
         self.engine = QComboBox()
         self.engine.addItems([name for name, _ in ENGINES])
-        self.engine.setToolTip("Поисковая система")
+        self.engine.setToolTip(tr("ws.engine_tip"))
 
-        go = QToolButton()
-        go.setText("Найти")
-        go.clicked.connect(self.search)
+        self.go_btn = QToolButton()
+        self.go_btn.setText(tr("ws.find"))
+        self.go_btn.clicked.connect(self.search)
 
-        collect = QToolButton()
-        collect.setText("📋 Собрать ссылки")
-        collect.setToolTip(
-            "Собрать ссылки на картинки (превью) с текущей страницы выдачи "
-            "и отправить их на вкладку «Загрузки»"
-        )
-        collect.clicked.connect(self.collect)
+        self.collect_btn = QToolButton()
+        self.collect_btn.setText(tr("ws.collect"))
+        self.collect_btn.setToolTip(tr("ws.collect_tip"))
+        self.collect_btn.clicked.connect(self.collect)
 
         self.btn_checked = QToolButton()
-        self.btn_checked.setText("⬇ Скачать отмеченные")
-        self.btn_checked.setToolTip(
-            "На плитках выдачи есть оранжевые чекбоксы: отметьте нужные картинки —\n"
-            "здесь появится счётчик, а по кнопке скачаются большие оригиналы"
-        )
+        self.btn_checked.setText(tr("ws.download_checked"))
+        self.btn_checked.setToolTip(tr("ws.download_checked_tip"))
         self.btn_checked.setEnabled(False)
         self.btn_checked.clicked.connect(self.download_checked)
 
-        self.btn_webp = QToolButton()
-        self.btn_webp.setText("💾 WebP в папку")
-        self.btn_webp.setToolTip(
-            "Отмеченные плитки перекодируются в WebP и сохраняются в папку,\n"
-            "открытую во вкладке «Мои картинки»: название.webp, название-1.webp…\n"
-            "Имя спросит при сохранении. Если папка не открыта — предложит выбрать.")
-        self.btn_webp.setEnabled(False)
-        self.btn_webp.clicked.connect(self.save_checked_as_webp)
+        # формат сохранения отмеченных картинок (выбор запоминается)
+        self.format_box = QComboBox()
+        self.format_box.addItems(list(SAVE_FORMATS))
+        self.format_box.setToolTip(tr("ws.format_tip"))
+        saved_fmt = QSettings("ImageHunter", "ImageHunter").value(
+            "web/save_format", "", str) or ""
+        if saved_fmt in SAVE_FORMATS:
+            self.format_box.setCurrentText(saved_fmt)
+        self.format_box.currentTextChanged.connect(self._on_format_changed)
+
+        self.btn_save = QToolButton()
+        self.btn_save.setText(tr("ws.save"))
+        self.btn_save.setToolTip(tr("ws.save_tip", ext=self.current_ext()))
+        self.btn_save.setEnabled(False)
+        self.btn_save.clicked.connect(self.save_checked)
 
         self.btn_clear = QToolButton()
-        self.btn_clear.setText("✕ Снять отметки")
-        self.btn_clear.setToolTip(
-            "Снять все оранжевые галочки с плиток выдачи одним нажатием")
+        self.btn_clear.setText(tr("ws.clear"))
+        self.btn_clear.setToolTip(tr("ws.clear_tip"))
         self.btn_clear.setEnabled(False)
         self.btn_clear.clicked.connect(self.clear_checked)
 
         bar.addWidget(self.query, 1)
         bar.addWidget(self.engine)
-        bar.addWidget(go)
-        bar.addWidget(collect)
+        bar.addWidget(self.go_btn)
+        bar.addWidget(self.collect_btn)
         bar.addWidget(self.btn_checked)
-        bar.addWidget(self.btn_webp)
+        bar.addWidget(self.format_box)
+        bar.addWidget(self.btn_save)
         bar.addWidget(self.btn_clear)
 
         self.view = QWebEngineView()
@@ -144,8 +149,21 @@ class WebSearch(QWidget):
         self._poll.setInterval(700)
         self._poll.timeout.connect(self._poll_checked_count)
         self._poll.start()
+        i18n.signals.changed.connect(self._retranslate)
 
     # ---------- действия ----------
+
+    def current_format(self) -> str:
+        """Выбранный формат сохранения (ключ в image_saver.SAVE_FORMATS)."""
+        return self.format_box.currentText()
+
+    def current_ext(self) -> str:
+        """Расширение выбранного формата: «.webp», «.png»…"""
+        return SAVE_FORMATS[self.current_format()][1]
+
+    def _on_format_changed(self, fmt: str) -> None:
+        QSettings("ImageHunter", "ImageHunter").setValue("web/save_format", fmt)
+        self.btn_save.setToolTip(tr("ws.save_tip", ext=self.current_ext()))
 
     def search(self) -> None:
         text = self.query.text().strip()
@@ -162,9 +180,9 @@ class WebSearch(QWidget):
         """Отправить в загрузки оригиналы отмеченных галочками плиток."""
         fetch_checked_selections(self.view.page(), self._on_checked)
 
-    def save_checked_as_webp(self) -> None:
-        """Отмеченные плитки → перекодировать в WebP → папка из «Моих картинок»."""
-        fetch_checked_selections(self.view.page(), self._on_checked_webp)
+    def save_checked(self) -> None:
+        """Отмеченные плитки → перекодировать в выбранный формат → папка из «Моих картинок»."""
+        fetch_checked_selections(self.view.page(), self._on_checked_save)
 
     def clear_checked(self) -> None:
         """Снять все отметки с плиток на текущей странице выдачи."""
@@ -187,30 +205,18 @@ class WebSearch(QWidget):
             return
         self.images_found.emit(best, self.view.url().toString())
 
-    def _on_checked_webp(self, items: list[dict]) -> None:
+    def _on_checked_save(self, items: list[dict]) -> None:
         best = [it["best"] for it in items if it.get("best")]
         if not best:
             self._info_no_checked()
             return
-        self.save_webp_requested.emit(best, self.view.url().toString())
+        self.save_requested.emit(best, self.view.url().toString())
 
     def _info_no_checked(self) -> None:
-        QMessageBox.information(
-            self,
-            "Image Hunter",
-            "Нет отмеченных картинок.\n\n"
-            "Отметьте оранжевыми галочками плитки с нужными картинками "
-            "прямо на странице выдачи — на кнопке появится счётчик.",
-        )
+        QMessageBox.information(self, "Image Hunter", tr("ws.no_checked"))
 
     def _info_no_links(self) -> None:
-        QMessageBox.information(
-            self,
-            "Image Hunter",
-            "Ссылки не найдены.\n\nПодсказки:\n• дождитесь полной загрузки выдачи;\n"
-            "• прокрутите страницу вниз, чтобы подгрузились миниатюры;\n"
-            "• если Яндекс показывает капчу — введите её прямо здесь, во встроенном браузере.",
-        )
+        QMessageBox.information(self, "Image Hunter", tr("ws.no_links"))
 
     def _on_load_finished(self, ok: bool) -> None:
         if not ok:
@@ -234,6 +240,11 @@ class WebSearch(QWidget):
         except Exception:
             pass
 
+    def _set_checked_count(self, count: int) -> None:
+        suffix = f" ({count})" if count else ""
+        self.btn_checked.setText(tr("ws.download_checked") + suffix)
+        self.btn_save.setText(tr("ws.save") + suffix)
+
     def _on_poll_result(self, value) -> None:
         try:
             count = int(value or 0)
@@ -241,13 +252,24 @@ class WebSearch(QWidget):
             count = 0
         if count != self._checked_count:
             self._checked_count = count
-            self.btn_checked.setText(
-                f"⬇ Скачать отмеченные ({count})" if count else "⬇ Скачать отмеченные"
-            )
+            self._set_checked_count(count)
             self.btn_checked.setEnabled(count > 0)
-            self.btn_webp.setText(
-                f"💾 WebP в папку ({count})" if count else "💾 WebP в папку"
-            )
-            self.btn_webp.setEnabled(count > 0)
+            self.btn_save.setEnabled(count > 0)
             self.btn_clear.setEnabled(count > 0)
             self.checked_count_changed.emit(count)
+
+    # ---------- перетрансляция при смене языка ----------
+
+    def _retranslate(self, *_args) -> None:
+        """Обновить статические надписи (i18n вызывает при смене языка)."""
+        self.query.setPlaceholderText(tr("ws.query_ph"))
+        self.engine.setToolTip(tr("ws.engine_tip"))
+        self.go_btn.setText(tr("ws.find"))
+        self.collect_btn.setText(tr("ws.collect"))
+        self.collect_btn.setToolTip(tr("ws.collect_tip"))
+        self.btn_checked.setToolTip(tr("ws.download_checked_tip"))
+        self.format_box.setToolTip(tr("ws.format_tip"))
+        self.btn_save.setToolTip(tr("ws.save_tip", ext=self.current_ext()))
+        self.btn_clear.setText(tr("ws.clear"))
+        self.btn_clear.setToolTip(tr("ws.clear_tip"))
+        self._set_checked_count(self._checked_count)

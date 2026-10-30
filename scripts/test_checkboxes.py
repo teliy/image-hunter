@@ -251,8 +251,10 @@ def run_mock_test() -> None:
     wait_ms(100)
 
     # ---- кнопка «✕ Снять отметки» в тулбаре WebSearch (UI-проводка) ----
+    from app.core import i18n
     from app.ui.web_search import WebSearch
 
+    i18n.set_lang("ru")     # тест проверяет русские надписи кнопок
     ws = WebSearch()
     check("кнопка «Снять отметки» есть в тулбаре",
           hasattr(ws, "btn_clear") and ws.btn_clear.text() == "✕ Снять отметки",
@@ -262,7 +264,7 @@ def run_mock_test() -> None:
     ws._on_poll_result(4)   # как будто на странице отметили 4 плитки
     check("при 4 отметках кнопка включена", ws.btn_clear.isEnabled())
     check("счётчик «(4)» появился на соседних кнопках",
-          "4" in ws.btn_checked.text() and "4" in ws.btn_webp.text())
+          "4" in ws.btn_checked.text() and "4" in ws.btn_save.text())
 
     ws.clear_checked()      # страница без чекбоксов: JS — no-op, счётчик обнуляется
     wait_ms(100)

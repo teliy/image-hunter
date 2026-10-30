@@ -22,6 +22,7 @@ from PySide6.QtCore import QSettings  # noqa: E402
 from PySide6.QtGui import QImage  # noqa: E402
 from PySide6.QtWidgets import QApplication, QToolButton  # noqa: E402
 
+from app.core import i18n  # noqa: E402
 from app.ui import local_viewer as lv  # noqa: E402
 
 FAILURES: list[str] = []
@@ -43,6 +44,7 @@ def pump(app, ms: int = 400) -> None:
 
 def main() -> int:
     app = QApplication.instance() or QApplication(sys.argv)
+    i18n.set_lang("ru")   # тест проверяет русские надписи кнопок
     QSettings("ImageHunter", "ImageHunter").setValue("viewer/thumbs", True)
     QSettings("ImageHunter", "ImageHunter").remove("viewer/splitter")  # детерминизм
 

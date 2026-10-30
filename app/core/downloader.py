@@ -2,6 +2,8 @@
 
 Downloader — QObject, живущий в GUI-потоке. Каждое скачивание выполняется
 в QThreadPool (до 6 потоков), прогресс и результат доставляются сигналами.
+Статусы — канонические ключи ("ok"/"error"/"cancel"): текст на языке
+интерфейса подбирается в слой отображения (downloads.py).
 """
 
 from __future__ import annotations
@@ -81,7 +83,7 @@ class _DownloadTask(QRunnable):
 
     def run(self) -> None:  # выполняется в рабочем потоке
         if self.owner.is_stopped():
-            self.owner.status_changed.emit(self.row_id, "Отменено", "")
+            self.owner.status_changed.emit(self.row_id, "cancel", "")
             self.owner._task_done(False)
             return
         headers = dict(BASE_HEADERS)
@@ -110,10 +112,10 @@ class _DownloadTask(QRunnable):
                     if received > MAX_FILE_SIZE:
                         raise ValueError("файл слишком большой (>100 МБ)")
                     fh.write(chunk)
-            self.owner.status_changed.emit(self.row_id, "Скачано", path)
+            self.owner.status_changed.emit(self.row_id, "ok", path)
             self.owner._task_done(True)
         except Exception as exc:  # noqa: BLE001 — показываем текст ошибки в таблице
-            self.owner.status_changed.emit(self.row_id, "Ошибка", str(exc)[:200])
+            self.owner.status_changed.emit(self.row_id, "error", str(exc)[:200])
             self.owner._task_done(False)
 
 

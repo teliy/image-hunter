@@ -20,7 +20,16 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.core import i18n
 from app.core.downloader import Downloader, saved_download_dir, store_download_dir
+from app.core.i18n import tr
+
+# канонические статусы загрузчика → ключи перевода
+_STATUS_KEYS = {
+    "ok": "dl.status_done",
+    "error": "dl.status_error",
+    "cancel": "dl.status_cancel",
+}
 
 
 class DownloadsView(QWidget):
@@ -37,43 +46,42 @@ class DownloadsView(QWidget):
         # --- папка сохранения ---
         top = QHBoxLayout()
         top.setContentsMargins(6, 4, 6, 4)
-        top.addWidget(QLabel("Папка:"))
+        self.folder_label = QLabel(tr("dl.folder"))
+        top.addWidget(self.folder_label)
         self.dir_label = QLabel(self._dir)
         self.dir_label.setStyleSheet("color: #444;")
-        change = QToolButton()
-        change.setText("Изменить…")
-        change.clicked.connect(self.change_dir)
-        open_btn = QToolButton()
-        open_btn.setText("Открыть")
-        open_btn.setToolTip("Открыть папку в Проводнике")
-        open_btn.clicked.connect(
+        self.change_btn = QToolButton()
+        self.change_btn.setText(tr("dl.change"))
+        self.change_btn.clicked.connect(self.change_dir)
+        self.open_btn = QToolButton()
+        self.open_btn.setText(tr("dl.open"))
+        self.open_btn.setToolTip(tr("dl.open_tip"))
+        self.open_btn.clicked.connect(
             lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(self._dir))
         )
         top.addWidget(self.dir_label, 1)
-        top.addWidget(change)
-        top.addWidget(open_btn)
+        top.addWidget(self.change_btn)
+        top.addWidget(self.open_btn)
 
         # --- вставка ссылок вручную ---
         mid = QHBoxLayout()
         mid.setContentsMargins(6, 4, 6, 4)
         self.paste_box = QPlainTextEdit()
-        self.paste_box.setPlaceholderText(
-            "Вставьте прямые ссылки на картинки — по одной в строке…\n"
-            "Ссылки с вкладки «Поиск картинок» попадают сюда автоматически."
-        )
+        self.paste_box.setPlaceholderText(tr("dl.paste_ph"))
         self.paste_box.setFixedHeight(84)
-        add = QPushButton("⬇ Скачать ссылки")
-        add.clicked.connect(self._download_pasted)
-        stop = QPushButton("■ Остановить")
-        stop.setToolTip("Отменить всё, что ещё не начало скачиваться")
-        stop.clicked.connect(self._downloader.stop)
+        self.add_btn = QPushButton(tr("dl.download"))
+        self.add_btn.clicked.connect(self._download_pasted)
+        self.stop_btn = QPushButton(tr("dl.stop"))
+        self.stop_btn.setToolTip(tr("dl.stop_tip"))
+        self.stop_btn.clicked.connect(self._downloader.stop)
         mid.addWidget(self.paste_box, 1)
-        mid.addWidget(add)
-        mid.addWidget(stop)
+        mid.addWidget(self.add_btn)
+        mid.addWidget(self.stop_btn)
 
         # --- таблица результатов ---
         self.table = QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(["Ссылка", "Статус", "Файл / ошибка"])
+        self.table.setHorizontalHeaderLabels(
+            [tr("dl.h_link"), tr("dl.h_status"), tr("dl.h_file")])
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setWordWrap(False)
         header = self.table.horizontalHeader()
@@ -81,7 +89,7 @@ class DownloadsView(QWidget):
         header.resizeSection(0, 520)
         header.resizeSection(1, 90)
 
-        self.summary = QLabel("Готово: 0 скачано, 0 ошибок")
+        self.summary = QLabel("")
         self.summary.setStyleSheet("color: #666;")
 
         layout = QVBoxLayout(self)
@@ -94,6 +102,24 @@ class DownloadsView(QWidget):
 
         self._downloader.status_changed.connect(self._on_status)
         self._downloader.batch_finished.connect(self._on_batch_finished)
+        self._update_summary()
+        i18n.signals.changed.connect(self._retranslate)
+
+    # ---------- перетрансляция при смене языка ----------
+
+    def _retranslate(self, *_args) -> None:
+        """Обновить статические надписи (i18n вызывает при смене языка)."""
+        self.folder_label.setText(tr("dl.folder"))
+        self.change_btn.setText(tr("dl.change"))
+        self.open_btn.setText(tr("dl.open"))
+        self.open_btn.setToolTip(tr("dl.open_tip"))
+        self.paste_box.setPlaceholderText(tr("dl.paste_ph"))
+        self.add_btn.setText(tr("dl.download"))
+        self.stop_btn.setText(tr("dl.stop"))
+        self.stop_btn.setToolTip(tr("dl.stop_tip"))
+        self.table.setHorizontalHeaderLabels(
+            [tr("dl.h_link"), tr("dl.h_status"), tr("dl.h_file")])
+        self._update_summary()
 
     # ---------- публичное ----------
 
@@ -109,7 +135,7 @@ class DownloadsView(QWidget):
             url_item.setData(Qt.UserRole, row_id)
             url_item.setToolTip(url)
             self.table.setItem(row, 0, url_item)
-            self.table.setItem(row, 1, QTableWidgetItem("В очереди"))
+            self.table.setItem(row, 1, QTableWidgetItem(tr("dl.status_queue")))
             self.table.setItem(row, 2, QTableWidgetItem(""))
             self._row_by_id[row_id] = row
         self._downloader.start(items, referer, self._dir)
@@ -121,17 +147,14 @@ class DownloadsView(QWidget):
     def _download_pasted(self) -> None:
         urls = [line.strip() for line in self.paste_box.toPlainText().splitlines() if line.strip()]
         if not urls:
-            QMessageBox.information(self, "Image Hunter", "Сначала вставьте ссылки в поле слева.")
+            QMessageBox.information(self, "Image Hunter", tr("dl.paste_first"))
             return
         added = self.add_urls(urls)
         if added == 0:
-            QMessageBox.information(
-                self, "Image Hunter",
-                "Новых ссылок нет: они уже скачивались в этой сессии или не являются http(s)-ссылками.",
-            )
+            QMessageBox.information(self, "Image Hunter", tr("dl.no_new"))
             return
         if added < len(urls):
-            self.summary.setText(f"Добавлено {added} из {len(urls)} — остальные уже были в очереди.")
+            self.summary.setText(tr("dl.added", added=added, total=len(urls)))
         self.paste_box.clear()
 
     def _on_status(self, row_id: int, status: str, detail: str) -> None:
@@ -142,19 +165,19 @@ class DownloadsView(QWidget):
         detail_item = self.table.item(row, 2)
         if status_item is None or detail_item is None:
             return
-        status_item.setText(status)
+        status_item.setText(tr(_STATUS_KEYS.get(status, status)))
         detail_item.setText(detail)
         detail_item.setToolTip(detail)
-        if status == "Скачано":
+        if status == "ok":
             self._ok += 1
             self._ok_color(status_item, "#1a7f37")
-        elif status == "Ошибка":
+        elif status == "error":
             self._fail += 1
             self._ok_color(status_item, "#c62828")
         self._update_summary()
 
     def _on_batch_finished(self, ok: int, fail: int) -> None:
-        self.summary.setText(f"Партия завершена: {ok} скачано, {fail} ошибок. Папка: {self._dir}")
+        self.summary.setText(tr("dl.batch_done", ok=ok, fail=fail, dir=self._dir))
 
     # ---------- служебное ----------
 
@@ -164,10 +187,10 @@ class DownloadsView(QWidget):
 
     def _update_summary(self) -> None:
         total = self.table.rowCount()
-        self.summary.setText(f"Всего в списке: {total}  •  скачано: {self._ok}  •  ошибок: {self._fail}")
+        self.summary.setText(tr("dl.summary", n=total, ok=self._ok, fail=self._fail))
 
     def change_dir(self) -> None:
-        directory = QFileDialog.getExistingDirectory(self, "Папка для сохранения", self._dir)
+        directory = QFileDialog.getExistingDirectory(self, tr("dl.pick_folder"), self._dir)
         if not directory:
             return
         self._dir = directory

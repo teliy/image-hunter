@@ -1,11 +1,12 @@
-"""Перекодирование отмеченных картинок в WebP и сохранение в папку просмотра.
+"""Перекодирование отмеченных картинок и сохранение в папку просмотра.
 
 Отмеченные галочками плитки выдачи скачиваются в память (requests, как в
 Downloader), декодируются Qt — QImage можно использовать в рабочих потоках,
 QImageReader с AutoTransform разворачивает фото по EXIF — и записываются
-как WebP в папку, открытую во вкладке «Мои картинки».
+в выбранном формате (WebP / PNG / JPEG / BMP / TIFF) в папку, открытую
+во вкладке «Мои картинки».
 
-Правила имён: название.webp, название-1.webp, название-2.webp и так далее.
+Правила имён: название.ext, название-1.ext, название-2.ext и так далее.
 Существующие файлы никогда не перезаписываются:
 • при выдаче имён пачке занятое имя пропускается (сравнение без регистра,
   как на дисках Windows; снимок папки — один os.listdir);
@@ -13,7 +14,10 @@ QImageReader с AutoTransform разворачивает фото по EXIF — 
   точечно os.path.lexists();
 • и в момент записи имя перепроверяется: если файл с таким именем появился
   в папке после выдачи имён, задача молча уезжает на следующий свободный
-  номер (название-3.webp и далее).
+  номер (название-3.ext и далее).
+
+Для JPEG и BMP картинка с альфа-каналом накладывается на белый фон —
+иначе прозрачность превратилась бы в чёрный цвет.
 """
 
 from __future__ import annotations
@@ -23,12 +27,21 @@ import re
 import threading
 
 import requests
-from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
-from PySide6.QtGui import QImage, QImageReader
+from PySide6.QtCore import QObject, QRunnable, QThreadPool, Qt, Signal
+from PySide6.QtGui import QImage, QPainter, QImageReader
 
 from app.core.downloader import BASE_HEADERS, MAX_FILE_SIZE, TIMEOUT
 
-WEBP_QUALITY = 90          # качество перекодирования (0–100)
+# формат сохранения → (имя для QImage.save, расширение, качество или None)
+SAVE_FORMATS: dict[str, tuple[str, str, int | None]] = {
+    "WebP": ("WEBP", ".webp", 90),
+    "PNG": ("PNG", ".png", None),
+    "JPEG": ("JPEG", ".jpg", 92),
+    "BMP": ("BMP", ".bmp", None),
+    "TIFF": ("TIFF", ".tiff", None),
+}
+DEFAULT_FORMAT = "WebP"
+
 MAX_THREADS = 3            # пощада к медленным источникам
 
 # символы, запрещённые в именах файлов Windows
@@ -47,7 +60,7 @@ def _existing_lower_names(folder: str) -> set[str] | None:
     """Имена файлов папки в нижнем регистре (одно os.listdir на пачку).
 
     ``None`` — листинг не удался (например, сетевой диск моргнул):
-    next_webp_name перейдёт на точечные проверки os.path.lexists().
+    next_image_name перейдёт на точечные проверки os.path.lexists().
     """
     try:
         return {n.lower() for n in os.listdir(folder)}
@@ -55,9 +68,9 @@ def _existing_lower_names(folder: str) -> set[str] | None:
         return None
 
 
-def next_webp_name(folder: str, base: str, used: set[str],
-                   existing_lower: set[str] | None = None) -> str:
-    """Первое свободное имя: base.webp, затем base-1.webp, base-2.webp…
+def next_image_name(folder: str, base: str, ext: str, used: set[str],
+                    existing_lower: set[str] | None = None) -> str:
+    """Первое свободное имя: base.ext, затем base-1.ext, base-2.ext…
 
     Никогда не возвращает имя существующего файла: сверяется со снимком папки
     (сравнение без регистра — как на дисках Windows) и с именами, выданными
@@ -75,27 +88,28 @@ def next_webp_name(folder: str, base: str, used: set[str],
             return os.path.lexists(os.path.join(folder, candidate))
         return candidate.lower() in existing_lower
 
-    candidate = f"{base}.webp"
+    candidate = f"{base}{ext}"
     n = 0
     while taken(candidate):
         n += 1
-        candidate = f"{base}-{n}.webp"
+        candidate = f"{base}-{n}{ext}"
     used.add(candidate)
     return candidate
 
 
-def assign_webp_names(folder: str, base: str, count: int) -> list[str]:
+def assign_image_names(folder: str, base: str, ext: str, count: int) -> list[str]:
     """Имена для всей пачки заранее: порядок совпадёт с порядком отметок."""
     existing_lower = _existing_lower_names(folder)
     used: set[str] = set()
-    return [next_webp_name(folder, base, used, existing_lower) for _ in range(count)]
+    return [next_image_name(folder, base, ext, used, existing_lower)
+            for _ in range(count)]
 
 
-def decode_to_webp(data: bytes, out_path: str, quality: int = WEBP_QUALITY) -> tuple[int, int]:
-    """Декодировать присланные байты (любой формат Qt) и записать WebP.
+def decode_image(data: bytes) -> QImage:
+    """Декодировать присланные байты (любой формат Qt) в QImage.
 
-    Возвращает (ширина, высота). QImageReader с AutoTransform применяет
-    EXIF-поворот — фото из телефонов сохраняются «головой вверх».
+    QImageReader с AutoTransform применяет EXIF-поворот — фото из телефонов
+    сохраняются «головой вверх».
     """
     from PySide6.QtCore import QBuffer, QByteArray
 
@@ -107,16 +121,36 @@ def decode_to_webp(data: bytes, out_path: str, quality: int = WEBP_QUALITY) -> t
     img = reader.read()
     if img.isNull():
         raise ValueError(f"не удалось декодировать ({img.errorString()})")
-    if not img.save(out_path, "WEBP", quality):
-        raise ValueError("не удалось записать WebP")
+    return img
+
+
+def _flatten_on_white(img: QImage) -> QImage:
+    """Наложить картинку с прозрачностью на белый фон (для JPEG/BMP)."""
+    flat = QImage(img.size(), QImage.Format.Format_RGB32)
+    flat.fill(Qt.GlobalColor.white)
+    painter = QPainter(flat)
+    painter.drawImage(0, 0, img)
+    painter.end()
+    return flat
+
+
+def save_image(img: QImage, out_path: str, fmt_name: str) -> tuple[int, int]:
+    """Записать QImage в файл выбранным форматом. Возвращает (ширина, высота)."""
+    qt_fmt, _ext, quality = SAVE_FORMATS[fmt_name]
+    # JPEG и BMP не умеют в прозрачность: альфа → белый фон, иначе будет чёрный
+    if img.hasAlphaChannel() and qt_fmt in ("JPEG", "BMP"):
+        img = _flatten_on_white(img)
+    ok = img.save(out_path, qt_fmt) if quality is None else img.save(out_path, qt_fmt, quality)
+    if not ok:
+        raise ValueError(f"не удалось записать {fmt_name}")
     return img.width(), img.height()
 
 
-class _WebpTask(QRunnable):
-    """Скачивание одного оригинала в память + запись WebP под готовое имя."""
+class _SaveTask(QRunnable):
+    """Скачивание одного оригинала в память + запись под готовое имя."""
 
-    def __init__(self, owner: "WebpSaver", index: int, url: str, filename: str,
-                 folder: str, referer: str | None, base: str):
+    def __init__(self, owner: "ImageSaver", index: int, url: str, filename: str,
+                 folder: str, referer: str | None, base: str, fmt_name: str):
         super().__init__()
         self.owner = owner
         self.index = index
@@ -125,6 +159,7 @@ class _WebpTask(QRunnable):
         self.folder = folder
         self.referer = referer
         self.base = base
+        self.fmt_name = fmt_name
 
     def run(self) -> None:  # рабочий поток
         if self.owner.is_stopped():
@@ -148,17 +183,20 @@ class _WebpTask(QRunnable):
                     raise ValueError("файл слишком большой (>100 МБ)")
             if not buf:
                 raise ValueError("пустой ответ")
+            img = decode_image(bytes(buf))
             # существующие файлы не перезаписываем: перепроверка прямо перед записью
-            target = self.owner._free_write_name(self.folder, self.filename, self.base)
-            size = decode_to_webp(bytes(buf), os.path.join(self.folder, target))
+            ext = SAVE_FORMATS[self.fmt_name][1]
+            target = self.owner._free_write_name(self.folder, self.filename,
+                                                 self.base, ext)
+            size = save_image(img, os.path.join(self.folder, target), self.fmt_name)
             self.owner._task_done(self.index, True,
                                   f"{target} ({size[0]}×{size[1]})")
         except Exception as exc:  # noqa: BLE001 — текст ошибки уходит в статус
             self.owner._task_done(self.index, False, str(exc)[:200])
 
 
-class WebpSaver(QObject):
-    """Пачка (url, имя файла) → WebP в папку. Прогресс и итог — сигналами."""
+class ImageSaver(QObject):
+    """Пачка (url, имя файла) → выбранный формат в папку. Прогресс и итог — сигналами."""
 
     file_done = Signal(int, bool, str)   # индекс, успех, «имя (Ш×В)» или ошибка
     finished = Signal(int, int, str)     # сохранено, ошибок, папка
@@ -176,27 +214,31 @@ class WebpSaver(QObject):
         self._used: set[str] = set()
 
     def start(self, jobs: list[tuple[str, str]], referer: str | None, folder: str,
-              base: str = "") -> None:
-        """jobs: [(url, имя_файла)] — имена уже выданы assign_webp_names().
+              base: str = "", fmt_name: str = DEFAULT_FORMAT) -> None:
+        """jobs: [(url, имя_файла)] — имена уже выданы assign_image_names().
 
         ``base`` — базовое имя без расширения: если файл с выданным именем
         появится в папке до момента записи (создан другой программой), задача
-        уедет на следующий свободный base-N.webp, не тронув чужой файл.
+        уедет на следующий свободный base-N.ext, не тронув чужой файл.
         """
         if not jobs:
             return
+        if fmt_name not in SAVE_FORMATS:
+            fmt_name = DEFAULT_FORMAT
         os.makedirs(folder, exist_ok=True)
         self._stopped = False
         self._folder = folder
         self._pending = len(jobs)
         self._ok = 0
         self._fail = 0
+        ext = SAVE_FORMATS[fmt_name][1]
         if not base:
             first = jobs[0][1]
-            base = first[:-5] if first.lower().endswith(".webp") else first
+            base = first[:-len(ext)] if first.lower().endswith(ext) else first
         self._used = {name.lower() for _, name in jobs}
         for index, (url, filename) in enumerate(jobs):
-            self._pool.start(_WebpTask(self, index, url, filename, folder, referer, base))
+            self._pool.start(
+                _SaveTask(self, index, url, filename, folder, referer, base, fmt_name))
 
     def stop(self) -> None:
         self._stopped = True
@@ -209,22 +251,22 @@ class WebpSaver(QObject):
 
     # ---------- внутреннее (вызывается из рабочих потоков) ----------
 
-    def _free_write_name(self, folder: str, wanted: str, base: str) -> str:
+    def _free_write_name(self, folder: str, wanted: str, base: str, ext: str) -> str:
         """Гарантия «существующие файлы не перезаписываются» в момент записи.
 
-        Вызывается из рабочего потока непосредственно перед img.save():
-        если ``wanted`` уже есть на диске (появился после выдачи имён),
-        берётся первое свободное base-N.webp, резервируясь за пачкой.
+        Вызывается из рабочего потока непосредственно перед записью: если
+        ``wanted`` уже есть на диске (появился после выдачи имён), берётся
+        первое свободное base-N.ext, резервируясь за пачкой.
         """
         with self._name_lock:
             if not os.path.lexists(os.path.join(folder, wanted)):
                 return wanted
-            candidate = f"{base}.webp"
+            candidate = f"{base}{ext}"
             n = 0
             while (candidate.lower() in self._used
                    or os.path.lexists(os.path.join(folder, candidate))):
                 n += 1
-                candidate = f"{base}-{n}.webp"
+                candidate = f"{base}-{n}{ext}"
             self._used.add(candidate)
             return candidate
 

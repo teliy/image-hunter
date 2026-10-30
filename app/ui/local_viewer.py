@@ -10,6 +10,7 @@ import tempfile
 
 from PySide6.QtCore import (
     QObject,
+    QMimeData,
     QRunnable,
     QSettings,
     QSize,
@@ -26,6 +27,7 @@ except ImportError:  # в части сборок PySide6 класс живёт 
     from PySide6.QtGui import QStorageInfo  # type: ignore[no-redef]
 from PySide6.QtGui import (
     QDesktopServices,
+    QDrag,
     QIcon,
     QImage,
     QImageReader,
@@ -55,6 +57,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.core import i18n
+from app.core.i18n import tr
+
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"}
 THUMB = 160
 TREE_WIDTH = 230
@@ -72,12 +77,13 @@ _VIRTUAL_PREFIXES = ("/proc", "/sys", "/dev", "/run", "/snap", "/boot", "/var/li
 
 def _fmt_bytes(num: float) -> str:
     value = float(num)
-    unit = "Б"
-    for unit in ("Б", "КБ", "МБ", "ГБ", "ТБ"):
-        if value < 1024 or unit == "ТБ":
+    unit_key = "unit.b"
+    for unit_key in ("unit.b", "unit.kb", "unit.mb", "unit.gb", "unit.tb"):
+        if value < 1024 or unit_key == "unit.tb":
             break
         value /= 1024
-    return f"{value:.0f} {unit}" if unit == "Б" else f"{value:.1f} {unit}"
+    unit = tr(unit_key)
+    return f"{value:.0f} {unit}" if unit_key == "unit.b" else f"{value:.1f} {unit}"
 
 
 def natural_key(name: str):
@@ -324,6 +330,34 @@ class _SearchTask(QRunnable):
 
 # ---------- виджет ----------
 
+def make_file_urls_mime(paths: list[str]) -> QMimeData:
+    """MIME с выбранными файлами (text/uri-list) — то, что понимают Проводник,
+    почтовый клиент и другие приложения: передаются пути-оригиналы."""
+    mime = QMimeData()
+    mime.setUrls([QUrl.fromLocalFile(p) for p in paths])
+    return mime
+
+
+class _ThumbList(QListWidget):
+    """Список миниатюр с drag'n'drop: выделенные файлы перетаскиваются мышью
+    в Проводник, почту и другие приложения (text/uri-list с путями файлов).
+    Выделение нескольких файлов — Ctrl и Shift, как в Проводнике."""
+
+    def startDrag(self, actions) -> None:  # noqa: N802 (Qt API)
+        items = self.selectedItems()
+        paths = [it.data(Qt.UserRole) for it in items if it.data(Qt.UserRole)]
+        if not paths or not (int(actions) & int(Qt.CopyAction)):
+            return
+        drag = QDrag(self)
+        drag.setMimeData(make_file_urls_mime(paths))
+        # за курсором едет миниатюра первого выбранного файла
+        pix = items[0].icon().pixmap(THUMB, THUMB)
+        if not pix.isNull():
+            drag.setPixmap(pix.scaled(96, 96, Qt.KeepAspectRatio,
+                                      Qt.SmoothTransformation))
+        drag.exec(Qt.CopyAction)
+
+
 class LocalViewer(QWidget):
     """Слева дерево дисков/папок, затем лента миниатюр, справа просмотр выбранной картинки."""
 
@@ -351,59 +385,63 @@ class LocalViewer(QWidget):
         bar = QHBoxLayout()
         bar.setContentsMargins(6, 4, 6, 4)
 
-        def btn(text, tip, slot, shortcut=None):
+        # (кнопка, ключ_текста | None, ключ_подсказки) — для перетрансляции при смене языка
+        self._i18n_buttons: list[tuple[QToolButton, str | None, str]] = []
+
+        def btn(text_key: str | None, tip_key: str, slot, shortcut=None,
+                literal: str | None = None) -> QToolButton:
             b = QToolButton()
-            b.setText(text)
-            b.setToolTip(tip)
+            if text_key is not None:
+                b.setText(tr(text_key))
+            elif literal is not None:
+                b.setText(literal)
+            b.setToolTip(tr(tip_key))
             b.clicked.connect(slot)
             if shortcut:
                 sc = QShortcut(QKeySequence(shortcut), self)
                 sc.activated.connect(slot)
             bar.addWidget(b)
+            self._i18n_buttons.append((b, text_key, tip_key))
             return b
 
-        btn("📂 Открыть папку…", "Выбрать папку с изображениями (Ctrl+O)", self.open_folder, "Ctrl+O")
+        btn("viewer.open_folder", "viewer.open_folder_tip", self.open_folder, "Ctrl+O")
         bar.addSpacing(8)
         self.btn_thumbs = QToolButton()
-        self.btn_thumbs.setText("🖼 Миниатюры")
+        self.btn_thumbs.setText(tr("viewer.thumbs"))
         self.btn_thumbs.setCheckable(True)
         self.btn_thumbs.setChecked(self._thumbs_enabled)
-        self.btn_thumbs.setToolTip(
-            "Включено: предпросмотр грузится только для видимой части списка —\n"
-            "сетевой диск не читает все файлы подряд.\n"
-            "Выключено: миниатюры не загружаются вовсе (для очень медленных дисков).")
+        self.btn_thumbs.setToolTip(tr("viewer.thumbs_tip"))
         self.btn_thumbs.toggled.connect(self._on_toggle_thumbs)
         bar.addWidget(self.btn_thumbs)
+        self._i18n_buttons.append((self.btn_thumbs, "viewer.thumbs", "viewer.thumbs_tip"))
         bar.addSpacing(8)
-        self.btn_prev = btn("◀", "Предыдущая (Left)", lambda: self.step(-1))
-        self.btn_next = btn("▶", "Следующая (Right)", lambda: self.step(+1))
+        self.btn_prev = btn(None, "viewer.prev_tip", lambda: self.step(-1), literal="◀")
+        self.btn_next = btn(None, "viewer.next_tip", lambda: self.step(+1), literal="▶")
         bar.addSpacing(8)
-        btn("−", "Уменьшить", lambda: self.zoom(1 / 1.25))
-        btn("100%", "Реальный размер", lambda: self.set_manual_zoom(1.0))
-        btn("◱", "Вписать в окно", self.fit_to_window)
-        btn("+", "Увеличить", lambda: self.zoom(1.25))
+        btn(None, "viewer.zoom_out_tip", lambda: self.zoom(1 / 1.25), literal="−")
+        btn(None, "viewer.actual_tip", lambda: self.set_manual_zoom(1.0), literal="100%")
+        btn(None, "viewer.fit_tip", self.fit_to_window, literal="◱")
+        btn(None, "viewer.zoom_in_tip", lambda: self.zoom(1.25), literal="+")
         bar.addSpacing(8)
-        btn("🗂 Показать в проводнике", "Открыть текущую папку в Проводнике", self.reveal_folder)
+        btn("viewer.reveal", "viewer.reveal_tip", self.reveal_folder)
         bar.addSpacing(8)
         self.search_edit = QLineEdit()
-        self.search_edit.setPlaceholderText("🔍 Поиск по папке и подпапкам…")
+        self.search_edit.setPlaceholderText(tr("viewer.search_ph"))
         self.search_edit.setClearButtonEnabled(True)
         self.search_edit.setMaximumWidth(220)
-        self.search_edit.setToolTip(
-            "Введите часть имени файла — найдутся все картинки в текущей папке\n"
-            "и всех подпапках. Без масок и звёздочек, регистр не важен. Esc — сброс.")
+        self.search_edit.setToolTip(tr("viewer.search_tip"))
         self.search_edit.textChanged.connect(self._on_search_text_changed)
         self.search_edit.returnPressed.connect(self._start_search_now)
         bar.addWidget(self.search_edit)
         esc = QShortcut(QKeySequence("Esc"), self)
         esc.activated.connect(self.search_edit.clear)
         bar.addStretch(1)
-        self.status = QLabel("Выберите диск или папку в дереве слева, либо «Открыть папку…» (Ctrl+O)")
+        self.status = QLabel(tr("viewer.pick"))
         self.status.setStyleSheet("color: #666;")
         bar.addWidget(self.status)
 
         # --- список миниатюр ---
-        self.list = QListWidget()
+        self.list = _ThumbList()
         self.list.setViewMode(QListWidget.IconMode)
         self.list.setIconSize(QSize(THUMB, THUMB))
         self.list.setResizeMode(QListWidget.Adjust)
@@ -411,6 +449,11 @@ class LocalViewer(QWidget):
         self.list.setSpacing(6)
         self.list.setUniformItemSizes(True)
         self.list.setMinimumWidth(THUMB + 34)  # ширина задаётся сплиттером — панель растягивается мышью
+        # drag'n'drop: выделенные файлы перетаскиваются мышью в другие приложения
+        self.list.setSelectionMode(QListWidget.ExtendedSelection)
+        self.list.setDragEnabled(True)
+        self.list.setDragDropMode(QListWidget.DragOnly)
+        self.list.setToolTip(tr("viewer.dnd_tip"))
         self.list.currentRowChanged.connect(self._show_index)
         self.list.itemDoubleClicked.connect(
             lambda item: QDesktopServices.openUrl(QUrl.fromLocalFile(item.data(Qt.UserRole)))
@@ -431,11 +474,12 @@ class LocalViewer(QWidget):
         tree_lay.setSpacing(0)
         tree_hdr = QHBoxLayout()
         tree_hdr.setContentsMargins(8, 6, 4, 2)
-        tree_hdr.addWidget(QLabel("Диски и папки"))
+        self.tree_hdr_label = QLabel(tr("viewer.drives"))
+        tree_hdr.addWidget(self.tree_hdr_label)
         tree_hdr.addStretch(1)
         btn_refresh = QToolButton()
         btn_refresh.setText("⟳")
-        btn_refresh.setToolTip("Обновить список дисков и папок (например, после подключения флешки)")
+        btn_refresh.setToolTip(tr("viewer.refresh_tip"))
         btn_refresh.setAutoRaise(True)
         btn_refresh.clicked.connect(lambda: self.refresh_drives())
         tree_hdr.addWidget(btn_refresh)
@@ -505,11 +549,29 @@ class LocalViewer(QWidget):
 
         self.refresh_drives()
         self._restore_last_folder()
+        i18n.signals.changed.connect(self._retranslate)
+
+    # ---------- перетрансляция при смене языка ----------
+
+    def _retranslate(self, *_args) -> None:
+        """Обновить статические надписи (i18n вызывает при смене языка)."""
+        for b, text_key, tip_key in self._i18n_buttons:
+            if text_key is not None:
+                b.setText(tr(text_key))
+            b.setToolTip(tr(tip_key))
+        self.search_edit.setPlaceholderText(tr("viewer.search_ph"))
+        self.search_edit.setToolTip(tr("viewer.search_tip"))
+        self.list.setToolTip(tr("viewer.dnd_tip"))
+        self.tree_hdr_label.setText(tr("viewer.drives"))
+        if not self._paths:
+            self.status.setText(tr("viewer.pick"))
+        # быстрые ссылки «Домой»/«Изображения» тоже переводятся
+        self.refresh_drives()
 
     # ---------- публичное ----------
 
     def open_folder(self) -> None:
-        folder = QFileDialog.getExistingDirectory(self, "Папка с изображениями", self._folder or "")
+        folder = QFileDialog.getExistingDirectory(self, tr("viewer.open_dlg"), self._folder or "")
         if folder:
             self.search_edit.blockSignals(True)
             self.search_edit.clear()
@@ -559,7 +621,7 @@ class LocalViewer(QWidget):
         if self._paths:
             self.list.setCurrentRow(0)
         else:
-            self.view_label.setText("В этой папке нет изображений")
+            self.view_label.setText(tr("viewer.no_images"))
             self.status.setText(folder or "—")
         self._schedule_visible_thumbs()
 
@@ -590,7 +652,7 @@ class LocalViewer(QWidget):
             return
         base = self._folder
         if not base:
-            self.status.setText("Сначала выберите папку в дереве слева или «Открыть папку…»")
+            self.status.setText(tr("viewer.pick_first"))
             return
         self._cancel_search()
         handle = _SearchHandle()
@@ -608,7 +670,7 @@ class LocalViewer(QWidget):
         self._thumbs_done = 0
         self._pixmap = None
         self._movie = None
-        self.status.setText(f"Поиск «{needle}»…")
+        self.status.setText(tr("viewer.searching", q=needle))
         QThreadPool.globalInstance().start(
             _SearchTask(base, needle.lower(), self._gen, self._search_signals, handle))
 
@@ -627,7 +689,8 @@ class LocalViewer(QWidget):
                             else os.path.basename(path))
             self.list.addItem(item)
         self._search_count += len(items)
-        self.status.setText(f"Поиск «{self._search_needle}»… найдено: {self._search_count}")
+        self.status.setText(tr("viewer.searching_found", q=self._search_needle,
+                               n=self._search_count))
         self._schedule_visible_thumbs()
         if self.list.currentRow() < 0 and self.list.count():
             self.list.setCurrentRow(0)
@@ -636,8 +699,9 @@ class LocalViewer(QWidget):
         if gen != self._gen:
             return
         self._search_handle = None
-        tail = " (показаны первые 5000)" if truncated else ""
-        self.status.setText(f"Поиск «{self._search_needle}»: {total} файлов{tail}")
+        tail = tr("viewer.search_trunc") if truncated else ""
+        self.status.setText(tr("viewer.search_done", q=self._search_needle,
+                               n=total, tail=tail))
 
     # ---------- ленивые миниатюры: грузим только видимую часть ----------
 
@@ -733,7 +797,7 @@ class LocalViewer(QWidget):
             reader.setAutoTransform(True)
             img = reader.read()
             if img.isNull():
-                self.view_label.setText(f"Не удалось открыть:\n{img.errorString()}")
+                self.view_label.setText(tr("viewer.cant_open", err=img.errorString()))
                 return
             self._pixmap = QPixmap.fromImage(img)
             self._apply_mode()
@@ -745,7 +809,8 @@ class LocalViewer(QWidget):
         else:
             size = QSize(0, 0)
         self.status.setText(
-            f"{os.path.basename(path)}  •  {row + 1} из {len(self._paths)}  •  {size.width()}×{size.height()}"
+            f"{os.path.basename(path)}  •  {tr('viewer.of', i=row + 1, n=len(self._paths))}"
+            f"  •  {size.width()}×{size.height()}"
         )
 
     # ---------- зум ----------
@@ -797,10 +862,10 @@ class LocalViewer(QWidget):
         home = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.HomeLocation)
         pics = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.PicturesLocation)
         if home and os.path.isdir(home):
-            self._add_folder_item(None, home, title="🏠 Домой",
+            self._add_folder_item(None, home, title=tr("viewer.home"),
                                   icon=QStyle.StandardPixmap.SP_DirHomeIcon)
         if pics and os.path.isdir(pics) and os.path.normpath(pics) != os.path.normpath(home):
-            self._add_folder_item(None, pics, title="🖼 Изображения")
+            self._add_folder_item(None, pics, title=tr("viewer.pictures"))
 
         for si in QStorageInfo.mountedVolumes():
             if not si.isValid() or not si.isReady():
@@ -821,14 +886,14 @@ class LocalViewer(QWidget):
         path = si.rootPath()
         label = si.displayName() or path
         if os.name != "nt" and label == path:
-            label = "💾 " + (path if len(path) > 1 else "Диск /")
+            label = "💾 " + (path if len(path) > 1 else tr("viewer.drive_root"))
         item = QTreeWidgetItem([label])
         item.setData(0, Qt.ItemDataRole.UserRole, path)
         item.setIcon(0, self.style().standardIcon(QStyle.StandardPixmap.SP_DriveHDIcon))
         total, free = si.bytesTotal(), si.bytesFree()
         tip = path
         if total > 0:
-            tip += f"\nСвободно: {_fmt_bytes(free)} из {_fmt_bytes(total)}"
+            tip += "\n" + tr("viewer.free_space", free=_fmt_bytes(free), total=_fmt_bytes(total))
         item.setToolTip(0, tip)
         item.addChild(self._dummy_item())
         self.tree.addTopLevelItem(item)

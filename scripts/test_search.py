@@ -100,7 +100,7 @@ def main() -> int:
               f"count={viewer.list.count()}")
 
         # 5. модуль обновлений
-        check("is_newer: 0.3.0 новее текущей", updates.is_newer("0.3.0", __version__))
+        check("is_newer: заведомо новая версия распознаётся", updates.is_newer("99.0.0", __version__))
         check("is_newer: та же версия не новее", not updates.is_newer(__version__, __version__))
         check("is_newer: 0.10.0 > 0.9.9", updates.is_newer("0.10.0", "0.9.9"))
         check("is_newer: 0.2.10 > 0.2.9", updates.is_newer("0.2.10", "0.2.9"))

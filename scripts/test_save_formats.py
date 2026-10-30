@@ -1,12 +1,13 @@
-"""Оффлайн-тест сохранения отмеченных картинок как WebP.
+"""Оффлайн-тест сохранения отмеченных картинок в выбранном формате.
 
-Проверяет: правила имён (название.webp, название-1.webp, название-2.webp…),
-пропуск занятых имён (в т.ч. без учёта регистра), отказ от перезаписи
-существующих файлов в момент записи (чужой файл уцелел), точечные проверки
-когда листинг папки недоступен, перекодирование в WebP и полный конвейер
-WebpSaver на локальном HTTP-сервере (без реальной сети).
+Проверяет: правила имён (название.ext, название-1.ext, название-2.ext…),
+пропуск занятых имён (в т.ч. без учёта регистра), точечные проверки когда
+листинг папки недоступен, отказ от перезаписи существующих файлов в момент
+записи (чужой файл уцелел), все форматы (WebP/PNG/JPEG/BMP/TIFF),
+наложение альфа-канала на белый фон для JPEG и полный конвейер ImageSaver
+на локальном HTTP-сервере (без реальной сети).
 
-Запуск: QT_QPA_PLATFORM=offscreen python scripts/test_webp_save.py
+Запуск: QT_QPA_PLATFORM=offscreen python scripts/test_save_formats.py
 """
 
 import http.server
@@ -25,7 +26,7 @@ from PySide6.QtCore import QBuffer, QByteArray  # noqa: E402
 from PySide6.QtGui import QImage  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from app.core import webp_saver  # noqa: E402
+from app.core import image_saver  # noqa: E402
 
 FAILURES: list[str] = []
 
@@ -42,6 +43,16 @@ def image_bytes(fmt: str, w: int = 320, h: int = 240, color: int = 0x336699) -> 
     buf = QBuffer()
     buf.open(QBuffer.OpenModeFlag.ReadWrite)
     assert img.save(buf, fmt, 85)
+    return bytes(buf.data())
+
+
+def alpha_image_bytes(w: int = 64, h: int = 64) -> bytes:
+    """PNG с прозрачным фоном — для проверки наложения на белый в JPEG."""
+    img = QImage(w, h, QImage.Format.Format_ARGB32)
+    img.fill(0)   # полностью прозрачный
+    buf = QBuffer()
+    buf.open(QBuffer.OpenModeFlag.ReadWrite)
+    assert img.save(buf, "PNG")
     return bytes(buf.data())
 
 
@@ -68,77 +79,95 @@ class _Handler(http.server.BaseHTTPRequestHandler):
 def main() -> int:
     app = QApplication.instance() or QApplication(sys.argv)
 
-    tmp = tempfile.mkdtemp(prefix="ih_webp_")
+    tmp = tempfile.mkdtemp(prefix="ih_save_")
     try:
         # 1. очистка имени файла
         check("sanitize: запрещённые символы убраны",
-              webp_saver.sanitize_base_name('кот: "Мурзик" <2024>?') == "кот Мурзик 2024",
-              webp_saver.sanitize_base_name('кот: "Мурзик" <2024>?'))
+              image_saver.sanitize_base_name('кот: "Мурзик" <2024>?') == "кот Мурзик 2024",
+              image_saver.sanitize_base_name('кот: "Мурзик" <2024>?'))
         check("sanitize: пустое имя → пустая строка (заменит вызывающий)",
-              webp_saver.sanitize_base_name("  ...  ") == "")
+              image_saver.sanitize_base_name("  ...  ") == "")
 
         # 2. имена пачки в пустой папке
-        names = webp_saver.assign_webp_names(tmp, "кот", 3)
+        names = image_saver.assign_image_names(tmp, "кот", ".webp", 3)
         check("имена пачки: название.webp, название-1.webp, название-2.webp",
               names == ["кот.webp", "кот-1.webp", "кот-2.webp"], str(names))
+        names_png = image_saver.assign_image_names(tmp, "кот", ".png", 2)
+        check("расширение подставляется: .png",
+              names_png == ["кот.png", "кот-1.png"], str(names_png))
 
         # 3. пропуск занятых имён (есть кот.webp и кот-2.webp)
-        used_dir = tempfile.mkdtemp(prefix="ih_webp_u_", dir=tmp)
+        used_dir = tempfile.mkdtemp(prefix="ih_save_u_", dir=tmp)
         open(os.path.join(used_dir, "кот.webp"), "wb").close()
         open(os.path.join(used_dir, "кот-2.webp"), "wb").close()
-        names2 = webp_saver.assign_webp_names(used_dir, "кот", 4)
+        names2 = image_saver.assign_image_names(used_dir, "кот", ".webp", 4)
         check("занятые имена пропускаются",
               names2 == ["кот-1.webp", "кот-3.webp", "кот-4.webp", "кот-5.webp"], str(names2))
 
         # 4. регистр не важен (как на дисках Windows)
-        case_dir = tempfile.mkdtemp(prefix="ih_webp_c_", dir=tmp)
+        case_dir = tempfile.mkdtemp(prefix="ih_save_c_", dir=tmp)
         open(os.path.join(case_dir, "Кот-1.webp"), "wb").close()
-        names3 = webp_saver.assign_webp_names(case_dir, "кот", 2)
+        names3 = image_saver.assign_image_names(case_dir, "кот", ".webp", 2)
         check("коллизия без учёта регистра",
               names3 == ["кот.webp", "кот-2.webp"], str(names3))
 
         # 4b. листинг папки недоступен — точечные проверки кандидатов всё равно
         # находят занятое имя (chmod 333: listdir запрещён, lexists работает)
-        probe_dir = tempfile.mkdtemp(prefix="ih_webp_p_", dir=tmp)
+        probe_dir = tempfile.mkdtemp(prefix="ih_save_p_", dir=tmp)
         open(os.path.join(probe_dir, "кот-1.webp"), "wb").close()
         os.chmod(probe_dir, 0o333)
         try:
             check("листинг недоступной папки → None",
-                  webp_saver._existing_lower_names(probe_dir) is None)
-            names_p = webp_saver.assign_webp_names(probe_dir, "кот", 2)
+                  image_saver._existing_lower_names(probe_dir) is None)
+            names_p = image_saver.assign_image_names(probe_dir, "кот", ".webp", 2)
             check("точечные проверки пропускают занятое имя",
                   names_p == ["кот.webp", "кот-2.webp"], str(names_p))
         finally:
             os.chmod(probe_dir, 0o755)
 
-        # 5. перекодирование PNG-байтов → файл WebP
-        out = os.path.join(tmp, "conv.webp")
-        w, h = webp_saver.decode_to_webp(image_bytes("PNG"), out)
-        back = QImage(out)
-        check("PNG → WebP: файл декодируется, размер совпадает",
-              not back.isNull() and (w, h) == (320, 240)
-              and (back.width(), back.height()) == (320, 240),
-              f"{w}×{h}")
+        # 5. перекодирование PNG-байтов в каждый формат
+        for fmt_name in image_saver.SAVE_FORMATS:
+            qt_fmt, ext, _quality = image_saver.SAVE_FORMATS[fmt_name]
+            out = os.path.join(tmp, f"conv{ext}")
+            img = image_saver.decode_image(image_bytes("PNG"))
+            w, h = image_saver.save_image(img, out, fmt_name)
+            back = QImage(out)
+            check(f"{fmt_name}: файл декодируется, размер совпадает",
+                  not back.isNull() and (w, h) == (320, 240)
+                  and (back.width(), back.height()) == (320, 240), f"{w}×{h}")
 
-        # 6. полный конвейер WebpSaver на локальном HTTP-сервере
+        # 5b. альфа-канал → белый фон для JPEG (иначе прозрачность станет чёрной)
+        out_jpg = os.path.join(tmp, "alpha.jpg")
+        img = image_saver.decode_image(alpha_image_bytes())
+        image_saver.save_image(img, out_jpg, "JPEG")
+        back = QImage(out_jpg)
+        check("JPEG: альфа наложена на белый (формат без альфы)",
+              not back.isNull() and not back.hasAlphaChannel())
+        if not back.isNull():
+            px = back.pixelColor(1, 1)
+            check("JPEG: прозрачные пиксели стали белыми",
+                  px.red() > 245 and px.green() > 245 and px.blue() > 245,
+                  f"rgb({px.red()},{px.green()},{px.blue()})")
+
+        # 6. полный конвейер ImageSaver на локальном HTTP-сервере
         _Handler.files = {
             "/a.png": image_bytes("PNG"),
             "/b.jpg": image_bytes("JPEG", 800, 600, 0x884422),
         }
         server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
         threading.Thread(target=server.serve_forever, daemon=True).start()
-        base = f"http://127.0.0.1:{server.server_address[1]}"
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
 
-        save_dir = tempfile.mkdtemp(prefix="ih_webp_s_", dir=tmp)
-        urls = [base + "/a.png", base + "/missing.png", base + "/b.jpg"]
-        names4 = webp_saver.assign_webp_names(save_dir, "кот", 3)
+        save_dir = tempfile.mkdtemp(prefix="ih_save_s_", dir=tmp)
+        urls = [base_url + "/a.png", base_url + "/missing.png", base_url + "/b.jpg"]
+        names4 = image_saver.assign_image_names(save_dir, "кот", ".webp", 3)
 
-        saver = webp_saver.WebpSaver()
+        saver = image_saver.ImageSaver()
         results: list = []
         done: dict = {}
         saver.file_done.connect(lambda i, ok, info: results.append((i, ok, info)))
         saver.finished.connect(lambda ok, fail, folder: done.update(ok=ok, fail=fail))
-        saver.start(list(zip(urls, names4)), None, save_dir)
+        saver.start(list(zip(urls, names4)), None, save_dir, "кот", "WebP")
 
         deadline = time.time() + 30
         while "ok" not in done and time.time() < deadline:
@@ -165,15 +194,15 @@ def main() -> int:
 
         # 7. перезапись невозможна и в момент записи: чужой файл появился
         # уже ПОСЛЕ выдачи имён (как будто его создала другая программа)
-        race_dir = tempfile.mkdtemp(prefix="ih_webp_r_", dir=tmp)
-        urls2 = [base + "/a.png", base + "/b.jpg"]   # оба живые (без 404 из теста 6)
-        names5 = webp_saver.assign_webp_names(race_dir, "кот", 2)  # кот.webp, кот-1.webp
+        race_dir = tempfile.mkdtemp(prefix="ih_save_r_", dir=tmp)
+        urls2 = [base_url + "/a.png", base_url + "/b.jpg"]   # оба живые (без 404)
+        names5 = image_saver.assign_image_names(race_dir, "кот", ".webp", 2)
         foreign = os.path.join(race_dir, "кот.webp")
         open(foreign, "wb").close()
-        saver2 = webp_saver.WebpSaver()
+        saver2 = image_saver.ImageSaver()
         done2: dict = {}
         saver2.finished.connect(lambda ok, fail, f: done2.update(ok=ok, fail=fail))
-        saver2.start(list(zip(urls2, names5)), None, race_dir, "кот")
+        saver2.start(list(zip(urls2, names5)), None, race_dir, "кот", "WebP")
         deadline = time.time() + 30
         while "ok" not in done2 and time.time() < deadline:
             app.processEvents()
