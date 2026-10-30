@@ -6,7 +6,9 @@
    (origUrl из data-bem, img_url, u= прокси DDG, murl Bing);
 3. клики по чекбоксам обновляют счётчик и список отмеченных;
 4. MutationObserver подхватывает плитки, догруженные после первого прохода;
-5. повторный клик снимает отметку.
+5. повторный клик снимает отметку;
+6. «Снять отметки» (uncheckAll) обнуляет все отметки и счётчик;
+7. кнопка «✕ Снять отметки» в тулбаре есть и активируется по счётчику.
 
 Запуск:
     QT_QPA_PLATFORM=offscreen python scripts/test_checkboxes.py [--live]
@@ -207,7 +209,66 @@ def run_mock_test() -> None:
     check("оригинал динамической плитки в списке",
           "https://example.org/pic5.jpg" in bests2, f"{sorted(bests2)}")
 
+    # ---- кнопка «Снять отметки»: window.__IH_CB.uncheckAll() ----
+    from app.core.extractor import uncheck_all_selections
+
+    uncheck_all_selections(view.page())
+    wait_ms(300)
+    count4 = run_js(view.page(), "window.__IH_CB_COUNT || 0")
+    check("uncheckAll обнуляет счётчик", count4 == 0, f"{count4}")
+
+    live = run_js(view.page(), "document.querySelectorAll('.ih-cb input:checked').length")
+    check("активных чекбоксов не осталось", live == 0, f"{live}")
+
+    outlined = run_js(view.page(), "document.querySelectorAll('.ih-checked').length")
+    check("оранжевая рамка снята со всех плиток", outlined == 0, f"{outlined}")
+
+    got3: dict = {}
+    loop3 = QEventLoop()
+
+    def on_sel3(items):
+        got3["items"] = items
+        loop3.quit()
+
+    _f2(view.page(), on_sel3)
+    loop3.exec()
+    check("fetch_checked_selections после снятия вернул 0",
+          len(got3.get("items", [])) == 0, f"{len(got3.get('items', []))}")
+
+    # одиночная отметка снова работает после массового снятия
+    run_js(view.page(), "document.querySelectorAll('.ih-cb')[1].click()")
+    wait_ms(200)
+    count5 = run_js(view.page(), "window.__IH_CB_COUNT || 0")
+    check("после массового снятия одиночная отметка работает", count5 == 1, f"{count5}")
+
+    # повторный uncheckAll на пустом наборе — безопасен
+    uncheck_all_selections(view.page())
+    wait_ms(200)
+    count6 = run_js(view.page(), "window.__IH_CB_COUNT || 0")
+    check("повторный uncheckAll без отметок безопасен", count6 == 0, f"{count6}")
+
     view.deleteLater()
+    wait_ms(100)
+
+    # ---- кнопка «✕ Снять отметки» в тулбаре WebSearch (UI-проводка) ----
+    from app.ui.web_search import WebSearch
+
+    ws = WebSearch()
+    check("кнопка «Снять отметки» есть в тулбаре",
+          hasattr(ws, "btn_clear") and ws.btn_clear.text() == "✕ Снять отметки",
+          ws.btn_clear.text())
+    check("без отметок кнопка выключена", not ws.btn_clear.isEnabled())
+
+    ws._on_poll_result(4)   # как будто на странице отметили 4 плитки
+    check("при 4 отметках кнопка включена", ws.btn_clear.isEnabled())
+    check("счётчик «(4)» появился на соседних кнопках",
+          "4" in ws.btn_checked.text() and "4" in ws.btn_webp.text())
+
+    ws.clear_checked()      # страница без чекбоксов: JS — no-op, счётчик обнуляется
+    wait_ms(100)
+    check("clear_checked обнуляет счётчик и выключает кнопку",
+          ws._checked_count == 0 and not ws.btn_clear.isEnabled())
+    ws.deleteLater()
 
 
 def run_live_test() -> None:

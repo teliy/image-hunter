@@ -29,6 +29,7 @@ from app.core.extractor import (
     fetch_checked_selections,
     inject_checkbox_ui,
     rescan_checkbox_ui,
+    uncheck_all_selections,
 )
 
 ENGINES = [
@@ -112,12 +113,20 @@ class WebSearch(QWidget):
         self.btn_webp.setEnabled(False)
         self.btn_webp.clicked.connect(self.save_checked_as_webp)
 
+        self.btn_clear = QToolButton()
+        self.btn_clear.setText("✕ Снять отметки")
+        self.btn_clear.setToolTip(
+            "Снять все оранжевые галочки с плиток выдачи одним нажатием")
+        self.btn_clear.setEnabled(False)
+        self.btn_clear.clicked.connect(self.clear_checked)
+
         bar.addWidget(self.query, 1)
         bar.addWidget(self.engine)
         bar.addWidget(go)
         bar.addWidget(collect)
         bar.addWidget(self.btn_checked)
         bar.addWidget(self.btn_webp)
+        bar.addWidget(self.btn_clear)
 
         self.view = QWebEngineView()
         self.view.setUrl(QUrl("https://ya.ru/images/"))
@@ -156,6 +165,12 @@ class WebSearch(QWidget):
     def save_checked_as_webp(self) -> None:
         """Отмеченные плитки → перекодировать в WebP → папка из «Моих картинок»."""
         fetch_checked_selections(self.view.page(), self._on_checked_webp)
+
+    def clear_checked(self) -> None:
+        """Снять все отметки с плиток на текущей странице выдачи."""
+        uncheck_all_selections(self.view.page())
+        # мгновенный отклик кнопок, не дожидаясь следующего опроса (700 мс)
+        self._on_poll_result(0)
 
     # ---------- внутреннее ----------
 
@@ -234,4 +249,5 @@ class WebSearch(QWidget):
                 f"💾 WebP в папку ({count})" if count else "💾 WebP в папку"
             )
             self.btn_webp.setEnabled(count > 0)
+            self.btn_clear.setEnabled(count > 0)
             self.checked_count_changed.emit(count)

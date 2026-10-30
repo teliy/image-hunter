@@ -384,7 +384,17 @@ CHECKBOX_INIT_JS = r"""
     (document.head || document.documentElement).appendChild(st);
   };
 
-  window.__IH_CB = { scan };
+  // массовое снятие отметок (кнопка «Снять отметки» на тулбаре)
+  const uncheckAll = () => {
+    SEL.forEach((rec, host) => {
+      rec.input.checked = false;
+      rec.checked = false;
+      host.classList.remove('ih-checked');
+    });
+    refresh();
+  };
+
+  window.__IH_CB = { scan, uncheckAll };
 
   injectStyle();
   scan();
@@ -411,6 +421,14 @@ def inject_checkbox_ui(page) -> None:
 def rescan_checkbox_ui(page) -> None:
     """Повторный проход по странице (после поздней отрисовки плиток)."""
     page.runJavaScript("window.__IH_CB && window.__IH_CB.scan()")
+
+
+def uncheck_all_selections(page) -> None:
+    """Снять все отметки с плиток выдачи на странице ``page``."""
+    page.runJavaScript(
+        "window.__IH_CB && window.__IH_CB.uncheckAll"
+        " ? window.__IH_CB.uncheckAll() : 0"
+    )
 
 
 def fetch_checked_selections(page, callback) -> None:
