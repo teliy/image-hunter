@@ -12,8 +12,14 @@
 8. выдача Google (udm=2): миниатюры gstatic/googleusercontent без расширения,
    ленивые плитки (src появляется позже — attributes-observer) и шторм
    мутаций не мешают появлению чекбоксов;
-9. все 13 поисковиков: шаблон каждой вкладки — страница картинок,
-   веб-выдача этих же поисковиков — нет.
+9. все 11 поисковиков: шаблон каждой вкладки — страница картинок,
+   веб-выдача этих же поисковиков — нет;
+10. выдача Brave: прокси-миниатюры imgs.search.brave.com без расширения —
+   оригинал распаковывается из base64 пути, иконки-фавиконы отбрасываются;
+11. выдача Sogou: плитки img-layout/img-height, картинка в атрибуте drag-img
+   (в т.ч. у ленивой плитки без src), оригинал из picurl детальной ссылки;
+12. Mail.ru: выдача открыта во вложенном фрейме — инъекция и «Скачать
+   отмеченные» работают в дочернем фрейме.
 
 Запуск:
     QT_QPA_PLATFORM=offscreen python scripts/test_checkboxes.py [--live]
@@ -499,10 +505,12 @@ def run_google_mock_test() -> None:
 
 
 def run_engines_test() -> None:
-    """Все 13 поисковиков: шаблон вкладки — выдача картинок, веб-выдача — нет."""
+    """Все 11 поисковиков: шаблон вкладки — выдача картинок, веб-выдача — нет."""
     from app.ui.web_search import ENGINES, is_image_search_url
 
-    check("поисковиков 13", len(ENGINES) == 13, str(len(ENGINES)))
+    check("поисковиков 11", len(ENGINES) == 11, str(len(ENGINES)))
+    check("Yahoo и Ecosia убраны из списка",
+          not any("Yahoo" in n or "Ecosia" in n for n, _t, _s, _c in ENGINES))
     check("короткие имена вкладок уникальны (нужны для восстановления)",
           len({e[2] for e in ENGINES}) == len(ENGINES))
     check("полные имена уникальны (ключ настроек)",
@@ -516,17 +524,222 @@ def run_engines_test() -> None:
         "https://www.google.com/search?q=cats",            # веб-выдача Google
         "https://search.brave.com/search?q=cats",
         "https://www.mojeek.com/web?q=cats",
-        "https://www.ecosia.org/search?q=cats",
         "https://www.startpage.com/sp/search?query=cats",  # без cat=images
-        "https://search.yahoo.com/search?p=cats",
         "https://search.naver.com/search.naver?where=web&query=cats",
         "https://www.baidu.com/s?wd=cats",
         "https://www.sogou.com/web?query=cats",
         "https://go.mail.ru/search?q=cats",
         "https://example.com/?q=cats",
+        # поисковики, убранные из списка: страницы картинок больше не считаются
+        "https://images.search.yahoo.com/search/images?p=cats",
+        "https://www.ecosia.org/images?q=cats",
     ]
     for u in negatives:
         check(f"не выдача картинок: {u}", not is_image_search_url(u), u)
+
+
+def run_brave_mock_test() -> None:
+    """Мок актуальной выдачи картинок Brave (SvelteKit).
+
+    Раньше чекбоксов не было вовсе: плитка — BUTTON.image-result (не якорь),
+    а миниатюра — прокси imgs.search.brave.com/<sig>/rs:fit:…/g:ce/<base64>
+    БЕЗ расширения — looksImage её отбрасывал, кандидаты пусты.
+    Теперь: (1) селектор button.image-result; (2) настоящий оригинал
+    распаковывается из base64 в пути прокси; (3) иконки-фавиконы
+    (payload ведёт на favicons.search.brave.com) отбрасываются целиком.
+    """
+    from PySide6.QtCore import QEventLoop
+    from PySide6.QtWidgets import QApplication
+    from PySide6.QtWebEngineWidgets import QWebEngineView
+
+    from app.core.extractor import fetch_checked_selections, inject_checkbox_ui
+
+    mock = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "mock_serp_brave.html")
+    app = QApplication.instance() or QApplication([])
+    view = QWebEngineView()
+
+    check("мок Brave загрузился", load_page(view, f"file://{mock}"))
+
+    inject_checkbox_ui(view.page())
+    wait_ms(900)
+
+    n_boxes = run_js(view.page(), "document.querySelectorAll('.ih-cb input').length")
+    check("чекбоксы на обеих плитках Brave", n_boxes == 2, f"найдено: {n_boxes}")
+
+    in_btn = run_js(view.page(), "document.querySelectorAll('button .ih-cb').length")
+    check("чекбоксы внутри плиток button.image-result", in_btn == 2, f"{in_btn}")
+
+    plain = run_js(view.page(), """
+        (() => {
+          const a = [...document.querySelectorAll('a')]
+            .find((x) => x.href.startsWith('https://example.com/some/page'));
+          return a ? !!a.querySelector('.ih-cb') : null;
+        })()
+    """)
+    check("веб-ссылка без чекбокса", plain is False, f"{plain}")
+
+    run_js(view.page(), CLICK_ALL_JS)
+    wait_ms(200)
+    count = run_js(view.page(), "window.__IH_CB_COUNT || 0")
+    check("счётчик отмеченных == 2", count == 2, f"{count}")
+
+    got: dict = {}
+    loop = QEventLoop()
+
+    def on_sel(items):
+        got["items"] = items
+        loop.quit()
+
+    fetch_checked_selections(view.page(), on_sel)
+    loop.exec()
+    bests = {it["best"] for it in got.get("items", [])}
+    expected = {
+        "https://example.org/brave1.jpg",      # распакован из base64 пути
+        "https://parts-site.com/brave2.png",   # распакован из base64 пути
+    }
+    check("оригиналы Brave распакованы, фавикон отброшен", bests == expected,
+          f"лишние: {bests - expected}; не хватает: {expected - bests}")
+
+    view.deleteLater()
+    wait_ms(100)
+
+
+def run_sogou_mock_test() -> None:
+    """Мок актуальной выдачи картинок Sogou (Vue SPA).
+
+    Раньше чекбоксов не было вовсе: плитка — DIV.img-layout > A.img-height
+    (классов serp-item/tile нет), а настоящая картинка — в атрибуте
+    drag-img; у ленивой плитки <img> ещё без src. Теперь: (1) селекторы
+    img-layout/img-height; (2) drag-img/data-img берутся как кандидаты;
+    (3) оригинал из picurl детальной ссылки побеждает миниатюру.
+    """
+    from PySide6.QtCore import QEventLoop
+    from PySide6.QtWidgets import QApplication
+    from PySide6.QtWebEngineWidgets import QWebEngineView
+
+    from app.core.extractor import fetch_checked_selections, inject_checkbox_ui
+
+    mock = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "mock_serp_sogou.html")
+    app = QApplication.instance() or QApplication([])
+    view = QWebEngineView()
+
+    check("мок Sogou загрузился", load_page(view, f"file://{mock}"))
+
+    inject_checkbox_ui(view.page())
+    wait_ms(900)
+
+    n_boxes = run_js(view.page(), "document.querySelectorAll('.ih-cb input').length")
+    check("чекбоксы на обеих плитках Sogou", n_boxes == 2, f"найдено: {n_boxes}")
+
+    plain = run_js(view.page(), """
+        (() => {
+          const a = [...document.querySelectorAll('a')]
+            .find((x) => x.href.startsWith('https://example.com/some/page'));
+          return a ? !!a.querySelector('.ih-cb') : null;
+        })()
+    """)
+    check("веб-ссылка без чекбокса", plain is False, f"{plain}")
+
+    run_js(view.page(), CLICK_ALL_JS)
+    wait_ms(200)
+    count = run_js(view.page(), "window.__IH_CB_COUNT || 0")
+    check("счётчик отмеченных == 2", count == 2, f"{count}")
+
+    got: dict = {}
+    loop = QEventLoop()
+
+    def on_sel(items):
+        got["items"] = items
+        loop.quit()
+
+    fetch_checked_selections(view.page(), on_sel)
+    loop.exec()
+    bests = {it["best"] for it in got.get("items", [])}
+    expected = {
+        # у первой плитки оригинала нет в ссылке — лучшая это drag-img
+        "https://img02.sogoucdn.com/app/a/100520093/thumb1.jpg",
+        # у второй из picurl побеждает настоящий оригинал (ленивая плитка без src)
+        "https://orig-site.ru/big2.jpg",
+    }
+    check("drag-img и picurl-оригинал распознаны", bests == expected,
+          f"лишние: {bests - expected}; не хватает: {expected - bests}")
+
+    view.deleteLater()
+    wait_ms(100)
+
+
+def run_frame_mock_test() -> None:
+    """Mail.ru: выдача во вложенном фрейме — чекбоксы и «Скачать отмеченные».
+
+    go.mail.ru/search_images не содержит плиток: выдача — вложенный фрейм
+    (в реале yandex.ru/images/search, в моке — локальный файл). Раньше
+    инъекция шла только в главную страницу, и на Mail.ru чекбоксов не было
+    вовсе. Проверяем: инъекция доходит до дочернего фрейма, а сбор
+    отмеченных (_gather_serp) забирает их именно оттуда.
+    """
+    from PySide6.QtCore import QEventLoop
+    from PySide6.QtWidgets import QApplication
+
+    from app.core import i18n
+    from app.ui import web_search as wsm
+    from app.ui.web_search import WebSearch
+
+    mock = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "mock_serp_mailru.html")
+    app = QApplication.instance() or QApplication([])
+    i18n.set_lang("ru")
+
+    # file://-URL мока не страница поисковика — подменяем проверку на True,
+    # сам механизм выбора фреймов (_serp_frames) остаётся боевым
+    orig_check = wsm.is_image_search_url
+    wsm.is_image_search_url = lambda url: True
+    try:
+        ws = WebSearch()
+        got: dict = {}
+
+        def on_found(urls, referer):
+            got["urls"] = urls
+
+        ws.images_found.connect(on_found)
+        check("мок Mail.ru (обёртка + фрейм) загрузился",
+              load_page(ws.view, f"file://{mock}", wait_ms_after=2200))
+
+        main_boxes = run_js(ws.view.page(),
+                            "document.querySelectorAll('.ih-cb input').length")
+        check("в обёртке Mail.ru чекбоксов нет (плиток там нет)",
+              main_boxes == 0, f"{main_boxes}")
+
+        child = ws.view.page().mainFrame().children()[0]
+        child_boxes = run_js(child,
+                             "document.querySelectorAll('.ih-cb input').length")
+        check("инъекция дошла до вложенного фрейма (2 плитки)",
+              child_boxes == 2, f"{child_boxes}")
+
+        run_js(child, CLICK_ALL_JS)
+        wait_ms(200)
+        child_count = run_js(child, "window.__IH_CB_COUNT || 0")
+        check("обе плитки фрейма отмечены", child_count == 2, f"{child_count}")
+
+        ws.download_checked()
+        # ждём сигнал images_found (сбор идёт по обоим фреймам, до 10 с)
+        for _ in range(50):
+            if "urls" in got:
+                break
+            wait_ms(200)
+        bests = set(got.get("urls", []))
+        expected = {
+            "https://example.org/frame1.jpg",                              # img_url
+            "https://avatars.mds.yandex.net/get-mpic/800/frame_orig2/orig",  # origUrl
+        }
+        check("«Скачать отмеченные» забрал плитки из фрейма", bests == expected,
+              f"лишние: {bests - expected}; не хватает: {expected - bests}")
+
+        ws.deleteLater()
+        wait_ms(100)
+    finally:
+        wsm.is_image_search_url = orig_check
 
 
 def run_live_test() -> None:
@@ -611,6 +824,9 @@ def main() -> int:
         run_mock_test()
         run_ddg_mock_test()
         run_google_mock_test()
+        run_brave_mock_test()
+        run_sogou_mock_test()
+        run_frame_mock_test()
 
     print()
     if FAILURES:

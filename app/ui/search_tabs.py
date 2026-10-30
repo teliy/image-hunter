@@ -40,7 +40,7 @@ from app.core.image_saver import SAVE_FORMATS
 from app.ui.web_search import ENGINES, WebSearch
 
 MAX_TABS = 16   # каждая вкладка — целый браузер; больше не открываем
-                # (поисковиков 13 — «Найти везде» открывает их все сразу)
+                # (поисковиков 11 — «Найти везде» открывает их все сразу)
 SETTINGS_KEY = "web/tabs"
 _SEP = "|"      # разделитель списка поисковиков в настройках
 

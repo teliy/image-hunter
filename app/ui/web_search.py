@@ -30,7 +30,6 @@ from app.core.extractor import (
     collect_image_urls,
     fetch_checked_selections,
     inject_checkbox_ui,
-    rescan_checkbox_ui,
     uncheck_all_selections,
 )
 from app.core.i18n import tr
@@ -50,10 +49,6 @@ ENGINES: list[tuple[str, str, str, str]] = [
      "Bing", "#008373"),
     ("Brave Картинки", "https://search.brave.com/images?q={}",
      "Brave", "#FB542B"),
-    ("Yahoo Картинки", "https://images.search.yahoo.com/search/images?p={}",
-     "Yahoo", "#5F01D1"),
-    ("Ecosia Картинки", "https://www.ecosia.org/images?q={}",
-     "Ecosia", "#008009"),
     ("Startpage Картинки", "https://www.startpage.com/sp/search?query={}&cat=images",
      "Startpage", "#6573FF"),
     ("Mojeek Картинки", "https://www.mojeek.com/images?q={}",
@@ -92,10 +87,6 @@ def is_image_search_url(url: str) -> bool:
         return path.startswith("/images")
     if host.endswith("brave.com"):
         return path.startswith("/images")
-    if host.endswith("search.yahoo.com"):
-        return path.startswith(("/images", "/search/images"))
-    if host.endswith("ecosia.org"):
-        return path.startswith("/images")
     if host.endswith("mojeek.com"):
         return path.startswith("/images")
     if host == "image.baidu.com":
@@ -112,7 +103,13 @@ def is_image_search_url(url: str) -> bool:
 
 
 class WebSearch(QWidget):
-    """Строка поиска + встроенный браузер + чекбоксы на плитках + сбор ссылок."""
+    """Строка поиска + встроенный браузер + чекбоксы на плитках + сбор ссылок.
+
+    У части поисковиков выдача открыта не в главной странице, а во вложенном
+    фрейме (Mail.ru показывает Яндекс.Картинки внутри go.mail.ru) — поэтому
+    инъекция чекбоксов, опрос отметок и сбор ссылок выполняются во всех
+    фреймах-выдачах (см. _serp_frames), а не только на самой странице.
+    """
 
     images_found = Signal(list, str)  # (ссылки, URL страницы-источника)
     checked_count_changed = Signal(int)  # сколько плиток отмечено
@@ -226,19 +223,52 @@ class WebSearch(QWidget):
         self.view.load(QUrl(template.format(quote_plus(text))))
 
     def collect(self) -> None:
-        collect_image_urls(self.view.page(), self._on_collected)
+        def emit(parts: list) -> None:
+            seen: set[str] = set()
+            urls: list[str] = []
+            for part in parts:
+                for u in part:
+                    if u not in seen:
+                        seen.add(u)
+                        urls.append(u)
+            self._on_collected(urls)
+
+        self._gather_serp(collect_image_urls, emit)
 
     def download_checked(self) -> None:
         """Отправить в загрузки оригиналы отмеченных галочками плиток."""
-        fetch_checked_selections(self.view.page(), self._on_checked)
+        def emit(parts: list) -> None:
+            seen: set[str] = set()
+            items: list[dict] = []
+            for part in parts:
+                for it in part:
+                    key = it.get("best")
+                    if key and key not in seen:
+                        seen.add(key)
+                        items.append(it)
+            self._on_checked(items)
+
+        self._gather_serp(fetch_checked_selections, emit)
 
     def save_checked(self) -> None:
         """Отмеченные плитки → перекодировать в выбранный формат → папка из «Моих картинок»."""
-        fetch_checked_selections(self.view.page(), self._on_checked_save)
+        def emit(parts: list) -> None:
+            seen: set[str] = set()
+            items: list[dict] = []
+            for part in parts:
+                for it in part:
+                    key = it.get("best")
+                    if key and key not in seen:
+                        seen.add(key)
+                        items.append(it)
+            self._on_checked_save(items)
+
+        self._gather_serp(fetch_checked_selections, emit)
 
     def clear_checked(self) -> None:
         """Снять все отметки с плиток на текущей странице выдачи."""
-        uncheck_all_selections(self.view.page())
+        for target in (self._serp_frames() or [self._main_frame()]):
+            uncheck_all_selections(target)
         # мгновенный отклик кнопок, не дожидаясь следующего опроса (700 мс)
         self._on_poll_result(0)
 
@@ -270,35 +300,124 @@ class WebSearch(QWidget):
     def _info_no_links(self) -> None:
         QMessageBox.information(self, "Image Hunter", tr("ws.no_links"))
 
+    # ---------- фреймы выдачи (Mail.ru показывает Яндекс во вложенном фрейме) ----------
+
+    def _main_frame(self):
+        """Главный фрейм встроенного браузера (QWebEngineFrame)."""
+        return self.view.page().mainFrame()
+
+    def _serp_frames(self) -> list:
+        """Все фреймы, где сейчас открыта выдача картинок.
+
+        У большинства поисковиков это главный фрейм; у Mail.ru — вложенный
+        фрейм yandex.ru/images/search внутри go.mail.ru. Обходим дерево
+        фреймов (mainFrame().children()) и отбираем те, чей URL — страница
+        картинок известного поисковика.
+        """
+        out = []
+        try:
+            stack = [self._main_frame()]
+        except Exception:
+            return out
+        seen = 0
+        while stack and seen < 16:   # параноидальный предел числа фреймов
+            fr = stack.pop()
+            seen += 1
+            try:
+                stack.extend(fr.children())
+                if not fr.isValid():
+                    continue
+                url = fr.url().toString()
+            except Exception:
+                continue
+            if is_image_search_url(url):
+                out.append(fr)
+        return out
+
+    def _gather_serp(self, run_one, emit, timeout_ms: int = 4000) -> None:
+        """Выполнить ``run_one(target, callback)`` на каждом фрейме выдачи.
+
+        ``emit(parts)`` получает список результатов, когда все фреймы
+        ответили (или по таймауту — фрейм мог исчезнуть и не ответить).
+        Если выдачи нигде нет, сбор идёт на главном фрейме — как раньше.
+
+        Колбэки хранятся в списке всё время ожидания: PySide6 не удерживает
+        ссылку на колбэк ``runJavaScript`` у фрейма — без нашей ссылки его
+        собирает сборщик мусора, и результат никогда не приходит.
+        """
+        targets = self._serp_frames() or [self._main_frame()]
+        parts: list = []
+        state = {"pending": len(targets), "done": False, "cbs": []}
+
+        def finish() -> None:
+            if not state["done"]:
+                state["done"] = True
+                emit(parts)
+
+        def make_cb():
+            def cb(res):
+                parts.append(res)      # результат фрейма — в общий список
+                state["pending"] -= 1
+                if state["pending"] <= 0:
+                    finish()
+            state["cbs"].append(cb)   # держим ссылку: иначе GC убьёт колбэк
+            return cb
+
+        for t in targets:
+            try:
+                run_one(t, make_cb())
+            except Exception:
+                state["pending"] -= 1
+        QTimer.singleShot(timeout_ms, finish)
+
+    def _inject_serp(self) -> None:
+        """Инъекция чекбоксов во все фреймы-выдачи (идемпотентно)."""
+        for fr in self._serp_frames():
+            inject_checkbox_ui(fr)
+
     def _on_load_finished(self, ok: bool) -> None:
         if not ok:
             return
         url = self.view.url().toString()
         if not is_image_search_url(url):
             return
-        page = self.view.page()
-        inject_checkbox_ui(page)
-        # плитки часто рисуются позже основного события загрузки (Google
-        # дорисовывает выдачу несколько секунд) — проверяем несколько раз
-        for ms in (1200, 3000, 6000):
-            QTimer.singleShot(ms, lambda p=page: rescan_checkbox_ui(p))
+        # выдача может быть во вложенном фрейме (Mail.ru), который грузится
+        # ПОСЛЕ страницы-обёртки; плитки часто дорисовываются несколько секунд
+        # (Google) — инъекция идемпотентна, повторяем несколько раз
+        for ms in (0, 1500, 3500, 7000, 12000):
+            QTimer.singleShot(ms, self._inject_serp)
 
     def _on_url_changed(self, url: QUrl) -> None:
         """Новый поиск/вертикаль без перезагрузки страницы — тоже выдача."""
         if not is_image_search_url(url.toString()):
             return
         # идемпотентно: если чекбоксы уже стоят — просто пройдётся скан
-        inject_checkbox_ui(self.view.page())
+        self._inject_serp()
+        for ms in (1500, 4000, 9000):
+            QTimer.singleShot(ms, self._inject_serp)
 
     def _poll_checked_count(self) -> None:
         if not self.isVisible():
             return
-        try:
-            self.view.page().runJavaScript(
-                "window.__IH_CB_COUNT || 0", self._on_poll_result
-            )
-        except Exception:
-            pass
+        targets = self._serp_frames() or [self._main_frame()]
+        counts: dict = {}
+        cbs: list = []   # ссылки на колбэки (иначе GC убивает их для фреймов)
+
+        def cb_factory(key):
+            def cb(value):
+                try:
+                    counts[key] = int(value or 0)
+                except (TypeError, ValueError):
+                    counts[key] = 0
+                self._on_poll_result(max(counts.values()))
+            cbs.append(cb)
+            return cb
+
+        for i, t in enumerate(targets):
+            try:
+                t.runJavaScript("window.__IH_CB_COUNT || 0", cb_factory(i))
+            except Exception:
+                pass
 
     def _set_checked_count(self, count: int) -> None:
         suffix = f" ({count})" if count else ""

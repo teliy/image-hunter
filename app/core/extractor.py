@@ -34,6 +34,25 @@ COLLECT_JS = r"""
         const orig = abs.searchParams.get('u');
         if (orig) { push(orig); return; }
       }
+      // Прокси Brave: /<подпись>/rs:fit:…/g:ce/<base64 оригинала>
+      // (иконки фавиконов favicons.search.brave.com выбрасываем)
+      if (abs.hostname === 'imgs.search.brave.com') {
+        const pm = abs.pathname.match(/\/g:[a-z]+\/(.+)$/);
+        if (pm) {
+          try {
+            let b64 = pm[1].replace(/\/+/g, '').replace(/-/g, '+').replace(/_/g, '/');
+            b64 += '='.repeat((4 - b64.length % 4) % 4);
+            const bin = atob(b64);
+            const bytes = new Uint8Array(bin.length);
+            for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+            const orig = new TextDecoder('utf-8').decode(bytes);
+            if (/^https?:\/\//i.test(orig)
+                && !new URL(orig).hostname.endsWith('favicons.search.brave.com')) {
+              push(orig); return;
+            }
+          } catch (e) {}
+        }
+      }
       urls.add(abs.href);
     } catch (e) {}
   };
@@ -57,6 +76,12 @@ COLLECT_JS = r"""
   // 2. Яндекс: JSON в атрибуте data-bem (там прячутся ссылки на оригиналы)
   document.querySelectorAll('[data-bem]').forEach((el) => pushScan(el.getAttribute('data-bem')));
 
+  // 2b. Sogou: настоящая картинка плитки — в атрибутах drag-img / data-img
+  document.querySelectorAll('[drag-img], [data-img]').forEach((el) => {
+    push(el.getAttribute('drag-img'));
+    push(el.getAttribute('data-img'));
+  });
+
   // 3. Анкоры, ведущие прямо на файлы картинок
   document.querySelectorAll('a[href]').forEach((a) => push(a.href));
 
@@ -70,8 +95,31 @@ COLLECT_JS = r"""
 MAX_URLS = 500
 
 
+def _noop(_result=None) -> None:
+    """Заглушка колбэка для runJavaScript."""
+
+
+# Последние JS-колбэки: PySide6 не удерживает ссылку на колбэк
+# runJavaScript у QWebEngineFrame (у страницы удерживает) — без нашей
+# ссылки колбэк собирает сборщик мусора и результат никогда не приходит.
+_JS_CBS: list = []
+
+
+def run_js(target, code: str, callback=None) -> None:
+    """Выполнить JS на странице-ИЛИ-фрейме QWebEngine.
+
+    У QWebEnginePage callback не обязателен, у QWebEngineFrame — обязателен:
+    всегда передаём колбэк (по умолчанию — заглушку), это работает для обоих.
+    """
+    cb = callback or _noop
+    _JS_CBS.append(cb)
+    if len(_JS_CBS) > 64:          # держим последние 64 — больше не нужно
+        del _JS_CBS[:32]
+    target.runJavaScript(code, cb)
+
+
 def collect_image_urls(page, callback) -> None:
-    """Запустить сбор ссылок на странице ``page`` (QWebEnginePage).
+    """Запустить сбор ссылок на странице ``page`` (QWebEnginePage или фрейм).
 
     ``callback(list[str])`` будет вызван в GUI-потоке со списком ссылок.
     """
@@ -87,7 +135,7 @@ def collect_image_urls(page, callback) -> None:
         urls = [u for u in urls if isinstance(u, str) and u.startswith(("http://", "https://"))]
         callback(urls[:MAX_URLS])
 
-    page.runJavaScript(COLLECT_JS, _done)
+    run_js(page, COLLECT_JS, _done)
 
 
 # --------------------------------------------------------------------------
@@ -109,6 +157,8 @@ CHECKBOX_INIT_JS = r"""
 
   const ON_DDG = /(^|\.)duckduckgo\.com$/.test(location.hostname);
   const ON_GOOGLE = /(^|\.)google\.[a-z.]{2,6}$/.test(location.hostname);
+  const ON_BRAVE = /(^|\.)brave\.com$/.test(location.hostname);
+  const ON_SOGOU = /(^|\.)sogou\.com$/.test(location.hostname);
   const ITEM_SEL = [
     '.serp-item', '[class*="serp-item"]', '[class*="SerpItem"]',
     '[class*="SerpList-Item"]',
@@ -121,7 +171,11 @@ CHECKBOX_INIT_JS = r"""
     ...(ON_DDG ? ['ol > li > figure', 'figure', 'article'] : []),
     // плитка выдачи картинок Google (udm=2); хешированные классы Google
     // меняются от релиза к релизу — при несовпадении срабатывает fallback
-    ...(ON_GOOGLE ? ['.eA0Zlc'] : [])
+    ...(ON_GOOGLE ? ['.eA0Zlc'] : []),
+    // плитка выдачи Brave: BUTTON.image-result с прокси-миниатюрой внутри
+    ...(ON_BRAVE ? ['button.image-result'] : []),
+    // плитка выдачи Sogou: DIV.img-layout > A.img-height (drag-img = картинка)
+    ...(ON_SOGOU ? ['[class*="img-layout"]', '[class*="img-height"]'] : [])
   ].join(',');
 
   const IMAGE_RE = /\.(jpe?g|png|gif|webp|bmp|avif|jfif|tiff?)([?#]|$)/i;
@@ -137,7 +191,10 @@ CHECKBOX_INIT_JS = r"""
     /\.googleusercontent\.com/.test(u) ||          // прокси-миниатюры Google
     /\.mm\.bing\.net\/th/.test(u) ||               // кеш Bing (и миниатюры Yahoo)
     /\/it\/u=/.test(u) ||                          // миниатюры Baidu (img*.baidu.com/it/u=…)
-    /pstatic\.net/.test(u);                        // миниатюры Naver (search.pstatic.net)
+    /pstatic\.net/.test(u) ||                      // миниатюры Naver (search.pstatic.net)
+    /imgs\.search\.brave\.com\//.test(u) ||        // прокси-миниатюры Brave (оригинал в base64 в пути)
+    /sogoucdn\.com/.test(u) ||                     // миниатюры Sogou (img*.sogoucdn.com)
+    /pic\.sogou\.com/.test(u);                     // миниатюры/детальные ссылки Sogou
 
   // --- data-state (новый UI Яндекса): JSON всего SERP'а в атрибуте Root'а ---
   const STATE = new Map(); // url или origin+pathname -> origUrl
@@ -198,6 +255,27 @@ CHECKBOX_INIT_JS = r"""
           const orig = abs.searchParams.get('u');
           if (orig) { add(orig, Math.max(score, 85), true); return; }
         }
+        // Прокси Brave: /<подпись>/rs:fit:…/g:ce/<base64 оригинала> —
+        // настоящий URL зашит в путь, расширения нет. Иконки фавиконов
+        // (payload ведёт на favicons.search.brave.com) выбрасываем целиком.
+        if (abs.hostname === 'imgs.search.brave.com') {
+          const pm = abs.pathname.match(/\/g:[a-z]+\/(.+)$/);
+          if (pm) {
+            try {
+              let b64 = pm[1].replace(/\/+/g, '').replace(/-/g, '+').replace(/_/g, '/');
+              b64 += '='.repeat((4 - b64.length % 4) % 4);
+              const bin = atob(b64);
+              const bytes = new Uint8Array(bin.length);
+              for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+              const orig = new TextDecoder('utf-8').decode(bytes);
+              if (/^https?:\/\//i.test(orig)) {
+                if (new URL(orig).hostname.endsWith('favicons.search.brave.com')) return;
+                add(orig, Math.max(score, 85), true);
+                return;
+              }
+            } catch (e) {}
+          }
+        }
         if (!force && !looksImage(abs.href)) return;
         if (seen.has(abs.href)) {
           const prev = seen.get(abs.href);
@@ -230,19 +308,34 @@ CHECKBOX_INIT_JS = r"""
       walk(data, '');
     });
 
+    // 1b. Sogou: настоящая картинка плитки — в атрибутах drag-img / data-img
+    // (img рендерится директивой v-lazy и может ещё не иметь src).
+    // Без гейта по хосту: на мок-страницах hostname пуст, а drag-img вне
+    // Sogou почти не встречается; data-img принимаем только «похожим на
+    // картинку», чтобы не тащить мусор с чужих сайтов.
+    selfAndDesc('[drag-img], [data-img]').forEach((el) => {
+      ['drag-img', 'data-img'].forEach((k) => {
+        const v = el.getAttribute(k);
+        if (v && /^https?:/i.test(v)) add(v, 75, k === 'drag-img');
+      });
+    });
+
     // 2. Ссылки-плитки: оригиналы в параметрах (Яндекс, Google, DuckDuckGo…)
     selfAndDesc('a[href]').forEach((a) => {
       try {
         const abs = new URL(a.href, location.href);
         const p = abs.searchParams;
         // Параметры-оригиналы поисковиков — картинки по определению (force:
-        // у них бывает URL без расширения — кеш Bing у DDG и т.п.)
-        // piurl — прокси Startpage, mediaurl — детальные ссылки Yahoo/Bing
-        [['img_url', 80], ['imgurl', 80], ['murl', 80], ['u', 85], ['du', 75],
-         ['piurl', 80], ['mediaurl', 80]]
-          .forEach(([k, sc]) => {
+        // у них бывает URL без расширения — кеш Bing у DDG и т.п.).
+        // piurl — прокси Startpage, mediaurl — детальные ссылки Yahoo/Bing,
+        // picurl — детальные ссылки Sogou; url/du — общие, только если похоже
+        // на картинку (force=false)
+        [['img_url', 80, true], ['imgurl', 80, true], ['murl', 80, true],
+         ['u', 85, true], ['piurl', 80, true], ['mediaurl', 80, true],
+         ['picurl', 80, true], ['du', 75, false], ['url', 70, false]]
+          .forEach(([k, sc, force]) => {
             const v = p.get(k);
-            if (v && /^https?:/i.test(v)) add(v, sc, k !== 'du');
+            if (v && /^https?:/i.test(v)) add(v, sc, force);
           });
         // Bing: JSON в атрибуте m=
         const m = a.getAttribute('m');
@@ -464,22 +557,24 @@ CHECKBOX_INIT_JS = r"""
 def inject_checkbox_ui(page) -> None:
     """Навесить чекбоксы выбора на плитки выдачи (идемпотентно, с observer'ом).
 
-    Подсказка чекбокса локализуется на стороне Python (tr) и подставляется
-    в JS как готовый JSON-литерал.
+    ``page`` — QWebEnginePage или QWebEngineFrame (Mail.ru показывает выдачу
+    во вложенном фрейме). Подсказка чекбокса локализуется на стороне Python
+    (tr) и подставляется в JS как готовый JSON-литерал.
     """
-    page.runJavaScript(CHECKBOX_INIT_JS.replace("__IH_CB_TITLE__", json.dumps(tr("ws.cb_title"))))
+    run_js(page, CHECKBOX_INIT_JS.replace("__IH_CB_TITLE__", json.dumps(tr("ws.cb_title"))))
 
 
 def rescan_checkbox_ui(page) -> None:
     """Повторный проход по странице (после поздней отрисовки плиток)."""
-    page.runJavaScript("window.__IH_CB && window.__IH_CB.scan()")
+    run_js(page, "window.__IH_CB && window.__IH_CB.scan()")
 
 
 def uncheck_all_selections(page) -> None:
     """Снять все отметки с плиток выдачи на странице ``page``."""
-    page.runJavaScript(
+    run_js(
+        page,
         "window.__IH_CB && window.__IH_CB.uncheckAll"
-        " ? window.__IH_CB.uncheckAll() : 0"
+        " ? window.__IH_CB.uncheckAll() : 0",
     )
 
 
@@ -504,4 +599,4 @@ def fetch_checked_selections(page, callback) -> None:
                 clean.append({"best": best, "alts": alts})
         callback(clean)
 
-    page.runJavaScript("window.__IH_SEL_JSON || '[]'", _done)
+    run_js(page, "window.__IH_SEL_JSON || '[]'", _done)

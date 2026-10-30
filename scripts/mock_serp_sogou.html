@@ -1,0 +1,39 @@
+<!doctype html>
+<!-- Мок актуальной выдачи картинок Sogou (Vue SPA): плитка —
+     DIV.img-layout > A.img-height[drag-img=картинка] > IMG (v-lazy, src может
+     появиться позже); у второй плитки настоящий оригинал в параметре picurl
+     детальной ссылки, а src миниатюры ещё пуст (ленивая загрузка). -->
+<html lang="zh-CN">
+<body>
+<div class="figure-result" ref="resultContent">
+  <ul class="figure-result-list">
+    <li style="height:180px;width:180px">
+      <div class="img-layout" style="height:180px;width:100%">
+        <a class="img-height" target="_blank"
+           href="https://pic.sogou.com/pic/detail?query=toyota&amp;uuid=abc123"
+           drag-img="https://img02.sogoucdn.com/app/a/100520093/thumb1.jpg"
+           data-uigs="pbtype:cl;type:picresult_module;stype:picresult">
+          <span class="about-tag pos-rb">普通图片</span>
+          <div class="about-img"><p>деталь первого тайла</p></div>
+          <img src="https://img02.sogoucdn.com/app/a/100520093/thumb1.jpg" drag-img="https://img02.sogoucdn.com/app/a/100520093/thumb1.jpg">
+        </a>
+      </div>
+    </li>
+    <li style="height:220px;width:180px">
+      <div class="img-layout" style="height:220px;width:100%">
+        <a class="img-height" target="_blank"
+           href="https://pic.sogou.com/pic/detail?query=toyota&amp;uuid=def456&amp;picurl=https%3A%2F%2Forig-site.ru%2Fbig2.jpg"
+           drag-img="https://img03.sogoucdn.com/app/a/100520093/thumb2.jpg"
+           data-uigs="pbtype:cl;type:picresult_module;stype:picresult">
+          <span class="about-tag pos-rb">普通图片</span>
+          <!-- v-lazy: src ещё пуст, картинка появится при появлении в зоне видимости -->
+          <img data-src="https://img03.sogoucdn.com/app/a/100520093/thumb2.jpg"
+               drag-img="https://img03.sogoucdn.com/app/a/100520093/thumb2.jpg">
+        </a>
+      </div>
+    </li>
+  </ul>
+</div>
+<p><a href="https://example.com/some/page">обычная веб-ссылка</a></p>
+</body>
+</html>

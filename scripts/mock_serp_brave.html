@@ -1,0 +1,34 @@
+<!doctype html>
+<!-- Мок актуальной выдачи картинок Brave (SvelteKit): плитка — BUTTON.image-result,
+     миниатюра — прокси imgs.search.brave.com/<sig>/rs:fit:…/g:ce/<base64 оригинала>
+     без расширения; у второй плитки ещё и фавикон той же плитки внутри. -->
+<html lang="en-us">
+<body>
+<main class="svelte-1cswnon">
+  <div class="images-layout svelte-1cswnon">
+    <div class="images-layout-wrapper svelte-1cswnon">
+      <div class="layout-wrapper svelte-1qhxjcj">
+        <div class="layout svelte-1qhxjcj type--hybrid spacing-xl force-height object-fit-cover">
+          <button class="image-result svelte-1qhxjcj" data-index="0">
+            <div class="image-wrapper svelte-1qhxjcj">
+              <img src="https://imgs.search.brave.com/AbCdEf123/rs:fit:0:180:1:0/g:ce/aHR0cHM6Ly9leGFt/cGxlLm9yZy9icmF2/ZTEuanBn" alt="tile one" loading="lazy">
+            </div>
+            <div class="image-metadata svelte-1qhxjcj">
+              <div class="image-metadata-site svelte-1qhxjcj">
+                <img class="favicon size-3xs svelte-w2a9kc" src="https://imgs.search.brave.com/KqklwToq/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvMTIzL3d3dy5w/YXJ0cy1zaXRlLmNv/bQ" alt="">
+              </div>
+            </div>
+          </button>
+          <button class="image-result svelte-1qhxjcj" data-index="1">
+            <div class="image-wrapper svelte-1qhxjcj">
+              <img src="https://imgs.search.brave.com/XyZ789xyz/rs:fit:500:0:1:0/g:ce/aHR0cHM6Ly9wYXJ0/cy1zaXRlLmNvbS9i/cmF2ZTIucG5n" alt="tile two" loading="lazy">
+            </div>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+</main>
+<p><a href="https://example.com/some/page">обычная веб-ссылка</a></p>
+</body>
+</html>
