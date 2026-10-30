@@ -97,6 +97,12 @@ class MainWindow(QMainWindow):
 
         i18n.signals.changed.connect(self._retranslate)
 
+    def closeEvent(self, event) -> None:  # noqa: N802 (Qt API)
+        """При закрытии запомнить последнюю папку и запрос поиска —
+        оба восстановятся при следующем запуске."""
+        self.local.save_state()
+        super().closeEvent(event)
+
     # ---------- язык интерфейса ----------
 
     def _on_lang_changed(self, index: int) -> None:

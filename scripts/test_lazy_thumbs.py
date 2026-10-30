@@ -57,6 +57,8 @@ def pump(app, ms: int = 400) -> None:
 def main() -> int:
     app = QApplication.instance() or QApplication(sys.argv)
     QSettings("ImageHunter", "ImageHunter").setValue("viewer/thumbs", True)  # изолируем тесты
+    QSettings("ImageHunter", "ImageHunter").setValue("viewer/last_folder", "")
+    QSettings("ImageHunter", "ImageHunter").setValue("viewer/last_query", "")
 
     viewer = lv.LocalViewer()
     viewer.resize(420, 560)   # узкое окно: видно несколько строк из сотен

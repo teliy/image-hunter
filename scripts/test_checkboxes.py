@@ -362,4 +362,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    rc = main()
+    os._exit(rc)  # обходим teardown Qt: известные abort'ы при разрушении виджетов в песочнице

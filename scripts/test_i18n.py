@@ -72,6 +72,8 @@ def main() -> int:
 
     # 4. перетрансляция всех окон без перезапуска
     QSettings("ImageHunter", "ImageHunter").setValue("viewer/thumbs", True)
+    QSettings("ImageHunter", "ImageHunter").setValue("viewer/last_folder", "")
+    QSettings("ImageHunter", "ImageHunter").setValue("viewer/last_query", "")
     QSettings("ImageHunter", "ImageHunter").remove("viewer/splitter")
 
     from app.core.downloader import Downloader

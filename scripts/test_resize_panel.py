@@ -46,6 +46,8 @@ def main() -> int:
     app = QApplication.instance() or QApplication(sys.argv)
     i18n.set_lang("ru")   # тест проверяет русские надписи кнопок
     QSettings("ImageHunter", "ImageHunter").setValue("viewer/thumbs", True)
+    QSettings("ImageHunter", "ImageHunter").setValue("viewer/last_folder", "")
+    QSettings("ImageHunter", "ImageHunter").setValue("viewer/last_query", "")
     QSettings("ImageHunter", "ImageHunter").remove("viewer/splitter")  # детерминизм
 
     tmp = tempfile.mkdtemp(prefix="ih_resize_")

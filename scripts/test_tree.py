@@ -51,6 +51,8 @@ def main() -> int:
 
     app = QApplication.instance() or QApplication(sys.argv)
     QSettings("ImageHunter", "ImageHunter").setValue("viewer/thumbs", True)  # изолируем тесты
+    QSettings("ImageHunter", "ImageHunter").setValue("viewer/last_folder", "")
+    QSettings("ImageHunter", "ImageHunter").setValue("viewer/last_query", "")
     viewer = LocalViewer()
     viewer.resize(800, 900)
     viewer.show()   # ленивые миниатюры грузятся только для видимых строк

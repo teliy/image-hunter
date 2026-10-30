@@ -69,6 +69,8 @@ def main() -> int:
     i18n.set_lang("ru", persist=False)
     QSettings("ImageHunter", "ImageHunter").setValue("viewer/thumbs", True)
     QSettings("ImageHunter", "ImageHunter").setValue("viewer/last_folder", "")
+    QSettings("ImageHunter", "ImageHunter").setValue("viewer/last_query", "")
+    QSettings("ImageHunter", "ImageHunter").setValue("viewer/last_folder", "")
     applog.setup()
 
     from app.ui import app_icon

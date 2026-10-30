@@ -84,6 +84,8 @@ def main() -> int:
     st.remove("viewer/search_width")   # детерминизм
     st.remove("viewer/splitter")
     st.setValue("viewer/thumbs", True)
+    st.setValue("viewer/last_folder", "")
+    st.setValue("viewer/last_query", "")
 
     try:
         viewer = lv.LocalViewer()

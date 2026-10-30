@@ -57,6 +57,8 @@ def main() -> int:
     applog.setup()
     QSettings("ImageHunter", "ImageHunter").setValue("viewer/thumbs", True)
     QSettings("ImageHunter", "ImageHunter").setValue("viewer/last_folder", "")
+    QSettings("ImageHunter", "ImageHunter").setValue("viewer/last_query", "")
+    QSettings("ImageHunter", "ImageHunter").setValue("viewer/last_folder", "")
 
     check("Pillow AVIF-кодек доступен", imgload.AVIF_OK)
 

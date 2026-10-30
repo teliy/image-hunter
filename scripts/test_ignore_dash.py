@@ -48,6 +48,8 @@ def main() -> int:
     QSettings("ImageHunter", "ImageHunter").setValue("viewer/search_ignore_dash", False)
     QSettings("ImageHunter", "ImageHunter").setValue("viewer/thumbs", True)
     QSettings("ImageHunter", "ImageHunter").setValue("viewer/last_folder", "")
+    QSettings("ImageHunter", "ImageHunter").setValue("viewer/last_query", "")
+    QSettings("ImageHunter", "ImageHunter").setValue("viewer/last_folder", "")
 
     tmp = tempfile.mkdtemp(prefix="ih_dash_")
     make_image(os.path.join(tmp, "2354223523.png"))    # без дефиса

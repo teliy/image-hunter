@@ -11,6 +11,7 @@ import time
 
 from PySide6.QtCore import (
     QEvent,
+    QFile,
     QObject,
     QMimeData,
     QPoint,
@@ -811,6 +812,12 @@ class LocalViewer(QWidget):
         # запасной перенос без драга: Ctrl+C или правый клик — файлы в буфер обмена
         sc_copy = QShortcut(QKeySequence(QKeySequence.StandardKey.Copy), self.list)
         sc_copy.activated.connect(self.copy_selected_files)
+        # Delete — переместить выделенные файлы в корзину. Контекст WidgetShortcut:
+        # срабатывает только когда фокус в списке — Delete в поле поиска
+        # продолжает работать как обычно
+        sc_del = QShortcut(QKeySequence(QKeySequence.StandardKey.Delete), self.list)
+        sc_del.setContext(Qt.ShortcutContext.WidgetShortcut)
+        sc_del.activated.connect(self.delete_selected_files)
         self.list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.list.customContextMenuRequested.connect(self._list_context_menu)
         self.list.currentRowChanged.connect(self._show_index)
@@ -941,6 +948,10 @@ class LocalViewer(QWidget):
 
         self.refresh_drives()
         self._restore_last_folder()
+        # восстановить последний запрос поиска — каким он был перед закрытием
+        last_q = QSettings("ImageHunter", "ImageHunter").value("viewer/last_query", "")
+        if last_q:
+            self.search_edit.setText(last_q)   # textChanged → дебаунс → автопоиск
         i18n.signals.changed.connect(self._retranslate)
 
     # ---------- перетрансляция при смене языка ----------
@@ -990,6 +1001,13 @@ class LocalViewer(QWidget):
         """Папка, открытая сейчас во вкладке (используется для сохранения WebP)."""
         return self._folder
 
+    def save_state(self) -> None:
+        """Запомнить последнюю папку и запрос поиска — восстановятся при старте."""
+        st = QSettings("ImageHunter", "ImageHunter")
+        if self._folder:
+            st.setValue("viewer/last_folder", self._folder)
+        st.setValue("viewer/last_query", self.search_edit.text().strip())
+
     def refresh(self) -> None:
         """Пересканировать текущую папку (например, после сохранения в неё WebP)."""
         if self._folder and os.path.isdir(self._folder):
@@ -1012,12 +1030,76 @@ class LocalViewer(QWidget):
         applog.event("log.event.copy_files", n=len(paths))
         self.status.setText(tr("viewer.copied_status", n=len(paths)))
 
+    def delete_selected_files(self) -> None:
+        """Удалить выделенные файлы — переместить в корзину (Delete).
+
+        Корзина восстановима, но на дисках без корзины (часть сетевых)
+        файл удаляется окончательно — потому подтверждение и запись
+        каждой неудачи в журнал."""
+        items = [it for it in self.list.selectedItems() if it.data(Qt.UserRole)]
+        if not items:
+            self.status.setText(tr("viewer.del_nothing"))
+            return
+        ans = QMessageBox.question(
+            self, tr("viewer.del_title"), tr("viewer.del_confirm", n=len(items)),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)   # по умолчанию — безопасное «Нет»
+        if ans != QMessageBox.StandardButton.Yes:
+            return
+        rows = sorted({self.list.row(it) for it in items}, reverse=True)
+        done, failed = 0, []
+        deleted: set[str] = set()
+        for r in rows:
+            path = self._paths[r]
+            ok, err = False, ""
+            try:
+                if not os.path.isfile(path):
+                    err = tr("viewer.del_missing")
+                else:
+                    res = QFile.moveToTrash(path)
+                    # PySide6 может вернуть bool или (bool, новый путь) — сминаем оба вида
+                    ok = bool(res[0]) if isinstance(res, tuple) else bool(res)
+                    if not ok:
+                        err = tr("viewer.del_failed")
+            except Exception as exc:   # noqa: BLE001 — причина уйдёт в журнал
+                err = str(exc)
+            if ok:
+                done += 1
+                deleted.add(os.path.normcase(os.path.normpath(path)))
+                self.list.takeItem(r)
+            else:
+                failed.append(os.path.basename(path))
+                applog.error(tr("log.event.trash_err", path=path, err=err))
+        if done:
+            applog.event("log.event.trash", n=done, folder=self._folder or "—")
+            keep = [i for i, p in enumerate(self._paths)
+                    if os.path.normcase(os.path.normpath(p)) not in deleted]
+            self._paths = [self._paths[i] for i in keep]
+            self._meta = [self._meta[i] for i in keep]
+            # строки сместились — кэш миниатюр по номерам строк больше не верен
+            self._pending_thumbs.clear()
+            self._thumb_queued.clear()
+            self._thumb_done_rows.clear()
+            self._schedule_visible_thumbs()
+            if self.list.currentItem() is None and self.list.count():
+                self.list.setCurrentRow(min(rows[-1], self.list.count() - 1))
+            elif not self.list.count():
+                self._pixmap = None
+                self._movie = None
+                self.view_label.setText(tr("viewer.no_images"))
+        if failed:
+            self.status.setText(tr("viewer.del_done_err", n=done, m=len(failed)))
+        else:
+            self.status.setText(tr("viewer.del_done", n=done))
+
     def _list_context_menu(self, pos) -> None:
         """Правый клик на ленте: открыть / копировать выделенные файлы."""
         menu = QMenu(self)
         act_open = menu.addAction(tr("viewer.ctx_open"))
         act_copy = menu.addAction(tr("viewer.ctx_copy"))
         act_copy.setToolTip(tr("viewer.ctx_copy_tip"))
+        act_del = menu.addAction(tr("viewer.ctx_delete"))
+        act_del.setToolTip(tr("viewer.ctx_delete_tip"))
         chosen = menu.exec(self.list.mapToGlobal(pos))
         if chosen is act_open:
             item = self.list.currentItem()
@@ -1025,6 +1107,8 @@ class LocalViewer(QWidget):
                 QDesktopServices.openUrl(QUrl.fromLocalFile(item.data(Qt.UserRole)))
         elif chosen is act_copy:
             self.copy_selected_files()
+        elif chosen is act_del:
+            self.delete_selected_files()
 
     def load_folder(self, folder: str, entries: list[tuple[str, int, float]] | None = None,
                     sync_tree: bool = False) -> None:
@@ -1093,6 +1177,7 @@ class LocalViewer(QWidget):
         if not base:
             self.status.setText(tr("viewer.pick_first"))
             return
+        QSettings("ImageHunter", "ImageHunter").setValue("viewer/last_query", needle)
         self._cancel_search()
         handle = _SearchHandle()
         self._search_handle = handle

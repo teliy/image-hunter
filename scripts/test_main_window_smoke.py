@@ -1,7 +1,7 @@
-"""Оффлайн-смоук главного окна целиком (v0.4.1).
+"""Оффлайн-смоук главного окна целиком (v0.4.2).
 
 Проверяется: MainWindow собирается со всеми вкладками (включая новые
-мультивкладки поиска), заголовок содержит версию 0.4.1, наружные сигналы
+мультивкладки поиска), заголовок содержит версию 0.4.2, наружные сигналы
 мультивкладок подключены, кнопки сохранения живы.
 
 Запуск: QT_QPA_PLATFORM=offscreen QTWEBENGINE_CHROMIUM_FLAGS="--no-sandbox --disable-gpu" \
@@ -36,14 +36,16 @@ def main() -> int:
     i18n.set_lang("ru", persist=False)
     QSettings("ImageHunter", "ImageHunter").setValue("viewer/thumbs", True)
     QSettings("ImageHunter", "ImageHunter").setValue("viewer/last_folder", "")
+    QSettings("ImageHunter", "ImageHunter").setValue("viewer/last_query", "")
+    QSettings("ImageHunter", "ImageHunter").setValue("viewer/last_folder", "")
     QSettings("ImageHunter", "ImageHunter").setValue("web/tabs", "")
 
     win = MainWindow()
     win.show()
     app.processEvents()
 
-    check("версия 0.4.1", __version__ == "0.4.1", __version__)
-    check("в заголовке версия", "0.4.1" in win.windowTitle(), win.windowTitle())
+    check("версия 0.4.2", __version__ == "0.4.2", __version__)
+    check("в заголовке версия", "0.4.2" in win.windowTitle(), win.windowTitle())
     check("вкладок в главном окне четыре", win.tabs.count() == 4,
           str(win.tabs.count()))
     check("вторая вкладка — мультивкладки поиска",

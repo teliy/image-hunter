@@ -102,6 +102,8 @@ def main() -> int:
     app = QApplication.instance() or QApplication(sys.argv)
     i18n.set_lang("ru", persist=False)
     QSettings("ImageHunter", "ImageHunter").setValue("viewer/thumbs", True)
+    QSettings("ImageHunter", "ImageHunter").setValue("viewer/last_folder", "")
+    QSettings("ImageHunter", "ImageHunter").setValue("viewer/last_query", "")
     applog.setup()
 
     from app.ui.local_viewer import LocalViewer
