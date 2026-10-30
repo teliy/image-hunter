@@ -26,11 +26,10 @@ import os
 import re
 import threading
 
-import requests
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Qt, Signal
 from PySide6.QtGui import QImage, QPainter, QImageReader
 
-from app.core.downloader import BASE_HEADERS, MAX_FILE_SIZE, TIMEOUT
+from app.core.downloader import MAX_FILE_SIZE, fetch_image
 
 # формат сохранения → (имя для QImage.save, расширение, качество или None)
 SAVE_FORMATS: dict[str, tuple[str, str, int | None]] = {
@@ -163,12 +162,8 @@ class _SaveTask(QRunnable):
         if self.owner.is_stopped():
             self.owner._task_done(self.index, False, "отменено")
             return
-        headers = dict(BASE_HEADERS)
-        if self.referer:
-            headers["Referer"] = self.referer
         try:
-            resp = requests.get(self.url, headers=headers, timeout=TIMEOUT, stream=True)
-            resp.raise_for_status()
+            resp = fetch_image(self.url, self.referer)
             ctype = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
             if ctype and not ctype.startswith("image/"):
                 raise ValueError(f"не изображение ({ctype})")

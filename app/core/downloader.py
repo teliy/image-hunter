@@ -23,6 +23,7 @@ USER_AGENT = (
 BASE_HEADERS = {
     "User-Agent": USER_AGENT,
     "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+    "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
 }
 CONTENT_EXT = {
     "image/jpeg": ".jpg",
@@ -37,6 +38,74 @@ TIMEOUT = (10, 60)  # (подключение, чтение), секунды
 MAX_THREADS = 6
 MAX_FILE_SIZE = 100 * 1024 * 1024  # 100 МБ — страховка
 KNOWN_IMAGE_EXTS = set(CONTENT_EXT.values()) | {".jfif", ".tif", ".tiff"}
+
+# Статусы, при которых стоит попробовать запасные варианты заголовков/ссылки
+RETRY_STATUSES = frozenset({401, 403, 429})
+
+# Обёртка CDN Cloudflare: /cdn-cgi/image/<параметры>/<оригинал>
+_CDN_WRAP_RE = re.compile(r"/cdn-cgi/image/[^/?&]+/(https?://.+)$", re.IGNORECASE)
+
+
+def unwrap_cdn_url(url: str) -> str | None:
+    """Раскрыть обёртку оптимизации CDN: /cdn-cgi/image/… → внутренний URL.
+
+    Часть сайтов раздаёт картинки через Cloudflare Image Resizing; сама
+    обёртка бывает закрыта от «чужих» (403), а внутренний оригинал — нет.
+    """
+    m = _CDN_WRAP_RE.search(url or "")
+    inner = m.group(1) if m else ""
+    return inner if inner.startswith(("http://", "https://")) else None
+
+
+def fetch_image(url: str, referer: str | None = None) -> requests.Response:
+    """Скачать картинку, перебирая запасные варианты при 401/403/429.
+
+    Некоторые CDN (например, Cloudflare перед магазинами) отдают 403
+    запросам без «правильного» Referer или на обёртку /cdn-cgi/image/.
+    Лестница попыток:
+    1. как есть (с присвоенным Referer страницы, если он был);
+    2. без Referer — «жадные» CDN часто пускают «прямые» запросы;
+    3. с Referer самого сайта картинки;
+    4. раскрытая обёртка /cdn-cgi/image/ (с теми же вариантами Referer).
+    Возвращает ответ с 2xx; исчерпав варианты, поднимает последнюю ошибку.
+    """
+    parts = urlparse(url or "")
+    origin = f"{parts.scheme}://{parts.netloc}/" if parts.netloc else ""
+    attempts: list[tuple[str, str | None]] = [(url, referer)]
+    if referer:
+        attempts.append((url, None))
+    if origin and origin != referer:
+        attempts.append((url, origin))
+    inner = unwrap_cdn_url(url)
+    if inner:
+        attempts.append((inner, None))
+        ip = urlparse(inner)
+        if ip.netloc and f"{ip.scheme}://{ip.netloc}/" != origin:
+            attempts.append((inner, f"{ip.scheme}://{ip.netloc}/"))
+
+    last_exc: Exception | None = None
+    last_resp: requests.Response | None = None
+    for attempt_url, ref in attempts:
+        headers = dict(BASE_HEADERS)
+        if ref:
+            headers["Referer"] = ref
+        try:
+            resp = requests.get(attempt_url, headers=headers,
+                                timeout=TIMEOUT, stream=True)
+        except Exception as exc:  # noqa: BLE001 — сеть моргнула, попробуем ещё
+            last_exc, last_resp = exc, None
+            continue
+        if resp.status_code in RETRY_STATUSES and (attempt_url, ref) != attempts[-1]:
+            last_exc, last_resp = None, resp
+            resp.close()
+            continue
+        resp.raise_for_status()
+        return resp
+    if last_exc is not None:
+        raise last_exc
+    assert last_resp is not None  # все попытки кончились не-2xx статусом
+    last_resp.raise_for_status()
+    return last_resp
 
 
 def sanitize_filename(name: str) -> str:
@@ -86,12 +155,8 @@ class _DownloadTask(QRunnable):
             self.owner.status_changed.emit(self.row_id, "cancel", "")
             self.owner._task_done(False)
             return
-        headers = dict(BASE_HEADERS)
-        if self.referer:
-            headers["Referer"] = self.referer
         try:
-            resp = requests.get(self.url, headers=headers, timeout=TIMEOUT, stream=True)
-            resp.raise_for_status()
+            resp = fetch_image(self.url, self.referer)
             content_type = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
             if content_type and not content_type.startswith("image/"):
                 raise ValueError(f"не изображение ({content_type})")
@@ -99,7 +164,9 @@ class _DownloadTask(QRunnable):
             if declared > MAX_FILE_SIZE:
                 raise ValueError("файл слишком большой (>100 МБ)")
 
-            fname = filename_from_url(self.url, content_type)
+            # имя — по фактическому адресу ответа: после запасной попытки
+            # (раскрытая обёртка CDN) это уже настоящий адрес файла
+            fname = filename_from_url(resp.url or self.url, content_type)
             path = unique_path(self.directory, fname)
             received = 0
             with open(path, "wb") as fh:

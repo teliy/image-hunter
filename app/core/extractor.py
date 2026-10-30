@@ -111,7 +111,11 @@ CHECKBOX_INIT_JS = r"""
     '.tile--img', '[class*="tile--img"]',
     '.isv-r', '[data-rid]', '[data-lpage]',
     '.imgpt', '[class*="imgpt"]', '.iusc',
-    '[class*="ImageCard"]', '[class*="imageCard"]', '[class*="photo-card"]'
+    '[class*="ImageCard"]', '[class*="imageCard"]', '[class*="photo-card"]',
+    // DOM DuckDuckGo 2025+: плитка — LI > FIGURE c хешированными классами,
+    // селектор структурный, только на доменах DDG (чтобы не зацепить чужие)
+    ...(/(^|\.)duckduckgo\.com$/.test(location.hostname)
+        ? ['ol > li > figure'] : [])
   ].join(',');
 
   const IMAGE_RE = /\.(jpe?g|png|gif|webp|bmp|avif|jfif|tiff?)([?#]|$)/i;
@@ -169,17 +173,19 @@ CHECKBOX_INIT_JS = r"""
       res.push(...root.querySelectorAll(sel));
       return res;
     };
-    const add = (raw, score) => {
+    const add = (raw, score, force) => {
       try {
         if (!raw || typeof raw !== 'string' || raw.startsWith('data:')) return;
         const abs = new URL(raw, location.href);
         if (abs.protocol !== 'http:' && abs.protocol !== 'https:') return;
-        // Прокси DuckDuckGo: раскрываем оригинал из параметра u=
+        // Прокси DuckDuckGo: раскрываем оригинал из параметра u=.
+        // Принимаем его всегда (force): у выдачи DDG оригинал часто без
+        // расширения (кеш tse*.mm.bing.net/th/id/…), но это заведомо картинка.
         if (abs.hostname.endsWith('duckduckgo.com') && abs.pathname.startsWith('/iu')) {
           const orig = abs.searchParams.get('u');
-          if (orig) { add(orig, Math.max(score, 85)); return; }
+          if (orig) { add(orig, Math.max(score, 85), true); return; }
         }
-        if (!looksImage(abs.href)) return;
+        if (!force && !looksImage(abs.href)) return;
         if (seen.has(abs.href)) {
           const prev = seen.get(abs.href);
           if (score > prev.s) prev.s = score;
@@ -216,17 +222,19 @@ CHECKBOX_INIT_JS = r"""
       try {
         const abs = new URL(a.href, location.href);
         const p = abs.searchParams;
+        // Параметры-оригиналы поисковиков — картинки по определению (force:
+        // у них бывает URL без расширения — кеш Bing у DDG и т.п.)
         [['img_url', 80], ['imgurl', 80], ['murl', 80], ['u', 85], ['du', 75]]
           .forEach(([k, sc]) => {
             const v = p.get(k);
-            if (v && /^https?:/i.test(v)) add(v, sc);
+            if (v && /^https?:/i.test(v)) add(v, sc, k !== 'du');
           });
         // Bing: JSON в атрибуте m=
         const m = a.getAttribute('m');
         if (m && m.trim().startsWith('{')) {
           try {
             const j = JSON.parse(m);
-            if (j && typeof j.murl === 'string') add(j.murl, 85);
+            if (j && typeof j.murl === 'string') add(j.murl, 85, true);
           } catch (e) {}
         }
         add(a.href, 25); // прямая ссылка на файл тоже кандидат
@@ -278,6 +286,13 @@ CHECKBOX_INIT_JS = r"""
 
   const attach = (host, cands) => {
     try {
+      // Чекбокс нельзя вставлять внутрь замещаемых элементов (<img>, <picture>)
+      // — браузер никогда не рисует их потомков, галочка была бы невидима.
+      // Используем родителя (новый DOM DDG даёт хостом именно сам <img>).
+      while (host && (host.tagName === 'IMG' || host.tagName === 'PICTURE')) {
+        host = host.parentElement;
+      }
+      if (!host || host === document.body || host === document.documentElement) return;
       const pos = getComputedStyle(host).position;
       if (!pos || pos === 'static') host.classList.add('ih-cb-host');
       const cb = document.createElement('label');

@@ -2,34 +2,65 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Mock DuckDuckGo images SERP for Image Hunter checkbox test</title>
+<title>Mock DuckDuckGo images SERP (2025) for Image Hunter checkbox test</title>
 <style>
   body { font-family: sans-serif; margin: 20px; }
-  /* ВАЖНО: плитки БЕЗ классов, которые знает ITEM_SEL (serp-item, tile--img, imgpt…) —
-     актуальная выдача DuckDuckGo не совпадает с ними, и чекбоксы должен навесить
-     запасной путь (хост = якорь или сам img) */
-  .tile { position: relative; display: inline-block; width: 200px; height: 160px;
-          margin: 8px; border: 1px solid #ccc; overflow: hidden; }
-  .tile img { width: 100%; height: 100%; object-fit: cover; }
+  /* ВАЖНО: разметка как в актуальной (2025) выдаче DDG:
+     1) плитка — SECTION > OL > LI > OL > LI > FIGURE > DIV > IMG;
+     2) классы хешированные, ITEM_SEL их не знает (tile--img больше нет);
+     3) якорей внутри плитки нет — обработчик клика вешается JS-ом DDG;
+     4) «оригиналы» в u= прокси — кеш tse*.mm.bing.net/th/id/… БЕЗ
+        расширения файла, looksImage() такие URL раньше отбрасывал. */
+  section > ol { list-style: none; padding: 0; }
+  section ol ol { list-style: none; padding: 0; margin: 0; }
+  figure { margin: 8px; width: 200px; height: 160px; border: 1px solid #ccc;
+           overflow: hidden; position: relative; }
+  figure img { width: 100%; height: 100%; object-fit: cover; }
 </style>
 </head>
 <body>
-  <div id="links">
-    <!-- плитка 1: и ссылка, и миниатюра — через прокси /iu/?u= -->
-    <a class="tile" href="https://external-content.duckduckgo.com/iu/?u=https%3A%2F%2Fddgsite-one.com%2Fpic1.jpg&amp;f=1&amp;noexp=1">
-      <img src="https://external-content.duckduckgo.com/iu/th?u=https%3A%2F%2Fddgsite-one.com%2Fpic1.jpg&amp;w=200" alt="1">
-    </a>
+  <section>
+    <ol class="f7hWyMHaNjO2grO9HbyD">
+      <li>
+        <ol class="NsCLmRPk79Yvia9NrTjn">
+          <li>
+            <!-- плитка 1: оригинал — кеш Bing без расширения (типично для DDG) -->
+            <figure class="nsogf_Hpj9UUxfhcwQd5">
+              <div class="SZ76bwIlqO8BBoqOLqYV">
+                <img src="https://external-content.duckduckgo.com/iu/?u=https%3A%2F%2Ftse1.mm.bing.net%2Fth%2Fid%2FOIP.a1b2c3%3Fpid%3DImgDet%26w%3D474%26h%3D474" alt="1">
+              </div>
+            </figure>
+          </li>
+        </ol>
+      </li>
+      <li>
+        <ol>
+          <li>
+            <!-- плитка 2: обычный оригинал с расширением .jpg -->
+            <figure class="nSogF_Hpj9UUxfhcwQd5x">
+              <div class="sZ76bwIlqO8BBoqOLqYVy">
+                <img src="https://external-content.duckduckgo.com/iu/?u=https%3A%2F%2Fddgsite-two.com%2Fpic2.jpg&amp;f=1&amp;noexp=1" alt="2">
+              </div>
+            </figure>
+          </li>
+        </ol>
+      </li>
+      <li>
+        <ol>
+          <li>
+            <!-- плитка 3: оригинал — кеш Bing с другим хешем -->
+            <figure class="nsogf_Hpj9UUxfhcwQd5y">
+              <div class="SZ76bwIlqO8BBoqOLqYVz">
+                <img src="https://external-content.duckduckgo.com/iu/th?u=https%3A%2F%2Ftse4.mm.bing.net%2Fth%2Fid%2FOIP.9x8y7z%3Fw%3D300" alt="3">
+              </div>
+            </figure>
+          </li>
+        </ol>
+      </li>
+    </ol>
+  </section>
 
-    <!-- плитка 2: якорь на внутреннюю страницу DDG, оригинал только в миниатюре -->
-    <a class="tile" href="https://duckduckgo.com/l/?uddg=https%3A%2F%2Fddgsite-two.com%2Fpage&amp;rut=abc">
-      <img src="https://external-content.duckduckgo.com/iu/?u=https%3A%2F%2Fddgsite-two.com%2Fpic2.jpg" alt="2">
-    </a>
-
-    <!-- плитка 3: без якоря — чекбокс должен появиться прямо на img -->
-    <span class="tile"><img src="https://external-content.duckduckgo.com/iu/?u=https%3A%2F%2Fddgsite-three.org%2Fpic3.png&amp;w=300" alt="3"></span>
-
-    <!-- не-картинка: чекбокса быть не должно -->
-    <p><a href="https://example.com/some/page">Just a web result</a></p>
-  </div>
+  <!-- не-картинка: чекбокса быть не должно -->
+  <p><a href="https://example.com/some/page">Just a web result</a></p>
 </body>
 </html>

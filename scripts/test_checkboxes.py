@@ -274,11 +274,15 @@ def run_mock_test() -> None:
 
 
 def run_ddg_mock_test() -> None:
-    """Мок выдачи картинок DuckDuckGo: плитки БЕЗ известных приложению классов.
+    """Мок актуальной (2025) выдачи картинок DuckDuckGo.
 
-    Актуальный DOM DDG не содержит serp-item/tile--img — чекбоксы должен
-    навесить запасной путь (хост = якорь или сам img). Заодно проверяем
-    адрес вкладки DDG и ворота инъекции is_image_search_url."""
+    DOM DDG 2025: плитка — LI > FIGURE > DIV > IMG, классы хешированные
+    (tile--img/serp-item больше нет), якорей в плитке нет, а «оригиналы»
+    в u= прокси /iu/ — кеш tse*.mm.bing.net БЕЗ расширения файла.
+    Раньше на такой странице чекбоксы не появлялись вовсе: хостом становился
+    сам <img> (потомков которого браузер не рисует), а фильтр looksImage
+    отбрасывал оригиналы без расширения. Проверяем оба исправления.
+    """
     from PySide6.QtCore import QEventLoop
     from PySide6.QtWidgets import QApplication
     from PySide6.QtWebEngineWidgets import QWebEngineView
@@ -313,8 +317,20 @@ def run_ddg_mock_test() -> None:
     wait_ms(900)
 
     n_boxes = run_js(view.page(), "document.querySelectorAll('.ih-cb input').length")
-    check("чекбоксы на всех 3 плитках без известных классов", n_boxes == 3,
+    check("чекбоксы на всех 3 плитках нового DOM DDG", n_boxes == 3,
           f"найдено: {n_boxes}")
+
+    in_img = run_js(view.page(), "document.querySelectorAll('img .ih-cb').length")
+    check("чекбокс никогда не внутри <img> (не рисуется)", in_img == 0,
+          f"внутри img: {in_img}")
+
+    hosted = run_js(view.page(), """
+        [...document.querySelectorAll('.ih-cb')].every((cb) => {
+          const host = cb.closest('.ih-cb-host') || cb.parentElement;
+          return !!(host && host.querySelector('img'));
+        })
+    """)
+    check("хост каждой галочки содержит свою картинку", hosted is True, f"{hosted}")
 
     plain = run_js(view.page(), """
         (() => {
@@ -341,11 +357,13 @@ def run_ddg_mock_test() -> None:
     loop.exec()
     bests = {it["best"] for it in got.get("items", [])}
     expected = {
-        "https://ddgsite-one.com/pic1.jpg",
+        # кеш Bing без расширения — принят благодаря force-раскрытию u=
+        "https://tse1.mm.bing.net/th/id/OIP.a1b2c3?pid=ImgDet&w=474&h=474",
+        "https://tse4.mm.bing.net/th/id/OIP.9x8y7z?w=300",
         "https://ddgsite-two.com/pic2.jpg",
-        "https://ddgsite-three.org/pic3.png",
     }
-    check("оригиналы из u= прокси DDG раскрыты верно", bests == expected,
+    check("оригиналы из u= прокси DDG раскрыты верно (в т.ч. без расширения)",
+          bests == expected,
           f"лишние: {bests - expected}; не хватает: {expected - bests}")
 
     view.deleteLater()
