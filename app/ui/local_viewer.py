@@ -364,19 +364,6 @@ class LocalViewer(QWidget):
 
         btn("📂 Открыть папку…", "Выбрать папку с изображениями (Ctrl+O)", self.open_folder, "Ctrl+O")
         bar.addSpacing(8)
-        self.search_edit = QLineEdit()
-        self.search_edit.setPlaceholderText("🔍 Поиск по папке и подпапкам…")
-        self.search_edit.setClearButtonEnabled(True)
-        self.search_edit.setMaximumWidth(220)
-        self.search_edit.setToolTip(
-            "Введите часть имени файла — найдутся все картинки в текущей папке\n"
-            "и всех подпапках. Без масок и звёздочек, регистр не важен. Esc — сброс.")
-        self.search_edit.textChanged.connect(self._on_search_text_changed)
-        self.search_edit.returnPressed.connect(self._start_search_now)
-        bar.addWidget(self.search_edit)
-        esc = QShortcut(QKeySequence("Esc"), self)
-        esc.activated.connect(self.search_edit.clear)
-        bar.addSpacing(8)
         self.btn_thumbs = QToolButton()
         self.btn_thumbs.setText("🖼 Миниатюры")
         self.btn_thumbs.setCheckable(True)
@@ -396,7 +383,20 @@ class LocalViewer(QWidget):
         btn("◱", "Вписать в окно", self.fit_to_window)
         btn("+", "Увеличить", lambda: self.zoom(1.25))
         bar.addSpacing(8)
-        btn("🗂 Показать в папке", "Открыть текущую папку в Проводнике", self.reveal_folder)
+        btn("🗂 Показать в проводнике", "Открыть текущую папку в Проводнике", self.reveal_folder)
+        bar.addSpacing(8)
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText("🔍 Поиск по папке и подпапкам…")
+        self.search_edit.setClearButtonEnabled(True)
+        self.search_edit.setMaximumWidth(220)
+        self.search_edit.setToolTip(
+            "Введите часть имени файла — найдутся все картинки в текущей папке\n"
+            "и всех подпапках. Без масок и звёздочек, регистр не важен. Esc — сброс.")
+        self.search_edit.textChanged.connect(self._on_search_text_changed)
+        self.search_edit.returnPressed.connect(self._start_search_now)
+        bar.addWidget(self.search_edit)
+        esc = QShortcut(QKeySequence("Esc"), self)
+        esc.activated.connect(self.search_edit.clear)
         bar.addStretch(1)
         self.status = QLabel("Выберите диск или папку в дереве слева, либо «Открыть папку…» (Ctrl+O)")
         self.status.setStyleSheet("color: #666;")
@@ -410,7 +410,7 @@ class LocalViewer(QWidget):
         self.list.setMovement(QListWidget.Static)
         self.list.setSpacing(6)
         self.list.setUniformItemSizes(True)
-        self.list.setFixedWidth(THUMB + 34)
+        self.list.setMinimumWidth(THUMB + 34)  # ширина задаётся сплиттером — панель растягивается мышью
         self.list.currentRowChanged.connect(self._show_index)
         self.list.itemDoubleClicked.connect(
             lambda item: QDesktopServices.openUrl(QUrl.fromLocalFile(item.data(Qt.UserRole)))
@@ -469,6 +469,15 @@ class LocalViewer(QWidget):
         self.splitter.setCollapsible(1, False)
         self.splitter.setCollapsible(2, False)
         self.splitter.setSizes([TREE_WIDTH, THUMB + 34, 640])
+        # перетаскивание разделителя сужает/расширяет ленту миниатюр;
+        # размеры панелей запоминаются между запусками
+        self.splitter.splitterMoved.connect(self._on_splitter_moved)
+        saved_split = QSettings("ImageHunter", "ImageHunter").value("viewer/splitter")
+        if saved_split is not None:
+            try:
+                self.splitter.restoreState(saved_split)
+            except (TypeError, RuntimeError):
+                pass
         layout.addWidget(self.splitter, 1)
 
         self._thumb_signals = _ThumbSignals()
@@ -639,6 +648,11 @@ class LocalViewer(QWidget):
         """Дебаунс: при прокрутке/ресайзе не пересчитываем видимые строки на каждый пиксель."""
         if self._thumbs_enabled:
             self._visible_timer.start()
+
+    def _on_splitter_moved(self, *_args) -> None:
+        """Разделитель передвинут: догрузить видимые миниатюры и запомнить размеры панелей."""
+        self._schedule_visible_thumbs()
+        QSettings("ImageHunter", "ImageHunter").setValue("viewer/splitter", self.splitter.saveState())
 
     def _queue_visible_thumbs(self) -> None:
         """Ставит задачи миниатюр ТОЛЬКО для видимых строк (с запасом на экран).
