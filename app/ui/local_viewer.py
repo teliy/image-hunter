@@ -40,6 +40,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMessageBox,
@@ -242,6 +243,85 @@ class _ThumbTask(QRunnable):
             _prune_thumb_cache(self.cache_dir)
 
 
+# ---------- фоновый поиск по имени ----------
+
+class _SearchSignals(QObject):
+    batch = Signal(int, list)            # поколение поиска, порция [(путь, размер, mtime)]
+    done = Signal(int, int, bool)        # поколение, всего найдено, усечено ли
+
+
+class _SearchHandle:
+    """Флажок отмены: рабочий поток проверяет, главный — сбрасывает (GIL-атомарно)."""
+
+    __slots__ = ("cancelled",)
+
+    def __init__(self):
+        self.cancelled = False
+
+
+class _SearchTask(QRunnable):
+    """Рекурсивный поиск по имени файла от текущей папки вниз, одним os.scandir
+    на папку, без лишних stat() (важно для сетевых дисков). Отдаёт результаты
+    порциями, не дожидаясь конца обхода."""
+
+    MAX_RESULTS = 5000    # предел выдачи
+    MAX_FOLDERS = 20000   # предел обхода (страховка от гигантских деревьев)
+    BATCH = 50
+
+    def __init__(self, base: str, needle: str, gen: int,
+                 signals: _SearchSignals, handle: _SearchHandle):
+        super().__init__()
+        self.base, self.needle = base, needle
+        self.gen, self.signals, self.handle = gen, signals, handle
+
+    def run(self) -> None:
+        found: list[tuple[str, int, float]] = []
+        pending: list[tuple[str, int, float]] = []
+        truncated = False
+        folders = 0
+        stack = [self.base]
+        while stack:
+            if self.handle.cancelled:
+                return
+            if len(found) >= self.MAX_RESULTS or folders >= self.MAX_FOLDERS:
+                truncated = True
+                break
+            d = stack.pop()
+            folders += 1
+            dirs: list[str] = []
+            matches: list[tuple[str, int, float]] = []
+            try:
+                with os.scandir(d) as it:
+                    for entry in it:
+                        name = entry.name
+                        if name.startswith(".") or _is_hidden_entry(entry):
+                            continue
+                        try:
+                            if entry.is_dir(follow_symlinks=False):
+                                dirs.append(entry.path)
+                            elif (os.path.splitext(name)[1].lower() in IMAGE_EXTS
+                                  and self.needle in name.lower()):
+                                st = entry.stat(follow_symlinks=False)
+                                matches.append((entry.path, st.st_size, st.st_mtime))
+                        except OSError:
+                            continue
+            except OSError:
+                continue
+            matches.sort(key=lambda t: natural_key(os.path.basename(t[0])))
+            found.extend(matches)
+            pending.extend(matches)
+            dirs.sort(key=lambda p: natural_key(os.path.basename(p)))
+            stack.extend(reversed(dirs))   # pop() берёт конец — обход по порядку
+            if len(pending) >= self.BATCH:
+                self.signals.batch.emit(self.gen, pending)
+                pending = []
+        if self.handle.cancelled:
+            return
+        if pending:
+            self.signals.batch.emit(self.gen, pending)
+        self.signals.done.emit(self.gen, len(found), truncated)
+
+
 # ---------- виджет ----------
 
 class LocalViewer(QWidget):
@@ -258,6 +338,9 @@ class LocalViewer(QWidget):
         self._thumbs_done = 0
         self._gen = 0                      # номер загрузки папки: отсекаем миниатюры прошлой папки
         self._pending_thumbs: dict[int, QImage] = {}
+        self._search_handle = None         # отменяемый текущий поиск
+        self._search_needle = ""
+        self._search_count = 0
 
         # --- верхняя панель ---
         bar = QHBoxLayout()
@@ -275,6 +358,19 @@ class LocalViewer(QWidget):
             return b
 
         btn("📂 Открыть папку…", "Выбрать папку с изображениями (Ctrl+O)", self.open_folder, "Ctrl+O")
+        bar.addSpacing(8)
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText("🔍 Поиск по папке и подпапкам…")
+        self.search_edit.setClearButtonEnabled(True)
+        self.search_edit.setMaximumWidth(220)
+        self.search_edit.setToolTip(
+            "Введите часть имени файла — найдутся все картинки в текущей папке\n"
+            "и всех подпапках. Без масок и звёздочек, регистр не важен. Esc — сброс.")
+        self.search_edit.textChanged.connect(self._on_search_text_changed)
+        self.search_edit.returnPressed.connect(self._start_search_now)
+        bar.addWidget(self.search_edit)
+        esc = QShortcut(QKeySequence("Esc"), self)
+        esc.activated.connect(self.search_edit.clear)
         bar.addSpacing(8)
         self.btn_prev = btn("◀", "Предыдущая (Left)", lambda: self.step(-1))
         self.btn_next = btn("▶", "Следующая (Right)", lambda: self.step(+1))
@@ -366,6 +462,14 @@ class LocalViewer(QWidget):
         self._thumb_timer = QTimer(self)
         self._thumb_timer.setInterval(120)
         self._thumb_timer.timeout.connect(self._flush_thumbs)
+        # поиск по имени: сигналы + дебаунс набора (350 мс)
+        self._search_signals = _SearchSignals()
+        self._search_signals.batch.connect(self._on_search_batch)
+        self._search_signals.done.connect(self._on_search_done)
+        self._search_timer = QTimer(self)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.setInterval(350)
+        self._search_timer.timeout.connect(self._start_search_now)
 
         self.refresh_drives()
         self._restore_last_folder()
@@ -375,10 +479,15 @@ class LocalViewer(QWidget):
     def open_folder(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "Папка с изображениями", self._folder or "")
         if folder:
+            self.search_edit.blockSignals(True)
+            self.search_edit.clear()
+            self.search_edit.blockSignals(False)
+            self._cancel_search()
             self.load_folder(folder, sync_tree=True)
 
     def load_folder(self, folder: str, entries: list[tuple[str, int, float]] | None = None,
                     sync_tree: bool = False) -> None:
+        self._cancel_search()
         self._folder = folder
         if entries is None:
             entries = scan_image_entries(folder)
@@ -412,6 +521,76 @@ class LocalViewer(QWidget):
         QSettings("ImageHunter", "ImageHunter").setValue("viewer/last_folder", folder)
         if sync_tree:
             self._sync_tree(folder)
+
+    # ---------- поиск по имени (без wildcard: подстрока, регистр не важен) ----------
+
+    def _on_search_text_changed(self, text: str) -> None:
+        if not text.strip():
+            self._cancel_search()
+            if self._folder:
+                self.load_folder(self._folder)
+            return
+        self._search_timer.start()   # дебаунс: не ищем на каждое нажатие
+
+    def _cancel_search(self) -> None:
+        self._search_timer.stop()
+        if self._search_handle is not None:
+            self._search_handle.cancelled = True
+            self._search_handle = None
+
+    def _start_search_now(self) -> None:
+        self._search_timer.stop()
+        needle = self.search_edit.text().strip()
+        if not needle:
+            return
+        base = self._folder
+        if not base:
+            self.status.setText("Сначала выберите папку в дереве слева или «Открыть папку…»")
+            return
+        self._cancel_search()
+        handle = _SearchHandle()
+        self._search_handle = handle
+        self._gen += 1
+        self._pool.clear()
+        self._paths = []
+        self._search_needle = needle
+        self._search_count = 0
+        self.list.clear()
+        self._pending_thumbs.clear()
+        self._thumbs_done = 0
+        self._pixmap = None
+        self._movie = None
+        self.status.setText(f"Поиск «{needle}»…")
+        QThreadPool.globalInstance().start(
+            _SearchTask(base, needle.lower(), self._gen, self._search_signals, handle))
+
+    def _on_search_batch(self, gen: int, items: list) -> None:
+        if gen != self._gen or not items:
+            return
+        cache_dir = _thumb_cache_dir()
+        placeholder = QPixmap(THUMB, THUMB)
+        placeholder.fill(Qt.darkGray)
+        for path, size, mtime in items:
+            row = len(self._paths)
+            self._paths.append(path)
+            item = QListWidgetItem(QIcon(placeholder), os.path.basename(path))
+            item.setData(Qt.UserRole, path)
+            item.setToolTip(os.path.relpath(path, self._folder) if self._folder
+                            else os.path.basename(path))
+            self.list.addItem(item)
+            self._pool.start(_ThumbTask(path, row, gen, self._thumb_signals,
+                                        cache_dir, size, mtime))
+        self._search_count += len(items)
+        self.status.setText(f"Поиск «{self._search_needle}»… найдено: {self._search_count}")
+        if self.list.currentRow() < 0 and self.list.count():
+            self.list.setCurrentRow(0)
+
+    def _on_search_done(self, gen: int, total: int, truncated: bool) -> None:
+        if gen != self._gen:
+            return
+        self._search_handle = None
+        tail = " (показаны первые 5000)" if truncated else ""
+        self.status.setText(f"Поиск «{self._search_needle}»: {total} файлов{tail}")
 
     # ---------- просмотр ----------
 
@@ -611,7 +790,11 @@ class LocalViewer(QWidget):
             return
         self._populate_children(item)
         item.setExpanded(True)
-        self.load_folder(path)
+        self._folder = path
+        if self.search_edit.text().strip():
+            self._start_search_now()   # поиск от заново выбранной папки
+        else:
+            self.load_folder(path)
 
     def _restore_last_folder(self) -> None:
         last = QSettings("ImageHunter", "ImageHunter").value("viewer/last_folder", "")
