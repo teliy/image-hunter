@@ -372,12 +372,13 @@ class _FolderSearchSignals(QObject):
 
 
 class _FolderSearchTask(QRunnable):
-    """Рекурсивный поиск папок по имени от корней дерева (Домой, Изображения,
-    все диски). Один os.scandir на папку, без stat() на каждый элемент —
-    важно для сетевых дисков. Совпадения отдаются порциями, не дожидаясь
-    конца обхода. Симлинки не разворачиваются (нет циклов), скрытые папки
-    пропускаются. Пределы количества/времени страхуют от гигантских деревьев
-    и медленных носителей: поиск всегда завершается сам."""
+    """Рекурсивный поиск папок по имени от выбранной папки (если она есть),
+    иначе от корней дерева (Домой, Изображения, все диски). Один os.scandir
+    на папку, без stat() на каждый элемент — важно для сетевых дисков.
+    Совпадения отдаются порциями, не дожидаясь конца обхода. Симлинки не
+    разворачиваются (нет циклов), скрытые папки пропускаются. Пределы
+    количества/времени страхуют от гигантских деревьев и медленных носителей:
+    поиск всегда завершается сам."""
 
     MAX_RESULTS = 400        # предел выдачи
     MAX_DIRS = 150_000       # предел обхода
@@ -726,6 +727,7 @@ class LocalViewer(QWidget):
         self._fs_count = 0               # сколько папок показано
         self._fs_seen: set[str] = set()  # normpath уже показанных совпадений
         self._fs_in_search = False       # дерево сейчас показывает результаты поиска папок
+        self._fs_scope_path = ""         # область поиска: выбранная папка ("" — все корни)
 
         # --- верхняя панель ---
         bar = QHBoxLayout()
@@ -962,9 +964,11 @@ class LocalViewer(QWidget):
         if self._fs_in_search:
             # режим поиска папок: дерево не перечитываем — не затирать результаты
             if self._fs_handle is not None:
-                self.tree_info.setText(tr("viewer.folders_searching_found", n=self._fs_count))
+                self._fs_set_info("viewer.folders_searching_in_found",
+                                  "viewer.folders_searching_found", n=self._fs_count)
             elif self._fs_count:
-                self.tree_info.setText(tr("viewer.folders_found", n=self._fs_count))
+                self._fs_set_info("viewer.folders_found_in", "viewer.folders_found",
+                                  n=self._fs_count)
             else:
                 self.tree_info.setText(tr("viewer.folders_none"))
         else:
@@ -1212,15 +1216,34 @@ class LocalViewer(QWidget):
         self._fs_count = 0
         self._fs_seen = set()
         self._fs_in_search = True
+        # область поиска: выбранная в дереве папка; глобально — только пока
+        # ничего не выбрано (как при запуске программы)
+        folder = self._folder if self._folder and os.path.isdir(self._folder) else ""
+        self._fs_scope_path = folder
         self.tree.clear()
         self.tree.setColumnCount(2)
         self.tree.setColumnWidth(0, 120)
         self.tree_info.show()
-        self.tree_info.setText(tr("viewer.folders_searching"))
-        applog.event("log.event.folder_search", q=needle)
+        self.tree_info.setToolTip(folder)
+        self._fs_set_info("viewer.folders_searching_in", "viewer.folders_searching")
+        applog.event("log.event.folder_search", q=needle,
+                     where=folder or tr("viewer.folders_scope_all"))
         QThreadPool.globalInstance().start(
-            _FolderSearchTask(self._search_roots(), needle, self._fs_gen,
-                              self._fs_signals, handle))
+            _FolderSearchTask([folder] if folder else self._search_roots(),
+                              needle, self._fs_gen, self._fs_signals, handle))
+
+    def _fs_where(self) -> str:
+        """Имя выбранной папки (область поиска) или "" — поиск по всем корням."""
+        if not self._fs_scope_path:
+            return ""
+        return os.path.basename(self._fs_scope_path.rstrip("\\/")) or self._fs_scope_path
+
+    def _fs_set_info(self, key_in: str, key_all: str, **kw) -> None:
+        """Текст статуса поиска папок: с именем папки, если поиск идёт в ней."""
+        if self._fs_scope_path:
+            self.tree_info.setText(tr(key_in, where=self._fs_where(), **kw))
+        else:
+            self.tree_info.setText(tr(key_all, **kw))
 
     def _add_folder_result(self, path: str) -> None:
         key = os.path.normcase(os.path.normpath(path))
@@ -1243,7 +1266,8 @@ class LocalViewer(QWidget):
         for path in items:
             self._add_folder_result(path)
         self._fs_count = len(self._fs_seen)
-        self.tree_info.setText(tr("viewer.folders_searching_found", n=self._fs_count))
+        self._fs_set_info("viewer.folders_searching_in_found",
+                          "viewer.folders_searching_found", n=self._fs_count)
         if self.tree.currentItem() is None and self.tree.topLevelItemCount():
             self.tree.setCurrentItem(self.tree.topLevelItem(0))
 
@@ -1256,7 +1280,10 @@ class LocalViewer(QWidget):
             self.tree_info.setText(tr("viewer.folders_none"))
             return
         tail = tr("viewer.folders_trunc", n=total) if truncated else ""
-        self.tree_info.setText(tr("viewer.folders_found", n=self._fs_count) + tail)
+        self._fs_set_info("viewer.folders_found_in", "viewer.folders_found",
+                          n=self._fs_count)
+        if tail:
+            self.tree_info.setText(self.tree_info.text() + tail)
         applog.event("log.event.folder_search_done",
                      q=self.folder_search.text().strip(), n=self._fs_count)
 

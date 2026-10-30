@@ -234,23 +234,42 @@ _STRINGS: dict[str, dict[str, str]] = {
     "viewer.folders_search_ph": {
         "ru": "🔍 Поиск папки…", "en": "🔍 Search folders…", "zh": "🔍 搜索文件夹…"},
     "viewer.folders_search_tip": {
-        "ru": "Быстрый поиск папок по имени: Домой, Изображения и все диски.\n"
-              "Введите часть имени — совпадения появятся в дереве, клик открывает папку.\n"
+        "ru": "Быстрый поиск папок по имени. Если в дереве выбрана папка —\n"
+              "поиск идёт только в её подпапках (на любой глубине); если ничего\n"
+              "не выбрано — в Домой, Изображениях и на всех дисках.\n"
               "Регистр не важен, масок нет. Enter — открыть первую найденную, Esc — сброс.",
-        "en": "Quickly find folders by name: Home, Pictures and all drives.\n"
-              "Type part of a name — matches appear in the tree; click opens the folder.\n"
+        "en": "Quickly find folders by name. If a folder is selected in the tree,\n"
+              "only its subfolders are searched (any depth); if nothing is selected\n"
+              "— Home, Pictures and all drives.\n"
               "Case-insensitive, no masks. Enter opens the first match, Esc — reset.",
-        "zh": "按名称快速查找文件夹：主目录、图片和所有磁盘。\n"
-              "输入名称的一部分 — 匹配项将显示在树中，单击即可打开文件夹。\n"
+        "zh": "按名称快速查找文件夹。如果在树中选择了文件夹，\n"
+              "则仅搜索其子文件夹（任意深度）；如果未选择任何内容，\n"
+              "则搜索主目录、图片和所有磁盘。\n"
               "不区分大小写，无通配符。回车打开第一个结果，Esc — 重置。"},
     "viewer.folders_searching": {
         "ru": "Поиск папок…", "en": "Searching folders…", "zh": "正在搜索文件夹…"},
+    "viewer.folders_searching_in": {
+        "ru": "Поиск папок в «{where}»…",
+        "en": "Searching folders in “{where}”…",
+        "zh": "正在搜索文件夹：{where}…"},
     "viewer.folders_searching_found": {
         "ru": "Поиск папок… найдено: {n}",
         "en": "Searching folders… found: {n}",
         "zh": "正在搜索文件夹… 已找到：{n}"},
+    "viewer.folders_searching_in_found": {
+        "ru": "Поиск папок в «{where}»… найдено: {n}",
+        "en": "Searching folders in “{where}”… found: {n}",
+        "zh": "正在搜索文件夹：{where}… 已找到：{n}"},
+    "viewer.folders_scope_all": {
+        "ru": "Домой, Изображения и все диски",
+        "en": "Home, Pictures and all drives",
+        "zh": "主目录、图片和所有磁盘"},
     "viewer.folders_found": {
         "ru": "Найдено папок: {n}", "en": "Folders found: {n}", "zh": "已找到文件夹：{n}"},
+    "viewer.folders_found_in": {
+        "ru": "Найдено папок в «{where}»: {n}",
+        "en": "Folders found in “{where}”: {n}",
+        "zh": "在“{where}”中找到文件夹：{n}"},
     "viewer.folders_none": {
         "ru": "Папок с таким именем не найдено",
         "en": "No folders with this name",
@@ -437,9 +456,9 @@ _STRINGS: dict[str, dict[str, str]] = {
         "en": "Search “{q}”: found {n}",
         "zh": "搜索“{q}”：找到 {n}"},
     "log.event.folder_search": {
-        "ru": "Поиск папок «{q}» запущен",
-        "en": "Folder search “{q}” started",
-        "zh": "已启动文件夹搜索“{q}”"},
+        "ru": "Поиск папок «{q}» запущен (область: {where})",
+        "en": "Folder search “{q}” started (scope: {where})",
+        "zh": "文件夹搜索“{q}”已启动（范围：{where}）"},
     "log.event.folder_search_done": {
         "ru": "Поиск папок «{q}»: найдено {n}",
         "en": "Folder search “{q}”: found {n}",

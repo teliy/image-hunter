@@ -85,6 +85,7 @@ def main() -> int:
         return path
 
     target_one = mk("Albums/TargetOne")
+    docs = mk("docs")                     # «выбранная папка» для проверки области поиска
     target_two = mk("docs/TargetTwo")
     deeper = mk("docs/deep/DeeperTarget")
     target_photos = mk("photos/TargetPhotos")
@@ -227,7 +228,9 @@ def main() -> int:
     check("текущая папка подсвечена в дереве", cur_path == viewer.current_folder(),
           f"{cur_path} vs {viewer.current_folder()}")
 
-    # 11. повторный поиск + Esc в поле (фокус в поле) — сброс
+    # 11. повторный поиск + Esc в поле (фокус в поле) — сброс.
+    #     Выбор папки сбрасываем: имитируем «ничего не выбрано» — глобальный поиск.
+    viewer._folder = ""
     viewer.folder_search.setFocus()
     app.processEvents()
     viewer.folder_search.setText("target")
@@ -302,14 +305,53 @@ def main() -> int:
 
     # 18. новые i18n-ключи есть во всех трёх языках
     need = ["viewer.folders_search_ph", "viewer.folders_search_tip",
-            "viewer.folders_searching", "viewer.folders_searching_found",
-            "viewer.folders_found", "viewer.folders_none", "viewer.folders_trunc",
+            "viewer.folders_searching", "viewer.folders_searching_in",
+            "viewer.folders_searching_found", "viewer.folders_searching_in_found",
+            "viewer.folders_scope_all", "viewer.folders_found",
+            "viewer.folders_found_in", "viewer.folders_none", "viewer.folders_trunc",
             "log.event.folder_search", "log.event.folder_search_done"]
     for key in need:
         langs = i18n._STRINGS.get(key, {})
         check(f"i18n {key}: ru/en/zh",
               all(langs.get(l) for l in ("ru", "en", "zh")), str(sorted(langs)))
     check("tr() подставляет {n}", tr("viewer.folders_found", n=7) != "viewer.folders_found")
+    check("tr() подставляет {where}",
+          tr("viewer.folders_searching_in", where="X") != "viewer.folders_searching_in")
+
+    # 19. поиск по имени ищет только ВНУТРИ выбранной папки, а не по всей системе
+    viewer._folder = ""
+    viewer.load_folder(docs)
+    check("выбранная папка запомнена", viewer.current_folder() == docs,
+          viewer.current_folder())
+    viewer.folder_search.setText("target")
+    ok = wait_until(app, lambda: viewer._fs_handle is None and viewer._fs_in_search
+                    and viewer.tree.topLevelItemCount() == 2)
+    check("в выбранной папке найдены только её подпапки (2)", ok,
+          f"count={viewer._fs_count}")
+    got_scope = {viewer.tree.topLevelItem(i).data(0, Qt.ItemDataRole.UserRole)
+                 for i in range(viewer.tree.topLevelItemCount())}
+    check("за пределами выбранной папки ничего не найдено",
+          {np(p) for p in got_scope} == {np(target_two), np(deeper)}, str(got_scope))
+    check("область поиска показана в статусе", "docs" in viewer.tree_info.text(),
+          viewer.tree_info.text())
+
+    # 20. очистка поля возвращает дерево; выбранная папка сохраняется
+    viewer.folder_search.clear()
+    app.processEvents()
+    check("очистка вышла из режима поиска", not viewer._fs_in_search)
+    check("выбранная папка сохранилась после поиска", viewer.current_folder() == docs,
+          viewer.current_folder())
+
+    # 21. юнит: задача от выбранного корня не выходит за его пределы
+    batches.clear()
+    dones.clear()
+    task4 = lv._FolderSearchTask([docs], "target", 4, sig, lv._SearchHandle())
+    task4.run()
+    flat4 = [p for b in batches for p in b]
+    check("юнит: обход строго внутри выбранной папки",
+          dones and dones[-1][0] == 2
+          and {np(p) for p in flat4} == {np(target_two), np(deeper)},
+          f"{dones} {flat4}")
 
     print()
     if FAILURES:
