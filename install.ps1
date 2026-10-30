@@ -53,6 +53,17 @@ function Confirm2([string]$Prompt, [bool]$DefaultYes = $true) {
   return ($v -match '^(y|Y|д|Д|да)$')
 }
 
+# запущен ли установщик из папки установки (а не из временного архива исходников):
+# в этом случае ImageHunter.bat рядом может прямо сейчас выполняться в cmd
+function Test-InPlace([string]$DirPath) {
+  if (-not $PSCommandPath) { return $false }
+  try {
+    $d = [System.IO.Path]::GetFullPath($DirPath).TrimEnd('\')
+    $p = [System.IO.Path]::GetFullPath($PSCommandPath)
+    return ($p.StartsWith($d + '\', 'OrdinalIgnoreCase') -or ($p -ieq $d))
+  } catch { return $false }
+}
+
 # ---------------------------------------------------------------- защита от "irm | iex"
 # При запуске через "irm ... | iex" PowerShell 5.1 передаёт BOM-символ внутрь строки:
 # ломается разбор param() и переменные получают мусорные значения (например $InstallDir
@@ -176,18 +187,30 @@ function Do-Install([string]$dir, [string]$mode) {   # mode: install | update | 
 
   if ($mode -eq 'update') {
     Write-Step ("Обновление: {0} → {1}" -f $oldVer, $newVer)
-    Get-ChildItem $dir -Force | Where-Object { $_.Name -notin @('.venv', '.gh_token') } |
-      Remove-Item -Recurse -Force
+    # ImageHunter.bat НЕ удаляем: из него мог быть запущен этот сеанс, а cmd
+    # дочитывает батник уже после выхода PowerShell — если файл исчез,
+    # сеанс падает с «Не удается найти пакетный файл»
+    Get-ChildItem $dir -Force | Where-Object { $_.Name -notin @('.venv', '.gh_token', 'ImageHunter.bat') } |
+      Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
   }
 
   Write-Step "Копирую файлы в $dir …"
   New-Item -ItemType Directory -Path $dir -Force | Out-Null
   Copy-Item -Path (Join-Path $src '*') -Destination $dir -Recurse -Force
-  New-Item -ItemType Directory -Path (Join-Path $dir 'installer') -Force | Out-Null
-  foreach ($f in @('install.ps1', 'install.sh')) {
-    if (Test-Path (Join-Path $src $f)) { Copy-Item (Join-Path $src $f) (Join-Path $dir "installer\$f") -Force }
-  }
-  if ($PSCommandPath) { Copy-Item $PSCommandPath (Join-Path $dir 'installer\install.ps1') -Force }
+  try {
+    New-Item -ItemType Directory -Path (Join-Path $dir 'installer') -Force | Out-Null
+    foreach ($f in @('install.ps1', 'install.sh')) {
+      if (Test-Path (Join-Path $src $f)) { Copy-Item (Join-Path $src $f) (Join-Path $dir "installer\$f") -Force }
+    }
+    # если установщик запускали отдельным файлом и в исходниках его нет — кладём копию,
+    # но НИКОГДА не копируем файл сам в себя (ошибка «не может перезаписать сам себя»)
+    $dstPs1 = Join-Path $dir 'installer\install.ps1'
+    if ($PSCommandPath -and -not (Test-Path $dstPs1)) {
+      if ([System.IO.Path]::GetFullPath($PSCommandPath) -ine [System.IO.Path]::GetFullPath($dstPs1)) {
+        Copy-Item $PSCommandPath $dstPs1 -Force
+      }
+    }
+  } catch { Write-Warn2 "Не удалось обновить папку installer\: $_" }
 
   if ($Token) {
     [System.IO.File]::WriteAllText((Join-Path $dir '.gh_token'), $Token)
@@ -233,7 +256,25 @@ if not exist "%DIR%.venv\Scripts\pythonw.exe" (
 )
 start "" "%DIR%.venv\Scripts\pythonw.exe" "%DIR%main.py" %*
 '@
-  Set-Content -Path (Join-Path $dir 'ImageHunter.bat') -Value $bat -Encoding ASCII
+  # лаунчер: не переписываем батник, из которого могли запустить этот сеанс
+  # (свежая копия установщика уже легла в installer\ на шаге выше)
+  $batPath = Join-Path $dir 'ImageHunter.bat'
+  $oldBat  = $null
+  if (Test-Path $batPath) { $oldBat = [System.IO.File]::ReadAllText($batPath) }
+  $normNew = ($bat -replace "`r`n", "`n").Trim()
+  $normOld = if ($null -ne $oldBat) { ($oldBat -replace "`r`n", "`n").Trim() } else { $null }
+  if ($normOld -eq $normNew) {
+    # лаунчер уже актуален — оставляем как есть
+  } elseif ($null -eq $oldBat -or -not (Test-InPlace $dir)) {
+    Set-Content -Path $batPath -Value $bat -Encoding ASCII
+  } else {
+    # установщик запущен из этой же папки (ImageHunter.bat update) — меняем файл
+    # отложенно, чтобы не ломать текущий cmd-сеанс
+    $batNew = Join-Path $dir 'ImageHunter.bat.new'
+    Set-Content -Path $batNew -Value $bat -Encoding ASCII
+    Start-Process cmd -ArgumentList '/c', "ping -n 3 127.0.0.1 >nul & move /y `"$batNew`" `"$batPath`"" -WindowStyle Hidden
+    Write-Warn2 'Лаунчер ImageHunter.bat заменится через 2–3 секунды (сейчас файл используется этим окном).'
+  }
 
   # ярлык: создаём при первой установке или если пропал
   $lnk = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Image Hunter.lnk'

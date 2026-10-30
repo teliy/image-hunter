@@ -70,6 +70,14 @@ curl -fsSL https://raw.githubusercontent.com/teliy/image-hunter/main/install.sh 
 | Удалить | `ImageHunter.bat uninstall` | `image-hunter uninstall` |
 | Версия | `ImageHunter.bat version` | `image-hunter --version` |
 
+> Если `ImageHunter.bat` пропал (например, обновление было прервано старой версией установщика) — восстановите его однострочником с указанием папки установки:
+>
+> ```powershell
+> $env:IH_DIR='C:\ImageHunter'; irm https://codeload.github.com/teliy/image-hunter/zip/refs/heads/main -OutFile "$env:TEMP\ih.zip"; Remove-Item "$env:TEMP\ih-src" -Recurse -Force -ErrorAction SilentlyContinue; Expand-Archive "$env:TEMP\ih.zip" "$env:TEMP\ih-src" -Force; powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\ih-src\image-hunter-main\install.ps1" -Update -AssumeYes
+> ```
+>
+> (подставьте свою папку установки вместо `C:\ImageHunter`; `.venv` и настройки при этом сохраняются).
+
 ### Установка из приватного репозитория (с токеном)
 
 Для **приватного** репозитория GitHub не отдаёт файлы через `raw.githubusercontent.com` без авторизации — обычный однострочник вернёт `404: Not Found` ещё до запуска установщика. Нужно скачать установщик с заголовком `Authorization` и запустить его локально.
