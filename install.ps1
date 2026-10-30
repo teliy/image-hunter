@@ -2,7 +2,9 @@
 #  Image Hunter — автоматический установщик для Windows
 #
 #  Установка одной строкой (PowerShell) — для ПУБЛИЧНОГО репозитория:
-#    irm https://raw.githubusercontent.com/teliy/image-hunter/main/install.ps1 | iex
+#    irm https://raw.githubusercontent.com/teliy/image-hunter/main/install.ps1 -OutFile "$env:TEMP\ih-install.ps1"; powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\ih-install.ps1"
+#  ВАЖНО: не заменяйте это на "irm ... | iex" — PowerShell 5.1 при iex ломается на
+#  BOM-символе (кириллица) и разборе param(), параметры получают мусорные значения.
 #
 #  Для ПРИВАТНОГО репозитория (raw.githubusercontent отдаёт 404 без токена):
 #    $t="ghp_xxx"; iwr https://raw.githubusercontent.com/teliy/image-hunter/main/install.ps1 -Headers @{Authorization="token $t"} -UseBasicParsing -OutFile "$env:TEMP\ih-install.ps1"; $env:IH_GH_TOKEN=$t; powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\ih-install.ps1"
@@ -42,6 +44,18 @@ function Confirm2([string]$Prompt, [bool]$DefaultYes = $true) {
   $v = Read-Host -Prompt "$Prompt [$hint]"
   if ([string]::IsNullOrWhiteSpace($v)) { return $DefaultYes }
   return ($v -match '^(y|Y|д|Д|да)$')
+}
+
+# ---------------------------------------------------------------- защита от "irm | iex"
+# При запуске через "irm ... | iex" PowerShell 5.1 передаёт BOM-символ внутрь строки:
+# ломается разбор param() и переменные получают мусорные значения (например $InstallDir
+# становится строкой "False"). Разрешаем только запуск файлом — см. однострочник в README.
+if (-not $PSCommandPath) {
+  Write-Host ''
+  Write-Err2 'Установщик запущен через irm | iex — так PowerShell 5.1 ломает разбор параметров.'
+  Write-Host 'Скопируйте и вставьте в PowerShell эту строку ЦЕЛИКОМ:' -ForegroundColor Yellow
+  Write-Host '  irm https://raw.githubusercontent.com/teliy/image-hunter/main/install.ps1 -OutFile "$env:TEMP\ih-install.ps1"; powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\ih-install.ps1"' -ForegroundColor Cyan
+  return
 }
 
 # ---------------------------------------------------------------- python

@@ -38,11 +38,13 @@
 
 Установщик сам спросит папку установки, создаст виртуальное окружение, скачает зависимости и создаст ярлыки.
 
-**Windows** (PowerShell):
+**Windows** (PowerShell — скопируйте строку целиком):
 
 ```powershell
-irm https://raw.githubusercontent.com/teliy/image-hunter/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/teliy/image-hunter/main/install.ps1 -OutFile "$env:TEMP\ih-install.ps1"; powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\ih-install.ps1"
 ```
+
+> Почему не `irm … | iex`: установщик сохранён с UTF-8 BOM (для корректной кириллицы при запуске файлом), а PowerShell 5.1 при выполнении через `iex` ломается на BOM-символе — сбивается разбор `param()` и установка получает мусорные параметры. Файловый запуск (`-File`) работает всегда.
 
 **Linux** (bash):
 
