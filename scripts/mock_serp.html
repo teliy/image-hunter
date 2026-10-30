@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Mock SERP для теста чекбоксов Image Hunter</title>
+<style>
+  body { font-family: sans-serif; margin: 20px; }
+  .serp-item, .tile--img, .imgpt {
+    position: relative; display: inline-block; width: 220px; height: 180px;
+    margin: 8px; border: 1px solid #ccc; overflow: hidden;
+  }
+  .serp-item a img, .tile--img img, .imgpt img { width: 100%; height: 100%; object-fit: cover; }
+</style>
+</head>
+<body>
+  <!-- 1. Яндекс-плитка с data-bem: лучший кандидат — origUrl -->
+  <div class="serp-item" data-bem='{"serp-item":{"origUrl":"https://avatars.mds.yandex.net/get-mpic/111/2a0000abc/orig","imgUrl":"https://avatars.mds.yandex.net/get-mpic/111/thumb_small.jpg","width":1498,"height":741}}'>
+    <a href="https://ya.ru/images/search?pos=0&amp;img_url=https%3A%2F%2Fir.ozone.ru%2Fpic1.jpg&amp;rpt=simage">
+      <img src="https://avatars.mds.yandex.net/get-mpic/111/thumb_small.jpg" alt="1">
+    </a>
+  </div>
+
+  <!-- 2. Плитка без data-bem: оригинал только в img_url -->
+  <div class="serp-item">
+    <a href="https://ya.ru/images/search?pos=1&amp;img_url=https%3A%2F%2Fexample.org%2Fpic2.jpg&amp;rpt=simage">
+      <img src="https://avatars.mds.yandex.net/get-mpic/222/thumb2.jpg" alt="2">
+    </a>
+  </div>
+
+  <!-- 3. DuckDuckGo: оригинал за прокси /iu/?u= -->
+  <div class="tile--img">
+    <a class="tile--img__img-wrapper" href="https://external-content.duckduckgo.com/iu/?u=https%3A%2F%2Frealsite.com%2Fpic3.jpg&amp;f=1&amp;noexp=1">
+      <img src="https://external-content.duckduckgo.com/iu/th?u=https%3A%2F%2Frealsite.com%2Fpic3.jpg&amp;w=180" alt="3">
+    </a>
+  </div>
+
+  <!-- 4. Bing: оригинал в JSON-атрибуте m= -->
+  <div class="imgpt">
+    <a class="iusc" href="#" m='{"murl":"https://bingorig.com/pic4.jpg","t":"Фильтр"}'>
+      <img src="https://tse.mm.bing.net/th?id=OIP.xxxx" alt="4">
+    </a>
+  </div>
+
+  <!-- 5. Новый UI Яндекса: React-корень с data-state, плитка — div с background-image -->
+  <div id="mock-root" data-state='{"serp":{"items":{"i-0":{"origUrl":"https://avatars.mds.yandex.net/get-mpic/999/state_orig/orig","imgUrl":"https://avatars.mds.yandex.net/get-mpic/999/state_thumb.jpg","snippet":{"url":"https://shop.example/product/1"}},"i-1":{"origUrl":"https://avatars.mds.yandex.net/get-mpic/888/state_orig2/orig","imgUrl":"https://avatars.mds.yandex.net/get-mpic/888/state_thumb2.jpg"}}}}'>
+    <div class="x1f9pTileGenerated" style="background-image:url('https://avatars.mds.yandex.net/get-mpic/999/state_thumb.jpg');width:200px;height:150px"></div>
+  </div>
+
+  <!-- не-картинка: чекбокса быть не должно -->
+  <p><a href="https://example.com/some/page">Обычная ссылка на страницу</a></p>
+</body>
+</html>
