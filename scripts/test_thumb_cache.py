@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import Qt, QTimer  # noqa: E402
+from PySide6.QtCore import Qt, QTimer, QSettings  # noqa: E402
 from PySide6.QtGui import QImage  # noqa: E402
 
 from app.ui import local_viewer as lv  # noqa: E402
@@ -47,7 +47,10 @@ def main() -> int:
     from PySide6.QtWidgets import QApplication
 
     app = QApplication.instance() or QApplication(sys.argv)
+    QSettings("ImageHunter", "ImageHunter").setValue("viewer/thumbs", True)  # изолируем тесты
     viewer = lv.LocalViewer()
+    viewer.resize(1700, 1200)
+    viewer.show()   # ленивые миниатюры: грузятся только видимые строки
     cache_dir = lv._thumb_cache_dir()
     check("кэш-каталог создан", bool(cache_dir), cache_dir)
 
@@ -112,6 +115,20 @@ def main() -> int:
         check("сканирование 2500 файлов нашло 2000 картинок", len(found) == 2000,
               f"{dt * 1000:.0f} мс")
         shutil.rmtree(big, ignore_errors=True)
+
+        # 6. ленивая загрузка: при входе в большую папку НЕ стартуют задачи на все файлы
+        lazy = tempfile.mkdtemp(prefix="ih_lazy_")
+        for i in range(300):
+            make_image(os.path.join(lazy, f"L_{i:03d}.png"), w=64, h=64)
+        viewer.load_folder(lazy)
+        for _ in range(40):   # ждём срабатывания таймера видимых строк (~120 мс)
+            app.processEvents()
+            time.sleep(0.02)
+            app.processEvents()
+        queued = len(viewer._thumb_queued)
+        check("ленивая загрузка: задачи только для видимых (не все 300)",
+              0 < queued < 300, f"очередь={queued} из 300")
+        shutil.rmtree(lazy, ignore_errors=True)
 
         print(f"\nвремя: холодное открытие {t_cold:.2f} с, из кэша {t_warm:.2f} с, "
               f"скан 2500 файлов {dt * 1000:.0f} мс")

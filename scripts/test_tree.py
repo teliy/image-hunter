@@ -16,6 +16,7 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QImage
 
 from app.ui.local_viewer import LocalViewer, list_image_files
+from PySide6.QtCore import QSettings
 
 FAILURES: list[str] = []
 
@@ -49,7 +50,10 @@ def main() -> int:
     from PySide6.QtWidgets import QApplication
 
     app = QApplication.instance() or QApplication(sys.argv)
+    QSettings("ImageHunter", "ImageHunter").setValue("viewer/thumbs", True)  # изолируем тесты
     viewer = LocalViewer()
+    viewer.resize(800, 900)
+    viewer.show()   # ленивые миниатюры грузятся только для видимых строк
 
     # 1. дерево построено: есть диски (include_all — песочница на overlay-fs)
     viewer.refresh_drives(include_all=True)

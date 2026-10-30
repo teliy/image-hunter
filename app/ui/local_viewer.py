@@ -341,6 +341,11 @@ class LocalViewer(QWidget):
         self._search_handle = None         # отменяемый текущий поиск
         self._search_needle = ""
         self._search_count = 0
+        self._meta: list[tuple[int, float]] = []   # (размер, mtime) параллельно _paths
+        self._thumb_queued: set[int] = set()       # строки, для которых задача уже ставилась
+        self._thumb_done_rows: set[int] = set()    # строки с уже выставленной миниатюрой
+        self._thumbs_enabled = QSettings("ImageHunter", "ImageHunter").value(
+            "viewer/thumbs", True, type=bool)      # выключатель предпросмотра
 
         # --- верхняя панель ---
         bar = QHBoxLayout()
@@ -372,6 +377,17 @@ class LocalViewer(QWidget):
         esc = QShortcut(QKeySequence("Esc"), self)
         esc.activated.connect(self.search_edit.clear)
         bar.addSpacing(8)
+        self.btn_thumbs = QToolButton()
+        self.btn_thumbs.setText("🖼 Миниатюры")
+        self.btn_thumbs.setCheckable(True)
+        self.btn_thumbs.setChecked(self._thumbs_enabled)
+        self.btn_thumbs.setToolTip(
+            "Включено: предпросмотр грузится только для видимой части списка —\n"
+            "сетевой диск не читает все файлы подряд.\n"
+            "Выключено: миниатюры не загружаются вовсе (для очень медленных дисков).")
+        self.btn_thumbs.toggled.connect(self._on_toggle_thumbs)
+        bar.addWidget(self.btn_thumbs)
+        bar.addSpacing(8)
         self.btn_prev = btn("◀", "Предыдущая (Left)", lambda: self.step(-1))
         self.btn_next = btn("▶", "Следующая (Right)", lambda: self.step(+1))
         bar.addSpacing(8)
@@ -399,6 +415,8 @@ class LocalViewer(QWidget):
         self.list.itemDoubleClicked.connect(
             lambda item: QDesktopServices.openUrl(QUrl.fromLocalFile(item.data(Qt.UserRole)))
         )
+        # прокрутили список — надо догрузить миниатюры новых видимых строк
+        self.list.verticalScrollBar().valueChanged.connect(self._schedule_visible_thumbs)
 
         # --- дерево дисков и папок (левая панель) ---
         self.tree = QTreeWidget()
@@ -470,6 +488,11 @@ class LocalViewer(QWidget):
         self._search_timer.setSingleShot(True)
         self._search_timer.setInterval(350)
         self._search_timer.timeout.connect(self._start_search_now)
+        # ленивые миниатюры: пересчёт видимых строк не чаще раза в 120 мс
+        self._visible_timer = QTimer(self)
+        self._visible_timer.setSingleShot(True)
+        self._visible_timer.setInterval(120)
+        self._visible_timer.timeout.connect(self._queue_visible_thumbs)
 
         self.refresh_drives()
         self._restore_last_folder()
@@ -494,29 +517,33 @@ class LocalViewer(QWidget):
         self._gen += 1
         self._pool.clear()   # не начатые миниатюры прошлой папки больше не нужны
         self._paths = [p for p, _s, _m in entries]
+        self._meta = [(s, m) for _p, s, m in entries]
         self.list.clear()
         self._pending_thumbs.clear()
+        self._thumb_queued.clear()
+        self._thumb_done_rows.clear()
         self._thumbs_done = 0
         self._pixmap = None
         self._movie = None
 
         placeholder = QPixmap(THUMB, THUMB)
         placeholder.fill(Qt.darkGray)
-        cache_dir = _thumb_cache_dir()
 
-        for row, (path, size, mtime) in enumerate(entries):
+        # строим только список; миниатюры грузятся ЛЕНИВО — для видимых строк
+        # (см. _queue_visible_thumbs). Вход в сетевую папку с тысячами файлов
+        # больше не запускает чтение всех файлов подряд.
+        for row, (path, _size, _mtime) in enumerate(entries):
             item = QListWidgetItem(QIcon(placeholder), os.path.basename(path))
             item.setData(Qt.UserRole, path)
             item.setToolTip(os.path.basename(path))
             self.list.addItem(item)
-            self._pool.start(_ThumbTask(path, row, self._gen, self._thumb_signals,
-                                        cache_dir, size, mtime))
 
         if self._paths:
             self.list.setCurrentRow(0)
         else:
             self.view_label.setText("В этой папке нет изображений")
             self.status.setText(folder or "—")
+        self._schedule_visible_thumbs()
 
         QSettings("ImageHunter", "ImageHunter").setValue("viewer/last_folder", folder)
         if sync_tree:
@@ -553,10 +580,13 @@ class LocalViewer(QWidget):
         self._gen += 1
         self._pool.clear()
         self._paths = []
+        self._meta = []
         self._search_needle = needle
         self._search_count = 0
         self.list.clear()
         self._pending_thumbs.clear()
+        self._thumb_queued.clear()
+        self._thumb_done_rows.clear()
         self._thumbs_done = 0
         self._pixmap = None
         self._movie = None
@@ -567,21 +597,20 @@ class LocalViewer(QWidget):
     def _on_search_batch(self, gen: int, items: list) -> None:
         if gen != self._gen or not items:
             return
-        cache_dir = _thumb_cache_dir()
         placeholder = QPixmap(THUMB, THUMB)
         placeholder.fill(Qt.darkGray)
         for path, size, mtime in items:
             row = len(self._paths)
             self._paths.append(path)
+            self._meta.append((size, mtime))
             item = QListWidgetItem(QIcon(placeholder), os.path.basename(path))
             item.setData(Qt.UserRole, path)
             item.setToolTip(os.path.relpath(path, self._folder) if self._folder
                             else os.path.basename(path))
             self.list.addItem(item)
-            self._pool.start(_ThumbTask(path, row, gen, self._thumb_signals,
-                                        cache_dir, size, mtime))
         self._search_count += len(items)
         self.status.setText(f"Поиск «{self._search_needle}»… найдено: {self._search_count}")
+        self._schedule_visible_thumbs()
         if self.list.currentRow() < 0 and self.list.count():
             self.list.setCurrentRow(0)
 
@@ -591,6 +620,60 @@ class LocalViewer(QWidget):
         self._search_handle = None
         tail = " (показаны первые 5000)" if truncated else ""
         self.status.setText(f"Поиск «{self._search_needle}»: {total} файлов{tail}")
+
+    # ---------- ленивые миниатюры: грузим только видимую часть ----------
+
+    def _on_toggle_thumbs(self, checked: bool) -> None:
+        """Выключатель предпросмотра; состояние запоминается между запусками."""
+        QSettings("ImageHunter", "ImageHunter").setValue("viewer/thumbs", checked)
+        self._thumbs_enabled = checked
+        if checked:
+            self._schedule_visible_thumbs()
+        else:
+            self._pool.clear()            # не начатые задачи больше не нужны
+            self._pending_thumbs.clear()
+            self._thumb_queued.clear()    # при повторном включении их можно повторить
+            self._thumb_timer.stop()
+
+    def _schedule_visible_thumbs(self, *_args) -> None:
+        """Дебаунс: при прокрутке/ресайзе не пересчитываем видимые строки на каждый пиксель."""
+        if self._thumbs_enabled:
+            self._visible_timer.start()
+
+    def _queue_visible_thumbs(self) -> None:
+        """Ставит задачи миниатюр ТОЛЬКО для видимых строк (с запасом на экран).
+
+        Так массовая прогрузка предпросмотра отключена: вход в сетевую папку
+        с тысячами фотографий читает по сети лишь то, что видно на экране."""
+        if not self._thumbs_enabled or not self._paths:
+            return
+        vp = self.list.viewport().rect()
+        if vp.height() <= 0:
+            return                        # ещё не показаны — загрузим по showEvent
+        margin = vp.height()              # запас по экрану сверху и снизу
+        top, bottom = vp.top() - margin, vp.bottom() + margin
+        count = self.list.count()
+        cache_dir = _thumb_cache_dir()
+
+        # rect.top() монотонно не убывает (раскладка сверху вниз), поэтому
+        # первый видимый элемент ищем бинарным поиском: O(log n) вместо O(n)
+        lo, hi = 0, count
+        while lo < hi:
+            mid = (lo + hi) // 2
+            if self.list.visualItemRect(self.list.item(mid)).bottom() >= top:
+                hi = mid
+            else:
+                lo = mid + 1
+        for row in range(lo, count):
+            rect = self.list.visualItemRect(self.list.item(row))
+            if rect.top() > bottom:
+                break                     # дальше — уже за нижней границей
+            if row in self._thumb_queued or row in self._thumb_done_rows:
+                continue
+            self._thumb_queued.add(row)
+            size, mtime = self._meta[row] if row < len(self._meta) else (0, 0.0)
+            self._pool.start(_ThumbTask(self._paths[row], row, self._gen,
+                                        self._thumb_signals, cache_dir, size, mtime))
 
     # ---------- просмотр ----------
 
@@ -859,12 +942,19 @@ class LocalViewer(QWidget):
             if item is not None:
                 item.setIcon(QIcon(QPixmap.fromImage(img)))
         self._thumbs_done += len(pending)
+        self._thumb_done_rows.update(pending.keys())
         self._thumb_timer.stop()
+
+    def showEvent(self, event) -> None:  # noqa: N802 (Qt API)
+        super().showEvent(event)
+        # при первом показе вьюпорт получает реальные размеры — пора грузить видимые миниатюры
+        self._schedule_visible_thumbs()
 
     def resizeEvent(self, event) -> None:  # noqa: N802 (Qt API)
         super().resizeEvent(event)
         if self._mode == "fit":
             self._apply_mode()
+        self._schedule_visible_thumbs()
 
     def eventFilter(self, obj, event) -> bool:  # noqa: N802 (Qt API)
         try:
