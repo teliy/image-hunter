@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
+import random
 import re
+import tempfile
 
 from PySide6.QtCore import (
-    QFileInfo,
     QObject,
     QRunnable,
     QSettings,
@@ -14,6 +16,7 @@ from PySide6.QtCore import (
     QStandardPaths,
     Qt,
     QThreadPool,
+    QTimer,
     QUrl,
     Signal,
 )
@@ -33,6 +36,7 @@ from PySide6.QtGui import (
     QShortcut,
 )
 from PySide6.QtWidgets import (
+    QApplication,
     QFileDialog,
     QHBoxLayout,
     QLabel,
@@ -53,6 +57,7 @@ from PySide6.QtWidgets import (
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"}
 THUMB = 160
 TREE_WIDTH = 230
+THUMB_CACHE_MAX = 256 * 1024 * 1024   # предел кэша миниатюр на диске
 
 # виртуальные файловые системы и точки монтирования, которые не показываем в дереве
 _VIRTUAL_FS = {
@@ -79,38 +84,162 @@ def natural_key(name: str):
     return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", name)]
 
 
-def list_image_files(folder: str) -> list[str]:
+def _is_hidden_entry(entry: os.DirEntry) -> bool:
+    """Скрытый ли элемент — только по данным scandir, без лишних stat() (важно для сети)."""
+    if entry.name.startswith("."):
+        return True
+    if os.name == "nt":
+        try:
+            # на Windows stat(follow_symlinks=False) бесплатный: данные уже
+            # получены при перечислении каталога (FindFirstFile/FindNextFile)
+            attrs = getattr(entry.stat(follow_symlinks=False), "st_file_attributes", 0)
+        except OSError:
+            return False
+        if attrs & 0x2:  # FILE_ATTRIBUTE_HIDDEN
+            return True
+    return False
+
+
+def scan_image_entries(folder: str) -> list[tuple[str, int, float]]:
+    """[(путь, размер, mtime)] картинок в папке — ОДИН проход os.scandir.
+
+    Ключевое для сетевых дисков: никаких os.path.isfile()/stat() на каждый
+    файл — и тип файла, и размер, и время уже лежат в выгрузке каталога.
+    Каждый отдельный stat() по SMB — это сетевой round-trip.
+    """
+    out: list[tuple[str, int, float]] = []
     try:
-        names = os.listdir(folder)
+        with os.scandir(folder) as it:
+            for entry in it:
+                if os.path.splitext(entry.name)[1].lower() not in IMAGE_EXTS:
+                    continue
+                try:
+                    if not entry.is_file():
+                        continue
+                    st = entry.stat(follow_symlinks=False)
+                except OSError:
+                    continue
+                out.append((entry.path, st.st_size, st.st_mtime))
     except OSError:
         return []
-    return sorted(
-        (os.path.join(folder, n) for n in names
-         if os.path.splitext(n)[1].lower() in IMAGE_EXTS and os.path.isfile(os.path.join(folder, n))),
-        key=lambda p: natural_key(os.path.basename(p)),
-    )
+    out.sort(key=lambda t: natural_key(os.path.basename(t[0])))
+    return out
 
 
-# ---------- фоновые миниатюры ----------
+def list_image_files(folder: str) -> list[str]:
+    return [p for p, _size, _mtime in scan_image_entries(folder)]
+
+
+# ---------- фоновые миниатюры с постоянным кэшем на диске ----------
 
 class _ThumbSignals(QObject):
-    ready = Signal(int, QImage)  # строка списка, готовая миниатюра
+    ready = Signal(int, int, QImage)  # поколение папки, строка списка, готовая миниатюра
+
+
+def _thumb_cache_dir() -> str:
+    base = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.GenericCacheLocation)
+    d = os.path.join(base or tempfile.gettempdir(), "ImageHunter", "thumbs")
+    try:
+        os.makedirs(d, exist_ok=True)
+        return d
+    except OSError:
+        return ""
+
+
+def _thumb_cache_key(path: str, size: int, mtime: float) -> str:
+    # путь + размер + mtime: ключ меняется, когда файл перезаписан
+    try:
+        norm = os.path.normcase(os.path.abspath(path))
+    except OSError:
+        norm = path
+    raw = f"{norm}|{size}|{mtime:.0f}".encode("utf-8", "surrogateescape")
+    return hashlib.sha1(raw).hexdigest()
+
+
+def _prune_thumb_cache(cache_dir: str, max_bytes: int = THUMB_CACHE_MAX) -> None:
+    """Кэш миниатюр не должен расти бесконечно: удаляем самые старые файлы."""
+    try:
+        names = os.listdir(cache_dir)
+    except OSError:
+        return
+    items: list[tuple[float, int, str]] = []
+    total = 0
+    for name in names:
+        p = os.path.join(cache_dir, name)
+        try:
+            st = os.stat(p)
+        except OSError:
+            continue
+        total += st.st_size
+        items.append((st.st_mtime, st.st_size, p))
+    if total <= max_bytes:
+        return
+    limit = int(max_bytes * 0.8)
+    for _mtime, size, p in sorted(items):
+        if total <= limit:
+            break
+        try:
+            os.remove(p)
+            total -= size
+        except OSError:
+            pass
 
 
 class _ThumbTask(QRunnable):
-    def __init__(self, path: str, row: int, signals: _ThumbSignals):
+    """Миниатюра: сначала кэш на локальном диске (мгновенно), при промахе —
+    чтение файла в фоновом потоке и сохранение в кэш. Повторное открытие
+    папки (в том числе сетевой) больше не перечитывает файлы по сети."""
+
+    def __init__(self, path: str, row: int, gen: int, signals: _ThumbSignals,
+                 cache_dir: str, size: int = 0, mtime: float = 0.0):
         super().__init__()
-        self.path, self.row, self.signals = path, row, signals
+        self.path = path
+        self.row = row
+        self.gen = gen
+        self.signals = signals
+        self.cache_dir = cache_dir
+        self.size = size
+        self.mtime = mtime
 
     def run(self) -> None:
+        cache_path = ""
+        if self.cache_dir:
+            key = _thumb_cache_key(self.path, self.size, self.mtime)
+            cache_path = os.path.join(self.cache_dir, key + ".png")
+            cached = QImage(cache_path)
+            if not cached.isNull():
+                self.signals.ready.emit(self.gen, self.row, cached)
+                return
         reader = QImageReader(self.path)
         reader.setAutoTransform(True)
         size = reader.size()
         if size.isValid() and size.width() > 0 and size.height() > 0:
             reader.setScaledSize(size.scaled(THUMB, THUMB, Qt.KeepAspectRatio))
         img = reader.read()
-        if not img.isNull():
-            self.signals.ready.emit(self.row, img)
+        if img.isNull():
+            return
+        if cache_path:
+            self._store(cache_path, img)
+        self.signals.ready.emit(self.gen, self.row, img)
+
+    def _store(self, cache_path: str, img: QImage) -> None:
+        tmp = f"{cache_path}.{os.getpid()}.tmp"
+        if not img.save(tmp, "PNG"):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            return
+        try:
+            os.replace(tmp, cache_path)
+        except OSError:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            return
+        if random.random() < 0.02:  # изредка подчищаем кэш в фоновом потоке
+            _prune_thumb_cache(self.cache_dir)
 
 
 # ---------- виджет ----------
@@ -127,6 +256,8 @@ class LocalViewer(QWidget):
         self._pixmap: QPixmap | None = None
         self._movie: QMovie | None = None
         self._thumbs_done = 0
+        self._gen = 0                      # номер загрузки папки: отсекаем миниатюры прошлой папки
+        self._pending_thumbs: dict[int, QImage] = {}
 
         # --- верхняя панель ---
         bar = QHBoxLayout()
@@ -230,6 +361,11 @@ class LocalViewer(QWidget):
         self._thumb_signals.ready.connect(self._on_thumb_ready)
         self._pool = QThreadPool(self)
         self._pool.setMaxThreadCount(4)
+        # применяем миниатюры пачками по таймеру: сотни setIcon подряд
+        # заставляют список перестраивать раскладку на каждую иконку
+        self._thumb_timer = QTimer(self)
+        self._thumb_timer.setInterval(120)
+        self._thumb_timer.timeout.connect(self._flush_thumbs)
 
         self.refresh_drives()
         self._restore_last_folder()
@@ -241,23 +377,31 @@ class LocalViewer(QWidget):
         if folder:
             self.load_folder(folder, sync_tree=True)
 
-    def load_folder(self, folder: str, sync_tree: bool = False) -> None:
+    def load_folder(self, folder: str, entries: list[tuple[str, int, float]] | None = None,
+                    sync_tree: bool = False) -> None:
         self._folder = folder
-        self._paths = list_image_files(folder)
+        if entries is None:
+            entries = scan_image_entries(folder)
+        self._gen += 1
+        self._pool.clear()   # не начатые миниатюры прошлой папки больше не нужны
+        self._paths = [p for p, _s, _m in entries]
         self.list.clear()
+        self._pending_thumbs.clear()
         self._thumbs_done = 0
         self._pixmap = None
         self._movie = None
 
         placeholder = QPixmap(THUMB, THUMB)
         placeholder.fill(Qt.darkGray)
+        cache_dir = _thumb_cache_dir()
 
-        for row, path in enumerate(self._paths):
+        for row, (path, size, mtime) in enumerate(entries):
             item = QListWidgetItem(QIcon(placeholder), os.path.basename(path))
             item.setData(Qt.UserRole, path)
             item.setToolTip(os.path.basename(path))
             self.list.addItem(item)
-            self._pool.start(_ThumbTask(path, row, self._thumb_signals))
+            self._pool.start(_ThumbTask(path, row, self._gen, self._thumb_signals,
+                                        cache_dir, size, mtime))
 
         if self._paths:
             self.list.setCurrentRow(0)
@@ -280,7 +424,15 @@ class LocalViewer(QWidget):
     def _show_index(self, row: int) -> None:
         if not (0 <= row < len(self._paths)):
             return
-        path = self._paths[row]
+        # файл может читаться по сети — показываем занятость,
+        # чтобы клики не «висли» молча
+        QApplication.setOverrideCursor(Qt.CursorShape.BusyCursor)
+        try:
+            self._load_view(self._paths[row], row)
+        finally:
+            QApplication.restoreOverrideCursor()
+
+    def _load_view(self, path: str, row: int) -> None:
         self._movie = None
 
         if os.path.splitext(path)[1].lower() == ".gif":
@@ -435,20 +587,22 @@ class LocalViewer(QWidget):
 
     @staticmethod
     def _list_subdirs(path: str) -> list[str]:
+        """Подпапки одним проходом os.scandir — без stat() на каждый элемент
+        (на сетевом диске каждый stat — сетевой round-trip)."""
+        out = []
         try:
-            names = os.listdir(path)
+            with os.scandir(path) as it:
+                for entry in it:
+                    if entry.name.startswith(".") or _is_hidden_entry(entry):
+                        continue
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            out.append(entry.path)
+                    except OSError:
+                        continue
         except OSError:
             return []
-        out = []
-        for name in sorted(names, key=natural_key):
-            if name.startswith("."):
-                continue
-            full = os.path.join(path, name)
-            try:
-                if os.path.isdir(full) and not QFileInfo(full).isHidden():
-                    out.append(full)
-            except OSError:
-                continue
+        out.sort(key=lambda p: natural_key(os.path.basename(p)))
         return out
 
     def _on_tree_clicked(self, item: QTreeWidgetItem, _column: int) -> None:
@@ -464,8 +618,9 @@ class LocalViewer(QWidget):
         if not (last and os.path.isdir(last)):
             return
         # авто-открытие только для папок разумного размера, чтобы не тормозить запуск
-        if 0 < len(list_image_files(last)) <= 2000:
-            self.load_folder(last, sync_tree=True)
+        entries = scan_image_entries(last)
+        if 0 < len(entries) <= 2000:
+            self.load_folder(last, entries=entries, sync_tree=True)
 
     @staticmethod
     def _is_under(path_n: str, base_n: str) -> bool:
@@ -507,11 +662,21 @@ class LocalViewer(QWidget):
 
     # ---------- служебное ----------
 
-    def _on_thumb_ready(self, row: int, img: QImage) -> None:
-        item = self.list.item(row)
-        if item is not None:
-            item.setIcon(QIcon(QPixmap.fromImage(img)))
-        self._thumbs_done += 1
+    def _on_thumb_ready(self, gen: int, row: int, img: QImage) -> None:
+        if gen != self._gen:
+            return  # миниатюра из предыдущей папки — папка уже сменилась
+        self._pending_thumbs[row] = img
+        if not self._thumb_timer.isActive():
+            self._thumb_timer.start()
+
+    def _flush_thumbs(self) -> None:
+        pending, self._pending_thumbs = self._pending_thumbs, {}
+        for row, img in pending.items():
+            item = self.list.item(row)
+            if item is not None:
+                item.setIcon(QIcon(QPixmap.fromImage(img)))
+        self._thumbs_done += len(pending)
+        self._thumb_timer.stop()
 
     def resizeEvent(self, event) -> None:  # noqa: N802 (Qt API)
         super().resizeEvent(event)

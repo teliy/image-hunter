@@ -6,6 +6,7 @@
 import os
 import sys
 import tempfile
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -102,7 +103,7 @@ def main() -> int:
     deadline = 0
     while viewer._thumbs_done < done_before + 2 and deadline < 200:
         app.processEvents()
-        QTimer.singleShot(10, lambda: None)
+        time.sleep(0.02)  # реальная пауза: таймер пачки миниатюр срабатывает раз в 120 мс
         app.processEvents()
         deadline += 1
     check("миниатюры отрисованы", viewer._thumbs_done >= done_before + 2,
