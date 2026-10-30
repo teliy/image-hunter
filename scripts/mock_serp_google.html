@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Mock Google Images SERP (udm=2) for Image Hunter checkbox test</title>
+<style>
+  body { font-family: sans-serif; margin: 20px; }
+  /* ВАЖНО: разметка как в актуальной выдаче картинок Google (udm=2):
+     1) плитка — DIV с хешированными классами (eA0Zlc и т.п.), знакомых
+        классов serp-item/tile--img больше нет;
+     2) миниатюры — encrypted-tbn*.gstatic.com / lh3.googleusercontent.com
+        БЕЗ расширения файла — looksImage такие URL раньше отбрасывал
+        (чекбоксы «не у всех»);
+     3) ленивые плитки получают src ПОЗЖЕ отрисовки (смена атрибута,
+        childList-observer её не видит — на таких плитках чекбоксов
+        раньше не было вовсе). */
+  .tile { display: inline-block; width: 200px; height: 160px;
+          margin: 8px; border: 1px solid #ccc; position: relative; }
+  .tile img { width: 100%; height: 100%; object-fit: cover; }
+</style>
+</head>
+<body>
+  <!-- плитка 1: якорь /imgres?imgurl=<оригинал> + миниатюра gstatic (без расширения) -->
+  <div class="eA0Zlc mgpRTe tile">
+    <a href="https://www.google.com/imgres?imgurl=https%3A%2F%2Fexample-parts.com%2Fpic1.jpg&amp;imgrefurl=https%3A%2F%2Fexample-parts.com%2Fpage1&amp;docid=X1&amp;tbnid=Y1">
+      <g-img><img src="https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcSxyz123&amp;s" alt="1"></g-img>
+    </a>
+  </div>
+
+  <!-- плитка 2: якорей нет, миниатюра googleusercontent (без расширения) -->
+  <div class="eA0Zlc tile">
+    <img src="https://lh3.googleusercontent.com/pw/ABFCqux7dZm0w=s500" alt="2">
+  </div>
+
+  <!-- плитка 3: ленивая — src появится позже (проверка attributes-observer'а) -->
+  <div class="tile"><img id="late-img" alt="3"></div>
+
+  <!-- не-картинка: чекбокса быть не должно -->
+  <p><a href="https://example.com/some/page">Just a web result</a></p>
+
+  <!-- контейнер шторма мутаций: имитация отрисовки выдачи Google -->
+  <div id="storm"></div>
+</body>
+</html>

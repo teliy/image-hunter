@@ -133,7 +133,7 @@ def main() -> int:
         extra = c2.add_tab()
         check("четвёртая отклонена (лимит)", extra is None)
     finally:
-        st.MAX_TABS = 12
+        st.MAX_TABS = 16
 
     # 10. сигналы внутренней вкладки пересылаются наружу
     got: list[str] = []

@@ -8,7 +8,12 @@
 4. MutationObserver подхватывает плитки, догруженные после первого прохода;
 5. повторный клик снимает отметку;
 6. «Снять отметки» (uncheckAll) обнуляет все отметки и счётчик;
-7. кнопка «✕ Снять отметки» в тулбаре есть и активируется по счётчику.
+7. кнопка «✕ Снять отметки» в тулбаре есть и активируется по счётчику;
+8. выдача Google (udm=2): миниатюры gstatic/googleusercontent без расширения,
+   ленивые плитки (src появляется позже — attributes-observer) и шторм
+   мутаций не мешают появлению чекбоксов;
+9. все 13 поисковиков: шаблон каждой вкладки — страница картинок,
+   веб-выдача этих же поисковиков — нет.
 
 Запуск:
     QT_QPA_PLATFORM=offscreen python scripts/test_checkboxes.py [--live]
@@ -370,6 +375,160 @@ def run_ddg_mock_test() -> None:
     wait_ms(100)
 
 
+def run_google_mock_test() -> None:
+    """Мок актуальной выдачи картинок Google (udm=2).
+
+    Раньше на такой странице чекбоксы появлялись поздно и не на всех
+    плитках:
+    1. debounce наблюдателя «откладывался» штормом мутаций, которым Google
+       дорисовывает выдачу, — скан выполнялся только после паузы;
+    2. ленивые плитки получают src ПОЗЖЕ отрисовки — смену атрибута
+       childList-observer не видел;
+    3. миниатюры gstatic/googleusercontent без расширения отбрасывались
+       looksImage — у плиток без якоря imgurl не оставалось кандидатов.
+    Проверяем все три исправления.
+    """
+    from PySide6.QtCore import QEventLoop
+    from PySide6.QtWidgets import QApplication
+    from PySide6.QtWebEngineWidgets import QWebEngineView
+
+    from app.core.extractor import fetch_checked_selections, inject_checkbox_ui
+
+    mock = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "mock_serp_google.html")
+    app = QApplication.instance() or QApplication([])
+    view = QWebEngineView()
+
+    check("мок Google загрузился", load_page(view, f"file://{mock}"))
+
+    inject_checkbox_ui(view.page())
+    wait_ms(900)
+
+    n_boxes = run_js(view.page(), "document.querySelectorAll('.ih-cb input').length")
+    check("чекбоксы на первых 2 плитках Google", n_boxes == 2, f"найдено: {n_boxes}")
+
+    in_img = run_js(view.page(), "document.querySelectorAll('img .ih-cb').length")
+    check("чекбокс никогда не внутри <img>", in_img == 0, f"внутри img: {in_img}")
+
+    plain = run_js(view.page(), """
+        (() => {
+          const a = [...document.querySelectorAll('a')]
+            .find((x) => x.href.startsWith('https://example.com/some/page'));
+          return a ? !!a.querySelector('.ih-cb') : null;
+        })()
+    """)
+    check("веб-ссылка без чекбокса", plain is False, f"{plain}")
+
+    run_js(view.page(), CLICK_ALL_JS)
+    wait_ms(200)
+    count = run_js(view.page(), "window.__IH_CB_COUNT || 0")
+    check("счётчик отмеченных == 2", count == 2, f"{count}")
+
+    got: dict = {}
+    loop = QEventLoop()
+
+    def on_sel(items):
+        got["items"] = items
+        loop.quit()
+
+    fetch_checked_selections(view.page(), on_sel)
+    loop.exec()
+    bests = {it["best"] for it in got.get("items", [])}
+    expected = {
+        "https://example-parts.com/pic1.jpg",                  # imgurl якоря
+        "https://lh3.googleusercontent.com/pw/ABFCqux7dZm0w=s500",  # миниатюра без расширения
+    }
+    check("оригинал из imgurl; миниатюра googleusercontent принята",
+          bests == expected,
+          f"лишние: {bests - expected}; не хватает: {expected - bests}")
+
+    # --- шторм мутаций (отрисовка выдачи): скан не должен откладываться ---
+    run_js(view.page(), """
+        window.__storm = setInterval(() => {
+          document.getElementById('storm').appendChild(document.createElement('div'));
+        }, 30);
+    """)
+    wait_ms(300)
+    run_js(view.page(), """
+        (() => {
+          const d = document.createElement('div');
+          d.className = 'tile';
+          d.innerHTML = '<a href="https://www.google.com/imgres?imgurl=' +
+            'https%3A%2F%2Fexample-parts.com%2Fpic4.jpg&amp;docid=X4">' +
+            '<img src="https://encrypted-tbn1.gstatic.com/images?q=tbn:late1&amp;s"></a>';
+          document.body.insertBefore(d, document.getElementById('storm'));
+        })()
+    """)
+    wait_ms(1600)   # шторм ещё идёт — при debounce плитка была бы непомеченной
+    n_storm = run_js(view.page(), "document.querySelectorAll('.ih-cb input').length")
+    check("плитка, добавленная во время шторма мутаций, получила чекбокс",
+          n_storm == 3, f"найдено: {n_storm}")
+    run_js(view.page(), "clearInterval(window.__storm)")
+
+    # --- ленивая плитка: src появляется позже отрисовки ---
+    run_js(view.page(), "document.getElementById('late-img').src = "
+          "'https://encrypted-tbn2.gstatic.com/images?q=tbn:late2&s'")
+    wait_ms(1600)   # смену атрибута подхватывает attributes-observer
+    n_late = run_js(view.page(), "document.querySelectorAll('.ih-cb input').length")
+    check("ленивая плитка (поздний src) получила чекбокс", n_late == 4,
+          f"найдено: {n_late}")
+
+    got2: dict = {}
+    loop2 = QEventLoop()
+
+    def on_sel2(items):
+        got2["items"] = items
+        loop2.quit()
+
+    run_js(view.page(), CLICK_UNCHECKED_JS)   # только непомеченные: CLICK_ALL снял бы старые отметки
+    wait_ms(200)
+    from app.core.extractor import fetch_checked_selections as _fg
+    _fg(view.page(), on_sel2)
+    loop2.exec()
+    bests2 = {it["best"] for it in got2.get("items", [])}
+    expected2 = expected | {
+        "https://example-parts.com/pic4.jpg",
+        "https://encrypted-tbn2.gstatic.com/images?q=tbn:late2&s",
+    }
+    check("все 4 плитки отмечены, миниатюра gstatic — «лучший» кандидат",
+          bests2 == expected2,
+          f"лишние: {bests2 - expected2}; не хватает: {expected2 - bests2}")
+
+    view.deleteLater()
+    wait_ms(100)
+
+
+def run_engines_test() -> None:
+    """Все 13 поисковиков: шаблон вкладки — выдача картинок, веб-выдача — нет."""
+    from app.ui.web_search import ENGINES, is_image_search_url
+
+    check("поисковиков 13", len(ENGINES) == 13, str(len(ENGINES)))
+    check("короткие имена вкладок уникальны (нужны для восстановления)",
+          len({e[2] for e in ENGINES}) == len(ENGINES))
+    check("полные имена уникальны (ключ настроек)",
+          len({e[0] for e in ENGINES}) == len(ENGINES))
+    for name, tpl, _short, color in ENGINES:
+        check(f"шаблон — страница картинок: {name}",
+              is_image_search_url(tpl.format("cats")) and color.startswith("#"),
+              tpl)
+
+    negatives = [
+        "https://www.google.com/search?q=cats",            # веб-выдача Google
+        "https://search.brave.com/search?q=cats",
+        "https://www.mojeek.com/web?q=cats",
+        "https://www.ecosia.org/search?q=cats",
+        "https://www.startpage.com/sp/search?query=cats",  # без cat=images
+        "https://search.yahoo.com/search?p=cats",
+        "https://search.naver.com/search.naver?where=web&query=cats",
+        "https://www.baidu.com/s?wd=cats",
+        "https://www.sogou.com/web?query=cats",
+        "https://go.mail.ru/search?q=cats",
+        "https://example.com/?q=cats",
+    ]
+    for u in negatives:
+        check(f"не выдача картинок: {u}", not is_image_search_url(u), u)
+
+
 def run_live_test() -> None:
     """Живая выдача Яндекса: чекбоксы появились, оригиналы доступны."""
     import requests
@@ -448,8 +607,10 @@ def main() -> int:
     if "--live" in sys.argv:
         run_live_test()
     else:
+        run_engines_test()
         run_mock_test()
         run_ddg_mock_test()
+        run_google_mock_test()
 
     print()
     if FAILURES:

@@ -51,10 +51,12 @@ Image Hunter 从第一天起就是为“照片存放在网络磁盘（NAS、Wind
 
 **🌐 图片搜索** — 内置 Chromium 浏览器：
 - **浏览器式多标签页**：“＋”/Ctrl+T 新建搜索标签页，每个标签页有独立的搜索引擎和浏览器；右键标签页可复制 / 关闭 / 关闭其他 / 关闭右侧；× 关闭标签页（关闭最后一个会新建空白页），标签页可拖动排序；标签页标题为所选搜索引擎，圆点为品牌色（Yandex — 红色，DuckDuckGo — 橙色，Google — 蓝色，Bing — 绿色）；打开的标签页在下次启动时恢复；
-- 搜索引擎：Yandex 图片（ya.ru）、DuckDuckGo（安全模式）、Google、Bing；
+- 搜索引擎（13 个）：Yandex 图片、Google、Bing、DuckDuckGo（安全模式）、
+  Brave、Yahoo、Ecosia、Startpage、Mojeek、Baidu、Sogou、Naver、Mail.ru；
 - Yandex 验证码可直接在内置浏览器中输入；
 - **结果卡片上的复选框**：用橙色勾选标记需要的图片 — 按钮上出现计数，“下载已选”将下载大尺寸原图（Yandex 取 `origUrl` — 与点击预览打开的是同一个文件，例如 `avatars.mds.yandex.net/get-mpic/…/orig`；其他搜索引擎取卡片链接参数中的原图）；
 - 复选框支持最新版 DuckDuckGo 页面结构（2025）：卡片不再使用熟悉的类名，“原图”来自没有文件扩展名的 Bing 缓存链接 — 现在也能识别并勾选；
+- 复选框同样支持最新版 Google 图片结果页（udm=2）：识别无扩展名的 `encrypted-tbn0.gstatic.com`/`googleusercontent` 缩略图，稍后加载图片的懒加载卡片也会出现勾选，页面的持续重绘不再延迟复选框的出现；
 - 无限滚动加载的卡片也会被复选框覆盖；
 - **“✕ 取消选择”** — 一键取消所有橙色勾选（有勾选时才可用）；
 - **“💾 保存到文件夹”** — 勾选的卡片转换为所选格式（WebP、PNG、JPEG、BMP、TIFF — 选择器在按钮旁且会被记住），保存到“我的图片”标签页当前打开的文件夹：第一个文件为 `名称.ext`，之后为 `名称-1.ext`、`名称-2.ext`… **绝不覆盖已有文件：** 跳过被占用的名称，且写入前会再次检查 — 如果 `name.webp` 和 `name-2.webp` 已存在，新文件将变为 `name-1.webp` 和 `name-3.webp`。JPEG/BMP 的透明部分铺白底，尊重 EXIF 旋转。保存时会询问名称（默认为搜索关键词）；若未打开文件夹，会提示选择；保存的文件立即出现在看图中。

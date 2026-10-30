@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import json
 
+from app.core.i18n import tr
+
 COLLECT_JS = r"""
 (() => {
   const urls = new Set();
@@ -105,6 +107,8 @@ CHECKBOX_INIT_JS = r"""
 (() => {
   if (window.__IH_CB) { window.__IH_CB.scan(); return; }
 
+  const ON_DDG = /(^|\.)duckduckgo\.com$/.test(location.hostname);
+  const ON_GOOGLE = /(^|\.)google\.[a-z.]{2,6}$/.test(location.hostname);
   const ITEM_SEL = [
     '.serp-item', '[class*="serp-item"]', '[class*="SerpItem"]',
     '[class*="SerpList-Item"]',
@@ -114,17 +118,26 @@ CHECKBOX_INIT_JS = r"""
     '[class*="ImageCard"]', '[class*="imageCard"]', '[class*="photo-card"]',
     // DOM DuckDuckGo 2025+: плитка — LI > FIGURE c хешированными классами,
     // селектор структурный, только на доменах DDG (чтобы не зацепить чужие)
-    ...(/(^|\.)duckduckgo\.com$/.test(location.hostname)
-        ? ['ol > li > figure'] : [])
+    ...(ON_DDG ? ['ol > li > figure', 'figure', 'article'] : []),
+    // плитка выдачи картинок Google (udm=2); хешированные классы Google
+    // меняются от релиза к релизу — при несовпадении срабатывает fallback
+    ...(ON_GOOGLE ? ['.eA0Zlc'] : [])
   ].join(',');
 
   const IMAGE_RE = /\.(jpe?g|png|gif|webp|bmp|avif|jfif|tiff?)([?#]|$)/i;
 
+  // Миниатюры части поисковиков не имеют расширения в URL — без этих
+  // шаблонов looksImage отбрасывал бы плитки целиком (чекбоксы «не у всех»).
   const looksImage = (u) =>
     IMAGE_RE.test(u) ||
     /avatars\.mds\.yandex\.net/.test(u) ||
     /\/orig(\/|$|\?)/i.test(u) ||
-    /\/iu\//.test(u);
+    /\/iu\//.test(u) ||
+    /encrypted-tbn\d*\.gstatic\.com/.test(u) ||   // миниатюры Google (udm=2)
+    /\.googleusercontent\.com/.test(u) ||          // прокси-миниатюры Google
+    /\.mm\.bing\.net\/th/.test(u) ||               // кеш Bing (и миниатюры Yahoo)
+    /\/it\/u=/.test(u) ||                          // миниатюры Baidu (img*.baidu.com/it/u=…)
+    /pstatic\.net/.test(u);                        // миниатюры Naver (search.pstatic.net)
 
   // --- data-state (новый UI Яндекса): JSON всего SERP'а в атрибуте Root'а ---
   const STATE = new Map(); // url или origin+pathname -> origUrl
@@ -224,7 +237,9 @@ CHECKBOX_INIT_JS = r"""
         const p = abs.searchParams;
         // Параметры-оригиналы поисковиков — картинки по определению (force:
         // у них бывает URL без расширения — кеш Bing у DDG и т.п.)
-        [['img_url', 80], ['imgurl', 80], ['murl', 80], ['u', 85], ['du', 75]]
+        // piurl — прокси Startpage, mediaurl — детальные ссылки Yahoo/Bing
+        [['img_url', 80], ['imgurl', 80], ['murl', 80], ['u', 85], ['du', 75],
+         ['piurl', 80], ['mediaurl', 80]]
           .forEach(([k, sc]) => {
             const v = p.get(k);
             if (v && /^https?:/i.test(v)) add(v, sc, k !== 'du');
@@ -297,7 +312,7 @@ CHECKBOX_INIT_JS = r"""
       if (!pos || pos === 'static') host.classList.add('ih-cb-host');
       const cb = document.createElement('label');
       cb.className = 'ih-cb';
-      cb.title = 'Отметить для скачивания большого оригинала';
+      cb.title = __IH_CB_TITLE__;
       const input = document.createElement('input');
       input.type = 'checkbox';
       const box = document.createElement('span');
@@ -414,23 +429,45 @@ CHECKBOX_INIT_JS = r"""
   injectStyle();
   scan();
 
-  // подхватывать плитки, догружаемые при прокрутке (бесконечная выдача)
-  let tmr = 0;
-  const mo = new MutationObserver(() => {
-    clearTimeout(tmr);
-    tmr = setTimeout(scan, 400);
-  });
-  const startObserver = () => mo.observe(document.body || document.documentElement,
-    { childList: true, subtree: true });
-  if (document.body) startObserver();
+  // Подхватывать плитки, догружаемые при прокрутке (бесконечная выдача).
+  // ТРОТТЛИНГ, а не debounce: при шторме мутаций (Google дорисовывает выдачу
+  // несколько секунд подряд) debounce всё время откладывал скан до паузы —
+  // чекбоксы появлялись поздно и не на всех плитках. Троттлинг гарантирует
+  // скан не позже 400 мс после ПЕРВОЙ мутации шторма.
+  // attributes+['src']: у ленивых плиток <img> получает src позже — childList
+  // смену атрибута не видит, поэтому на части плиток чекбоксов не было вовсе.
+  let lastScan = 0, pend = 0, mo = null, observed = null;
+  const schedule = () => {
+    clearTimeout(pend);
+    const wait = Math.max(0, lastScan + 400 - Date.now());
+    pend = setTimeout(() => { lastScan = Date.now(); scan(); }, wait);
+  };
+  const startObserver = () => {
+    const b = document.body || document.documentElement;
+    if (!b || b === observed) return;
+    if (!mo) {
+      mo = new MutationObserver(schedule);
+      // страховка: раз в 2 с перепроверяем тело и пересканируем — чинит
+      // случаи, когда выдача дорисовалась «тихо» (без мутаций observer'а)
+      setInterval(() => { startObserver(); schedule(); }, 2000);
+    }
+    mo.observe(b, { childList: true, subtree: true,
+                    attributes: true, attributeFilter: ['src'] });
+    observed = b;
+  };
+  if (document.body) { lastScan = Date.now(); startObserver(); }
   else document.addEventListener('DOMContentLoaded', startObserver);
 })()
 """
 
 
 def inject_checkbox_ui(page) -> None:
-    """Навесить чекбоксы выбора на плитки выдачи (идемпотентно, с observer'ом)."""
-    page.runJavaScript(CHECKBOX_INIT_JS)
+    """Навесить чекбоксы выбора на плитки выдачи (идемпотентно, с observer'ом).
+
+    Подсказка чекбокса локализуется на стороне Python (tr) и подставляется
+    в JS как готовый JSON-литерал.
+    """
+    page.runJavaScript(CHECKBOX_INIT_JS.replace("__IH_CB_TITLE__", json.dumps(tr("ws.cb_title"))))
 
 
 def rescan_checkbox_ui(page) -> None:

@@ -48,6 +48,24 @@ ENGINES: list[tuple[str, str, str, str]] = [
      "Google", "#4285F4"),
     ("Bing Картинки", "https://www.bing.com/images/search?q={}",
      "Bing", "#008373"),
+    ("Brave Картинки", "https://search.brave.com/images?q={}",
+     "Brave", "#FB542B"),
+    ("Yahoo Картинки", "https://images.search.yahoo.com/search/images?p={}",
+     "Yahoo", "#5F01D1"),
+    ("Ecosia Картинки", "https://www.ecosia.org/images?q={}",
+     "Ecosia", "#008009"),
+    ("Startpage Картинки", "https://www.startpage.com/sp/search?query={}&cat=images",
+     "Startpage", "#6573FF"),
+    ("Mojeek Картинки", "https://www.mojeek.com/images?q={}",
+     "Mojeek", "#455A64"),
+    ("Baidu Картинки", "https://image.baidu.com/search/index?tn=baiduimage&ie=utf-8&word={}",
+     "Baidu", "#2932E1"),
+    ("Sogou Картинки", "https://pic.sogou.com/pics?query={}",
+     "Sogou", "#FF6A00"),
+    ("Naver Картинки", "https://search.naver.com/search.naver?where=image&query={}",
+     "Naver", "#03C75A"),
+    ("Mail.ru Картинки", "https://go.mail.ru/search_images?q={}",
+     "Mail.ru", "#005FF9"),
 ]
 
 _YANDEX_HOSTS = ("ya.ru", "yandex.ru", "yandex.com", "yandex.by", "yandex.kz", "yandex.uz")
@@ -62,16 +80,34 @@ def is_image_search_url(url: str) -> bool:
         query = parse_qs(parts.query or "")
     except Exception:
         return False
+    have = lambda k: (query.get(k) or [""])[0]  # noqa: E731
     if any(host == h or host.endswith("." + h) for h in _YANDEX_HOSTS):
         return path.startswith("/images")
     if host.endswith("duckduckgo.com"):
         # выдача картинок: iax/ia (актуально) или iar (старые сохранённые ссылки)
-        have = lambda k: (query.get(k) or [""])[0]  # noqa: E731
         return "images" in (have("ia"), have("iax"), have("iar"))
     if host.endswith(("google.com", "google.ru", "google.by", "google.kz", "google.com.ua")):
         return (query.get("udm") or [""])[0] == "2" or path.startswith("/imgres")
     if host.endswith("bing.com"):
         return path.startswith("/images")
+    if host.endswith("brave.com"):
+        return path.startswith("/images")
+    if host.endswith("search.yahoo.com"):
+        return path.startswith(("/images", "/search/images"))
+    if host.endswith("ecosia.org"):
+        return path.startswith("/images")
+    if host.endswith("mojeek.com"):
+        return path.startswith("/images")
+    if host == "image.baidu.com":
+        return True
+    if host == "pic.sogou.com":
+        return True
+    if host.endswith("naver.com"):
+        return have("where") == "image" or path.startswith("/image-search")
+    if host.endswith("startpage.com"):
+        return path.startswith(("/sp/search", "/do/search")) and have("cat") == "images"
+    if host == "go.mail.ru":
+        return path.startswith("/search_images")
     return False
 
 
@@ -145,6 +181,9 @@ class WebSearch(QWidget):
         self.view = QWebEngineView()
         self.view.setUrl(QUrl("https://ya.ru/images/"))
         self.view.loadFinished.connect(self._on_load_finished)
+        # SPA-переходы (новый поиск изнутри страницы Google/DDG) меняют URL
+        # без перезагрузки — инъекция идемпотентна, ставим чекбоксы и на неё
+        self.view.urlChanged.connect(self._on_url_changed)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -239,9 +278,17 @@ class WebSearch(QWidget):
             return
         page = self.view.page()
         inject_checkbox_ui(page)
-        # плитки часто рисуются позже основного события загрузки
-        QTimer.singleShot(1500, lambda: rescan_checkbox_ui(page))
-        QTimer.singleShot(4000, lambda: rescan_checkbox_ui(page))
+        # плитки часто рисуются позже основного события загрузки (Google
+        # дорисовывает выдачу несколько секунд) — проверяем несколько раз
+        for ms in (1200, 3000, 6000):
+            QTimer.singleShot(ms, lambda p=page: rescan_checkbox_ui(p))
+
+    def _on_url_changed(self, url: QUrl) -> None:
+        """Новый поиск/вертикаль без перезагрузки страницы — тоже выдача."""
+        if not is_image_search_url(url.toString()):
+            return
+        # идемпотентно: если чекбоксы уже стоят — просто пройдётся скан
+        inject_checkbox_ui(self.view.page())
 
     def _poll_checked_count(self) -> None:
         if not self.isVisible():

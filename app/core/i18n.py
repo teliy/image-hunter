@@ -373,6 +373,10 @@ _STRINGS: dict[str, dict[str, str]] = {
         "zh": "搜索关键词…（回车搜索）"},
     "ws.engine_tip": {
         "ru": "Поисковая система", "en": "Search engine", "zh": "搜索引擎"},
+    "ws.cb_title": {
+        "ru": "Отметить для скачивания большого оригинала",
+        "en": "Mark for downloading the full-size original",
+        "zh": "勾选以下载原图"},
     "ws.find": {
         "ru": "Найти", "en": "Search", "zh": "搜索"},
     "ws.collect": {

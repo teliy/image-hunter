@@ -53,10 +53,12 @@ Image Hunter was written from day one for the scenario “photos live on a netwo
 
 **🌐 Image Search** — built-in Chromium browser:
 - **browser-like multiple tabs**: “＋”/Ctrl+T opens another search tab, each with its own engine and browser; right-click a tab to duplicate / close / close others / close to the right; the × closes a tab (closing the last one spawns a fresh one), tabs are draggable; the tab title is the selected engine and the colored dot is its brand color (Yandex — red, DuckDuckGo — orange, Google — blue, Bing — green); open tabs are restored on the next start;
-- engines: Yandex Images (ya.ru), DuckDuckGo (safe mode), Google, Bing;
+- engines (13): Yandex Images, Google, Bing, DuckDuckGo (safe mode),
+  Brave, Yahoo, Ecosia, Startpage, Mojeek, Baidu, Sogou, Naver, Mail.ru;
 - Yandex captcha can be entered right in the built-in browser;
 - **checkboxes on result tiles**: mark the images you need with orange ticks — a counter appears on the button, and “Download checked” downloads the full-size originals (for Yandex the `origUrl` is taken — the same file that opens when you click the preview, e.g. `avatars.mds.yandex.net/get-mpic/…/orig`; for other engines — the original from the tile link parameters);
 - checkboxes work with the current DuckDuckGo markup (2025): tiles without familiar class names, and “originals” from the Bing cache that have no file extension are recognized and marked;
+- checkboxes also work with the current Google Images markup (udm=2): extension-less `encrypted-tbn0.gstatic.com`/`googleusercontent` thumbnails are recognized, lazy tiles whose picture loads after rendering get their tick, and continuous page re-rendering no longer delays the checkboxes;
 - checkboxes pick up tiles loaded while scrolling the endless feed;
 - **“✕ Clear checks”** — removes all orange ticks with one click (enabled when there is at least one);
 - **“💾 Save to folder”** — checked tiles are converted to the selected format (WebP, PNG, JPEG, BMP, TIFF — the picker sits next to the button and is remembered) and saved to the folder open on the “My Pictures” tab: the first file is `name.ext`, then `name-1.ext`, `name-2.ext`… **Existing files are never overwritten:** occupied names are skipped and the name is re-checked right before writing — if `name.webp` and `name-2.webp` already exist, the new files become `name-1.webp` and `name-3.webp`. Transparency is flattened onto white for JPEG/BMP, EXIF rotation is respected. The name is asked on save (default — the search query); if no folder is open, the app offers to pick one; saved files appear in the viewer immediately.
