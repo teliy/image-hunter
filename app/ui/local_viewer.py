@@ -1,11 +1,26 @@
-"""Вкладка «Мои картинки»: миниатюры папки + полноэкранный просмотр с зумом."""
+"""Вкладка «Мои картинки»: дерево дисков/папок + миниатюры + полноэкранный просмотр с зумом."""
 
 from __future__ import annotations
 
 import os
 import re
 
-from PySide6.QtCore import QObject, QRunnable, QSize, Qt, QThreadPool, QUrl, Signal
+from PySide6.QtCore import (
+    QFileInfo,
+    QObject,
+    QRunnable,
+    QSettings,
+    QSize,
+    QStandardPaths,
+    Qt,
+    QThreadPool,
+    QUrl,
+    Signal,
+)
+try:
+    from PySide6.QtCore import QStorageInfo
+except ImportError:  # в части сборок PySide6 класс живёт в QtGui
+    from PySide6.QtGui import QStorageInfo  # type: ignore[no-redef]
 from PySide6.QtGui import (
     QDesktopServices,
     QIcon,
@@ -26,13 +41,37 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QScrollArea,
     QSizePolicy,
+    QSplitter,
+    QStyle,
     QToolButton,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"}
 THUMB = 160
+TREE_WIDTH = 230
+
+# виртуальные файловые системы и точки монтирования, которые не показываем в дереве
+_VIRTUAL_FS = {
+    "proc", "sysfs", "devtmpfs", "tmpfs", "devfs", "ramfs", "squashfs", "overlay",
+    "cgroup", "cgroup2", "securityfs", "pstore", "debugfs", "tracefs", "configfs",
+    "fusectl", "hugetlbfs", "mqueue", "bpf", "autofs", "binfmt_misc", "efivarfs",
+    "virtiofs", "iso9660",
+}
+_VIRTUAL_PREFIXES = ("/proc", "/sys", "/dev", "/run", "/snap", "/boot", "/var/lib")
+
+
+def _fmt_bytes(num: float) -> str:
+    value = float(num)
+    unit = "Б"
+    for unit in ("Б", "КБ", "МБ", "ГБ", "ТБ"):
+        if value < 1024 or unit == "ТБ":
+            break
+        value /= 1024
+    return f"{value:.0f} {unit}" if unit == "Б" else f"{value:.1f} {unit}"
 
 
 def natural_key(name: str):
@@ -77,7 +116,7 @@ class _ThumbTask(QRunnable):
 # ---------- виджет ----------
 
 class LocalViewer(QWidget):
-    """Слева сетка миниатюр, справа просмотр выбранной картинки."""
+    """Слева дерево дисков/папок, затем лента миниатюр, справа просмотр выбранной картинки."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -116,7 +155,7 @@ class LocalViewer(QWidget):
         bar.addSpacing(8)
         btn("🗂 Показать в папке", "Открыть текущую папку в Проводнике", self.reveal_folder)
         bar.addStretch(1)
-        self.status = QLabel("Откройте папку с изображениями")
+        self.status = QLabel("Выберите диск или папку в дереве слева, либо «Открыть папку…» (Ctrl+O)")
         self.status.setStyleSheet("color: #666;")
         bar.addWidget(self.status)
 
@@ -133,6 +172,30 @@ class LocalViewer(QWidget):
         self.list.itemDoubleClicked.connect(
             lambda item: QDesktopServices.openUrl(QUrl.fromLocalFile(item.data(Qt.UserRole)))
         )
+
+        # --- дерево дисков и папок (левая панель) ---
+        self.tree = QTreeWidget()
+        self.tree.setHeaderHidden(True)
+        self.tree.setUniformRowHeights(True)
+        self.tree.itemExpanded.connect(self._populate_children)
+        self.tree.itemClicked.connect(self._on_tree_clicked)
+
+        tree_panel = QWidget()
+        tree_lay = QVBoxLayout(tree_panel)
+        tree_lay.setContentsMargins(0, 0, 0, 0)
+        tree_lay.setSpacing(0)
+        tree_hdr = QHBoxLayout()
+        tree_hdr.setContentsMargins(8, 6, 4, 2)
+        tree_hdr.addWidget(QLabel("Диски и папки"))
+        tree_hdr.addStretch(1)
+        btn_refresh = QToolButton()
+        btn_refresh.setText("⟳")
+        btn_refresh.setToolTip("Обновить список дисков и папок (например, после подключения флешки)")
+        btn_refresh.setAutoRaise(True)
+        btn_refresh.clicked.connect(lambda: self.refresh_drives())
+        tree_hdr.addWidget(btn_refresh)
+        tree_lay.addLayout(tree_hdr)
+        tree_lay.addWidget(self.tree, 1)
 
         # --- область просмотра ---
         self.view_label = QLabel("…")
@@ -151,25 +214,34 @@ class LocalViewer(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         layout.addLayout(bar)
-        body = QHBoxLayout()
-        body.setContentsMargins(0, 0, 0, 0)
-        body.addWidget(self.list)
-        body.addWidget(self.scroll, 1)
-        layout.addLayout(body, 1)
+        self.splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.splitter.addWidget(tree_panel)   # 0: дерево дисков/папок
+        self.splitter.addWidget(self.list)    # 1: лента миниатюр
+        self.splitter.addWidget(self.scroll)  # 2: просмотр
+        self.splitter.setStretchFactor(0, 0)
+        self.splitter.setStretchFactor(1, 0)
+        self.splitter.setStretchFactor(2, 1)
+        self.splitter.setCollapsible(1, False)
+        self.splitter.setCollapsible(2, False)
+        self.splitter.setSizes([TREE_WIDTH, THUMB + 34, 640])
+        layout.addWidget(self.splitter, 1)
 
         self._thumb_signals = _ThumbSignals()
         self._thumb_signals.ready.connect(self._on_thumb_ready)
         self._pool = QThreadPool(self)
         self._pool.setMaxThreadCount(4)
 
+        self.refresh_drives()
+        self._restore_last_folder()
+
     # ---------- публичное ----------
 
     def open_folder(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "Папка с изображениями", self._folder or "")
         if folder:
-            self.load_folder(folder)
+            self.load_folder(folder, sync_tree=True)
 
-    def load_folder(self, folder: str) -> None:
+    def load_folder(self, folder: str, sync_tree: bool = False) -> None:
         self._folder = folder
         self._paths = list_image_files(folder)
         self.list.clear()
@@ -192,6 +264,10 @@ class LocalViewer(QWidget):
         else:
             self.view_label.setText("В этой папке нет изображений")
             self.status.setText(folder or "—")
+
+        QSettings("ImageHunter", "ImageHunter").setValue("viewer/last_folder", folder)
+        if sync_tree:
+            self._sync_tree(folder)
 
     # ---------- просмотр ----------
 
@@ -274,6 +350,160 @@ class LocalViewer(QWidget):
     def reveal_folder(self) -> None:
         if self._folder:
             QDesktopServices.openUrl(QUrl.fromLocalFile(self._folder))
+
+    # ---------- дерево дисков и папок ----------
+
+    def refresh_drives(self, include_all: bool = False) -> None:
+        """Перечитает диски/устройства и быстрые ссылки (Домой, Изображения)."""
+        self.tree.clear()
+
+        home = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.HomeLocation)
+        pics = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.PicturesLocation)
+        if home and os.path.isdir(home):
+            self._add_folder_item(None, home, title="🏠 Домой",
+                                  icon=QStyle.StandardPixmap.SP_DirHomeIcon)
+        if pics and os.path.isdir(pics) and os.path.normpath(pics) != os.path.normpath(home):
+            self._add_folder_item(None, pics, title="🖼 Изображения")
+
+        for si in QStorageInfo.mountedVolumes():
+            if not si.isValid() or not si.isReady():
+                continue
+            if not include_all and self._is_virtual(si):
+                continue
+            self._add_drive_item(si)
+
+    @staticmethod
+    def _is_virtual(si) -> bool:
+        fstype = bytes(si.fileSystemType()).decode(errors="ignore").lower()
+        if fstype in _VIRTUAL_FS or fstype.startswith("fuse."):
+            return True
+        path = si.rootPath()
+        return any(path == p or path.startswith(p + "/") for p in _VIRTUAL_PREFIXES)
+
+    def _add_drive_item(self, si) -> None:
+        path = si.rootPath()
+        label = si.displayName() or path
+        if os.name != "nt" and label == path:
+            label = "💾 " + (path if len(path) > 1 else "Диск /")
+        item = QTreeWidgetItem([label])
+        item.setData(0, Qt.ItemDataRole.UserRole, path)
+        item.setIcon(0, self.style().standardIcon(QStyle.StandardPixmap.SP_DriveHDIcon))
+        total, free = si.bytesTotal(), si.bytesFree()
+        tip = path
+        if total > 0:
+            tip += f"\nСвободно: {_fmt_bytes(free)} из {_fmt_bytes(total)}"
+        item.setToolTip(0, tip)
+        item.addChild(self._dummy_item())
+        self.tree.addTopLevelItem(item)
+
+    def _add_folder_item(self, parent, path: str, title: str | None = None,
+                         icon: QStyle.StandardPixmap = QStyle.StandardPixmap.SP_DirIcon) -> None:
+        item = QTreeWidgetItem([title or os.path.basename(path) or path])
+        item.setData(0, Qt.ItemDataRole.UserRole, path)
+        item.setIcon(0, self.style().standardIcon(icon))
+        item.setToolTip(0, path)
+        item.addChild(self._dummy_item())
+        if parent is None:
+            self.tree.addTopLevelItem(item)
+        else:
+            parent.addChild(item)
+
+    @staticmethod
+    def _dummy_item() -> QTreeWidgetItem:
+        marker = QTreeWidgetItem([""])
+        marker.setData(0, Qt.ItemDataRole.UserRole, "")
+        return marker
+
+    def _populate_children(self, item: QTreeWidgetItem) -> None:
+        """Ленивая загрузка подпапок на один уровень при раскрытии."""
+        if item.data(0, Qt.ItemDataRole.UserRole + 1):  # уже раскрывали
+            return
+        item.setData(0, Qt.ItemDataRole.UserRole + 1, True)
+        while item.childCount():
+            item.removeChild(item.child(0))  # убираем заглушку
+        path = item.data(0, Qt.ItemDataRole.UserRole)
+        if not path:
+            return
+        dir_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon)
+        for sub in self._list_subdirs(path):
+            child = QTreeWidgetItem([os.path.basename(sub)])
+            child.setData(0, Qt.ItemDataRole.UserRole, sub)
+            child.setIcon(0, dir_icon)
+            child.setToolTip(0, sub)
+            child.addChild(self._dummy_item())
+            item.addChild(child)
+
+    @staticmethod
+    def _list_subdirs(path: str) -> list[str]:
+        try:
+            names = os.listdir(path)
+        except OSError:
+            return []
+        out = []
+        for name in sorted(names, key=natural_key):
+            if name.startswith("."):
+                continue
+            full = os.path.join(path, name)
+            try:
+                if os.path.isdir(full) and not QFileInfo(full).isHidden():
+                    out.append(full)
+            except OSError:
+                continue
+        return out
+
+    def _on_tree_clicked(self, item: QTreeWidgetItem, _column: int) -> None:
+        path = item.data(0, Qt.ItemDataRole.UserRole)
+        if not path:
+            return
+        self._populate_children(item)
+        item.setExpanded(True)
+        self.load_folder(path)
+
+    def _restore_last_folder(self) -> None:
+        last = QSettings("ImageHunter", "ImageHunter").value("viewer/last_folder", "")
+        if not (last and os.path.isdir(last)):
+            return
+        # авто-открытие только для папок разумного размера, чтобы не тормозить запуск
+        if 0 < len(list_image_files(last)) <= 2000:
+            self.load_folder(last, sync_tree=True)
+
+    @staticmethod
+    def _is_under(path_n: str, base_n: str) -> bool:
+        """path_n строго внутри base_n (учитывает корни дисков: «/», «C:\»)."""
+        base = base_n if base_n.endswith(os.sep) else base_n + os.sep
+        return path_n.startswith(base)
+
+    def _sync_tree(self, folder: str) -> None:
+        """Раскрывает в дереве путь к folder и подсвечивает её (для «Открыть папку…»)."""
+        folder_n = os.path.normpath(folder)
+        target = None
+        for i in range(self.tree.topLevelItemCount()):
+            top = self.tree.topLevelItem(i)
+            top_n = os.path.normpath(top.data(0, Qt.ItemDataRole.UserRole) or "")
+            if top_n == folder_n:
+                target = top
+                break
+            if self._is_under(folder_n, top_n):
+                target = self._expand_towards(top, folder_n)
+                if target is not None:
+                    break
+        if target is not None:
+            self.tree.setCurrentItem(target)
+            self.tree.scrollToItem(target)
+
+    def _expand_towards(self, item: QTreeWidgetItem, folder_n: str):
+        self._populate_children(item)
+        item.setExpanded(True)
+        for i in range(item.childCount()):
+            child = item.child(i)
+            child_n = os.path.normpath(child.data(0, Qt.ItemDataRole.UserRole) or "")
+            if child_n == folder_n:
+                return child
+            if self._is_under(folder_n, child_n):
+                found = self._expand_towards(child, folder_n)
+                if found is not None:
+                    return found
+        return None
 
     # ---------- служебное ----------
 
