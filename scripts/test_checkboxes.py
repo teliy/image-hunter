@@ -273,6 +273,85 @@ def run_mock_test() -> None:
     ws.deleteLater()
 
 
+def run_ddg_mock_test() -> None:
+    """Мок выдачи картинок DuckDuckGo: плитки БЕЗ известных приложению классов.
+
+    Актуальный DOM DDG не содержит serp-item/tile--img — чекбоксы должен
+    навесить запасной путь (хост = якорь или сам img). Заодно проверяем
+    адрес вкладки DDG и ворота инъекции is_image_search_url."""
+    from PySide6.QtCore import QEventLoop
+    from PySide6.QtWidgets import QApplication
+    from PySide6.QtWebEngineWidgets import QWebEngineView
+
+    from app.core.extractor import fetch_checked_selections, inject_checkbox_ui
+    from app.ui.web_search import ENGINES, is_image_search_url
+
+    ddg_tpl = next(t for n, t, _s, _c in ENGINES if "DuckDuckGo" in n)
+    check("шаблон DDG ведёт на выдачу картинок (iax=images&ia=images)",
+          "iax=images&ia=images" in ddg_tpl, ddg_tpl)
+    check("is_image_search_url: шаблон вкладки DDG",
+          is_image_search_url(ddg_tpl.format("cats")))
+    check("is_image_search_url: iax=images&ia=images", is_image_search_url(
+        "https://duckduckgo.com/?q=cats&iax=images&ia=images"))
+    check("is_image_search_url: ia=images", is_image_search_url(
+        "https://duckduckgo.com/?q=cats&ia=images"))
+    check("is_image_search_url: старый iar=images (обратная совместимость)",
+          is_image_search_url("https://safe.duckduckgo.com/?q=cats&iar=images"))
+    check("is_image_search_url: веб-выдача DDG == False", not is_image_search_url(
+        "https://duckduckgo.com/?q=cats&ia=web"))
+    check("is_image_search_url: чужой сайт с iax=images == False",
+          not is_image_search_url("https://evil.example.com/?iax=images"))
+
+    mock = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "mock_serp_ddg.html")
+    app = QApplication.instance() or QApplication([])
+    view = QWebEngineView()
+
+    check("мок DDG загрузился", load_page(view, f"file://{mock}"))
+
+    inject_checkbox_ui(view.page())
+    wait_ms(900)
+
+    n_boxes = run_js(view.page(), "document.querySelectorAll('.ih-cb input').length")
+    check("чекбоксы на всех 3 плитках без известных классов", n_boxes == 3,
+          f"найдено: {n_boxes}")
+
+    plain = run_js(view.page(), """
+        (() => {
+          const a = [...document.querySelectorAll('a')]
+            .find((x) => x.href.startsWith('https://example.com/some/page'));
+          return a ? !!a.querySelector('.ih-cb') : null;
+        })()
+    """)
+    check("веб-ссылка без чекбокса", plain is False, f"{plain}")
+
+    run_js(view.page(), CLICK_ALL_JS)
+    wait_ms(200)
+    count = run_js(view.page(), "window.__IH_CB_COUNT || 0")
+    check("счётчик отмеченных == 3", count == 3, f"{count}")
+
+    got: dict = {}
+    loop = QEventLoop()
+
+    def on_sel(items):
+        got["items"] = items
+        loop.quit()
+
+    fetch_checked_selections(view.page(), on_sel)
+    loop.exec()
+    bests = {it["best"] for it in got.get("items", [])}
+    expected = {
+        "https://ddgsite-one.com/pic1.jpg",
+        "https://ddgsite-two.com/pic2.jpg",
+        "https://ddgsite-three.org/pic3.png",
+    }
+    check("оригиналы из u= прокси DDG раскрыты верно", bests == expected,
+          f"лишние: {bests - expected}; не хватает: {expected - bests}")
+
+    view.deleteLater()
+    wait_ms(100)
+
+
 def run_live_test() -> None:
     """Живая выдача Яндекса: чекбоксы появились, оригиналы доступны."""
     import requests
@@ -352,6 +431,7 @@ def main() -> int:
         run_live_test()
     else:
         run_mock_test()
+        run_ddg_mock_test()
 
     print()
     if FAILURES:

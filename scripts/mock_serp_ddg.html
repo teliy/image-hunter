@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Mock DuckDuckGo images SERP for Image Hunter checkbox test</title>
+<style>
+  body { font-family: sans-serif; margin: 20px; }
+  /* ВАЖНО: плитки БЕЗ классов, которые знает ITEM_SEL (serp-item, tile--img, imgpt…) —
+     актуальная выдача DuckDuckGo не совпадает с ними, и чекбоксы должен навесить
+     запасной путь (хост = якорь или сам img) */
+  .tile { position: relative; display: inline-block; width: 200px; height: 160px;
+          margin: 8px; border: 1px solid #ccc; overflow: hidden; }
+  .tile img { width: 100%; height: 100%; object-fit: cover; }
+</style>
+</head>
+<body>
+  <div id="links">
+    <!-- плитка 1: и ссылка, и миниатюра — через прокси /iu/?u= -->
+    <a class="tile" href="https://external-content.duckduckgo.com/iu/?u=https%3A%2F%2Fddgsite-one.com%2Fpic1.jpg&amp;f=1&amp;noexp=1">
+      <img src="https://external-content.duckduckgo.com/iu/th?u=https%3A%2F%2Fddgsite-one.com%2Fpic1.jpg&amp;w=200" alt="1">
+    </a>
+
+    <!-- плитка 2: якорь на внутреннюю страницу DDG, оригинал только в миниатюре -->
+    <a class="tile" href="https://duckduckgo.com/l/?uddg=https%3A%2F%2Fddgsite-two.com%2Fpage&amp;rut=abc">
+      <img src="https://external-content.duckduckgo.com/iu/?u=https%3A%2F%2Fddgsite-two.com%2Fpic2.jpg" alt="2">
+    </a>
+
+    <!-- плитка 3: без якоря — чекбокс должен появиться прямо на img -->
+    <span class="tile"><img src="https://external-content.duckduckgo.com/iu/?u=https%3A%2F%2Fddgsite-three.org%2Fpic3.png&amp;w=300" alt="3"></span>
+
+    <!-- не-картинка: чекбокса быть не должно -->
+    <p><a href="https://example.com/some/page">Just a web result</a></p>
+  </div>
+</body>
+</html>

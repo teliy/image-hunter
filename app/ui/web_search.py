@@ -40,7 +40,9 @@ from app.core.image_saver import SAVE_FORMATS
 ENGINES: list[tuple[str, str, str, str]] = [
     ("Яндекс.Картинки", "https://ya.ru/images/search?text={}",
      "Яндекс", "#FC3F1D"),
-    ("DuckDuckGo (safe)", "https://safe.duckduckgo.com/?q={}&iar=images&kp=1&t=h_",
+    # iax=images&ia=images — канонический адрес выдачи картинок DDG (устаревший
+    # iar=images страницу картинок больше не открывает); kp=1 — строгий safe search
+    ("DuckDuckGo (safe)", "https://duckduckgo.com/?q={}&iax=images&ia=images&kp=1&t=h_",
      "DuckDuckGo", "#DE5833"),
     ("Google Картинки", "https://www.google.com/search?q={}&udm=2",
      "Google", "#4285F4"),
@@ -63,7 +65,9 @@ def is_image_search_url(url: str) -> bool:
     if any(host == h or host.endswith("." + h) for h in _YANDEX_HOSTS):
         return path.startswith("/images")
     if host.endswith("duckduckgo.com"):
-        return (query.get("iar") or [""])[0] == "images"
+        # выдача картинок: iax/ia (актуально) или iar (старые сохранённые ссылки)
+        have = lambda k: (query.get(k) or [""])[0]  # noqa: E731
+        return "images" in (have("ia"), have("iax"), have("iar"))
     if host.endswith(("google.com", "google.ru", "google.by", "google.kz", "google.com.ua")):
         return (query.get("udm") or [""])[0] == "2" or path.startswith("/imgres")
     if host.endswith("bing.com"):
