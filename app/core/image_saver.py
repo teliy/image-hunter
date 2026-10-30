@@ -106,21 +106,19 @@ def assign_image_names(folder: str, base: str, ext: str, count: int) -> list[str
 
 
 def decode_image(data: bytes) -> QImage:
-    """Декодировать присланные байты (любой формат Qt) в QImage.
+    """Декодировать присланные байты (любой формат Qt + AVIF) в QImage.
 
     QImageReader с AutoTransform применяет EXIF-поворот — фото из телефонов
-    сохраняются «головой вверх».
+    сохраняются «головой вверх». AVIF (им так приходят картинки с
+    маркетплейсов, даже по ссылкам «.jpg») декодируется через
+    Pillow + pillow-avif-plugin — см. app.core.imgload.
     """
-    from PySide6.QtCore import QBuffer, QByteArray
+    from app.core import imgload
 
-    buffer = QBuffer()
-    buffer.setData(QByteArray(data))
-    buffer.open(QBuffer.OpenModeFlag.ReadOnly)
-    reader = QImageReader(buffer)
-    reader.setAutoTransform(True)
-    img = reader.read()
+    img, err = imgload.decode_bytes(data)
     if img.isNull():
-        raise ValueError(f"не удалось декодировать ({img.errorString()})")
+        # причина — текст QImageReader (или AVIF-декодера), она уходит в журнал
+        raise ValueError(f"не удалось декодировать ({err})")
     return img
 
 

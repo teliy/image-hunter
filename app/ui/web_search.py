@@ -36,11 +36,16 @@ from app.core.extractor import (
 from app.core.i18n import tr
 from app.core.image_saver import SAVE_FORMATS
 
-ENGINES = [
-    ("Яндекс.Картинки", "https://ya.ru/images/search?text={}"),
-    ("DuckDuckGo (safe)", "https://safe.duckduckgo.com/?q={}&iar=images&kp=1&t=h_"),
-    ("Google Картинки", "https://www.google.com/search?q={}&udm=2"),
-    ("Bing Картинки", "https://www.bing.com/images/search?q={}"),
+# (полное имя в списке, шаблон поиска, короткое имя вкладки, фирменный цвет бренда)
+ENGINES: list[tuple[str, str, str, str]] = [
+    ("Яндекс.Картинки", "https://ya.ru/images/search?text={}",
+     "Яндекс", "#FC3F1D"),
+    ("DuckDuckGo (safe)", "https://safe.duckduckgo.com/?q={}&iar=images&kp=1&t=h_",
+     "DuckDuckGo", "#DE5833"),
+    ("Google Картинки", "https://www.google.com/search?q={}&udm=2",
+     "Google", "#4285F4"),
+    ("Bing Картинки", "https://www.bing.com/images/search?q={}",
+     "Bing", "#008373"),
 ]
 
 _YANDEX_HOSTS = ("ya.ru", "yandex.ru", "yandex.com", "yandex.by", "yandex.kz", "yandex.uz")
@@ -84,7 +89,7 @@ class WebSearch(QWidget):
         self.query.returnPressed.connect(self.search)
 
         self.engine = QComboBox()
-        self.engine.addItems([name for name, _ in ENGINES])
+        self.engine.addItems([name for name, _u, _s, _c in ENGINES])
         self.engine.setToolTip(tr("ws.engine_tip"))
 
         self.go_btn = QToolButton()
@@ -157,6 +162,10 @@ class WebSearch(QWidget):
         """Выбранный формат сохранения (ключ в image_saver.SAVE_FORMATS)."""
         return self.format_box.currentText()
 
+    def engine_meta(self) -> tuple[str, str, str, str]:
+        """Метаданные выбранного поисковика: (имя, шаблон, коротко, цвет)."""
+        return ENGINES[self.engine.currentIndex()]
+
     def current_ext(self) -> str:
         """Расширение выбранного формата: «.webp», «.png»…"""
         return SAVE_FORMATS[self.current_format()][1]
@@ -170,7 +179,7 @@ class WebSearch(QWidget):
         if not text:
             self.query.setFocus()
             return
-        template = ENGINES[self.engine.currentIndex()][1]
+        template = self.engine_meta()[1]
         self.view.load(QUrl(template.format(quote_plus(text))))
 
     def collect(self) -> None:

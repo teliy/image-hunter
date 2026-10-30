@@ -33,7 +33,6 @@ from PySide6.QtGui import (
     QDrag,
     QIcon,
     QImage,
-    QImageReader,
     QKeySequence,
     QMovie,
     QPalette,
@@ -62,10 +61,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.core import applog, i18n
+from app.core import applog, i18n, imgload
 from app.core.i18n import tr
 
-IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"}
+# .avif добавлен явно: PySide6 не умеет AVIF без Pillow-кодека (см. imgload),
+# но сами файлы в ленте показывать надо — декодирует imgload
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".avif", ".avifs"}
 THUMB = 160
 TREE_WIDTH = 230
 THUMB_CACHE_MAX = 256 * 1024 * 1024   # предел кэша миниатюр на диске
@@ -222,12 +223,7 @@ class _ThumbTask(QRunnable):
             if not cached.isNull():
                 self.signals.ready.emit(self.gen, self.row, cached)
                 return
-        reader = QImageReader(self.path)
-        reader.setAutoTransform(True)
-        size = reader.size()
-        if size.isValid() and size.width() > 0 and size.height() > 0:
-            reader.setScaledSize(size.scaled(THUMB, THUMB, Qt.KeepAspectRatio))
-        img = reader.read()
+        img, _err = imgload.load_file(self.path, max_side=THUMB)
         if img.isNull():
             return
         if cache_path:
@@ -252,6 +248,27 @@ class _ThumbTask(QRunnable):
             return
         if random.random() < 0.02:  # изредка подчищаем кэш в фоновом потоке
             _prune_thumb_cache(self.cache_dir)
+
+
+class _ViewSignals(QObject):
+    ready = Signal(int, str, QImage, str)   # строка, путь, картинка, ошибка
+
+
+class _ViewTask(QRunnable):
+    """Полноразмерный просмотр в фоновом потоке.
+
+    Выбор картинки больше не блокирует интерфейс: чтение и декодирование
+    полного файла (тем более по сети — Z:/…, тем более AVIF) идут в фоне,
+    окно продолжает отвечать — Windows не пишет «Не отвечает».
+    """
+
+    def __init__(self, path: str, row: int, signals: _ViewSignals):
+        super().__init__()
+        self.path, self.row, self.signals = path, row, signals
+
+    def run(self) -> None:  # рабочий поток
+        img, err = imgload.load_file(self.path)
+        self.signals.ready.emit(self.row, self.path, img, err)
 
 
 # ---------- фоновый поиск по имени ----------
@@ -887,6 +904,12 @@ class LocalViewer(QWidget):
         self._thumb_signals.ready.connect(self._on_thumb_ready)
         self._pool = QThreadPool(self)
         self._pool.setMaxThreadCount(4)
+        # фоновый полноэкранный просмотр: счётчик незавершённых задач —
+        # по нему включается/выключается курсор занятости
+        self._view_signals = _ViewSignals()
+        self._view_signals.ready.connect(self._on_view_ready)
+        self._view_inflight = 0
+        self._view_busy = False
         # применяем миниатюры пачками по таймеру: сотни setIcon подряд
         # заставляют список перестраивать раскладку на каждую иконку
         self._thumb_timer = QTimer(self)
@@ -1324,21 +1347,22 @@ class LocalViewer(QWidget):
         row = (self.list.currentRow() + delta) % self.list.count()
         self.list.setCurrentRow(row)
 
+    def _set_view_busy(self, busy: bool) -> None:
+        """Курсор занятости на время фоновой загрузки (без вложенных стеков)."""
+        if busy and not self._view_busy:
+            QApplication.setOverrideCursor(Qt.CursorShape.BusyCursor)
+            self._view_busy = True
+        elif not busy and self._view_busy:
+            QApplication.restoreOverrideCursor()
+            self._view_busy = False
+
     def _show_index(self, row: int) -> None:
         if not (0 <= row < len(self._paths)):
             return
-        # файл может читаться по сети — показываем занятость,
-        # чтобы клики не «висли» молча
-        QApplication.setOverrideCursor(Qt.CursorShape.BusyCursor)
-        try:
-            self._load_view(self._paths[row], row)
-        finally:
-            QApplication.restoreOverrideCursor()
-
-    def _load_view(self, path: str, row: int) -> None:
         self._movie = None
-
+        path = self._paths[row]
         if os.path.splitext(path)[1].lower() == ".gif":
+            # GIF маленькие: анимирует QMovie, фон не нужен
             self._pixmap = None
             self._mode = "fit"
             movie = QMovie(path)
@@ -1346,22 +1370,32 @@ class LocalViewer(QWidget):
                 self._movie = movie
                 self.view_label.setMovie(movie)
                 movie.start()
-        else:
-            reader = QImageReader(path)
-            reader.setAutoTransform(True)
-            img = reader.read()
-            if img.isNull():
-                self.view_label.setText(tr("viewer.cant_open", err=img.errorString()))
-                return
+                self._set_view_status(path, row, movie.currentPixmap().size())
+            else:
+                self.view_label.setText(tr("viewer.cant_open", err="GIF"))
+            return
+        # большой файл (фото, тем более AVIF, тем более по сети) — декодируем
+        # в фоне: интерфейс не подвисает, Windows не пишет «Не отвечает»
+        self._view_inflight += 1
+        self._set_view_busy(True)
+        self.status.setText(f"{os.path.basename(path)}  •  {tr('viewer.loading')}")
+        QThreadPool.globalInstance().start(_ViewTask(path, row, self._view_signals))
+
+    def _on_view_ready(self, row: int, path: str, img: QImage, err: str) -> None:
+        self._view_inflight = max(0, self._view_inflight - 1)
+        if self._view_inflight == 0:
+            self._set_view_busy(False)
+        # результат устарел (выбрали другую плитку/папку) — только снять занятость
+        if not (0 <= row < len(self._paths)) or self._paths[row] != path:
+            return
+        if not img.isNull():
             self._pixmap = QPixmap.fromImage(img)
             self._apply_mode()
+            self._set_view_status(path, row, self._pixmap.size())
+        elif err:
+            self.view_label.setText(tr("viewer.cant_open", err=err))
 
-        if self._movie is not None:
-            size = self._movie.currentPixmap().size()
-        elif self._pixmap is not None:
-            size = self._pixmap.size()
-        else:
-            size = QSize(0, 0)
+    def _set_view_status(self, path: str, row: int, size: QSize) -> None:
         self.status.setText(
             f"{os.path.basename(path)}  •  {tr('viewer.of', i=row + 1, n=len(self._paths))}"
             f"  •  {size.width()}×{size.height()}"

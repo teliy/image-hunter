@@ -30,7 +30,7 @@ from app.ui.app_icon import icon as app_icon
 from app.ui.downloads import DownloadsView
 from app.ui.local_viewer import LocalViewer
 from app.ui.log_view import LogView
-from app.ui.web_search import WebSearch
+from app.ui.search_tabs import SearchTabs
 
 
 class MainWindow(QMainWindow):
@@ -46,7 +46,9 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.tabs.setMovable(True)   # вкладки перетаскиваются мышью и переставляются
         self.local = LocalViewer()
-        self.web = WebSearch()
+        # «Поиск картинок» — мультивкладки как в браузере: дублировать,
+        # закрывать, «＋»; заголовок/цвет вложенной вкладки = поисковик
+        self.web = SearchTabs()
         self.downloads = DownloadsView(self._downloader)
         self.log_view = LogView()
 
@@ -175,7 +177,7 @@ class MainWindow(QMainWindow):
             self.local.load_folder(folder, sync_tree=True)   # откроем её же в просмотре
 
         ext = image_saver.SAVE_FORMATS[fmt][1]
-        base_default = image_saver.sanitize_base_name(self.web.query.text()) or "image"
+        base_default = image_saver.sanitize_base_name(self.web.current_query()) or "image"
         base, ok = QInputDialog.getText(
             self, tr("main.save_title", fmt=fmt),
             tr("main.save_name_prompt",

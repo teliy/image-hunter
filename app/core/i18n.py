@@ -219,6 +219,8 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ru": " (показаны первые 5000)", "en": " (first 5000 shown)", "zh": "（仅显示前 5000 个）"},
     "viewer.cant_open": {
         "ru": "Не удалось открыть:\n{err}", "en": "Could not open:\n{err}", "zh": "无法打开：\n{err}"},
+    "viewer.loading": {
+        "ru": "загрузка…", "en": "loading…", "zh": "加载中…"},
     "viewer.of": {
         "ru": "{i} из {n}", "en": "{i} of {n}", "zh": "第 {i} 张，共 {n} 张"},
     "viewer.home": {
@@ -325,6 +327,26 @@ _STRINGS: dict[str, dict[str, str]] = {
         "zh": "未找到链接。\n\n提示：\n• 请等待结果页面完全加载；\n"
         "• 向下滚动页面以加载缩略图；\n"
         "• 如果 Yandex 显示验证码 — 请直接在内置浏览器中输入。"},
+    "ws.tab_new": {
+        "ru": "Новая вкладка поиска", "en": "New search tab", "zh": "新建搜索标签页"},
+    "ws.tab_new_tip": {
+        "ru": "Ещё одна вкладка поиска — со своим поисковиком и браузером (Ctrl+T).\n"
+              "Заголовок вкладки — выбранный поисковик, цвет — его фирменный.",
+        "en": "One more search tab with its own engine and browser (Ctrl+T).\n"
+              "The tab title is the engine, the color is its brand one.",
+        "zh": "再开一个搜索标签页 — 独立的搜索引擎和浏览器 (Ctrl+T)。\n标签页标题为搜索引擎，颜色为其品牌色。"},
+    "ws.tab_duplicate": {
+        "ru": "Дублировать вкладку", "en": "Duplicate tab", "zh": "复制标签页"},
+    "ws.tab_duplicate_tip": {
+        "ru": "Тот же поисковик и тот же запрос — в новой вкладке",
+        "en": "Same engine and same query in a new tab",
+        "zh": "在新标签页中使用相同搜索引擎和查询"},
+    "ws.tab_close": {
+        "ru": "Закрыть вкладку", "en": "Close tab", "zh": "关闭标签页"},
+    "ws.tab_close_others": {
+        "ru": "Закрыть другие вкладки", "en": "Close other tabs", "zh": "关闭其他标签页"},
+    "ws.tab_close_right": {
+        "ru": "Закрыть вкладки справа", "en": "Close tabs to the right", "zh": "关闭右侧标签页"},
     # ---------- вкладка «Загрузки» ----------
     "dl.folder": {"ru": "Папка:", "en": "Folder:", "zh": "文件夹："},
     "dl.change": {"ru": "Изменить…", "en": "Change…", "zh": "更改…"},
@@ -430,6 +452,19 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ru": "ОШИБКА скачивания: {url} — {err}",
         "en": "DOWNLOAD ERROR: {url} — {err}",
         "zh": "下载错误：{url} — {err}"},
+    "log.event.avif_no_codec": {
+        "ru": "Формат AVIF, но декодер не найден (pillow-avif-plugin).\n"
+              "Обновите программу: ImageHunter.bat update",
+        "en": "AVIF image but no decoder (pillow-avif-plugin).\nPlease update: ImageHunter.bat update",
+        "zh": "AVIF 图片但未找到解码器（pillow-avif-plugin）。\n请更新程序：ImageHunter.bat update"},
+    "log.event.search_tabs_restored": {
+        "ru": "Вкладки поиска восстановлены: {n}",
+        "en": "Search tabs restored: {n}",
+        "zh": "已恢复搜索标签页：{n}"},
+    "log.event.search_tabs_limit": {
+        "ru": "Достигнут предел вкладок поиска ({n})",
+        "en": "Search tab limit reached ({n})",
+        "zh": "已达到搜索标签页上限（{n}）"},
     "log.event.drag_start": {
         "ru": "Перетаскивание начато: {n} файлов → {names}",
         "en": "Drag started: {n} files → {names}",

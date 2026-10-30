@@ -39,11 +39,14 @@ Image Hunter was written from day one for the scenario “photos live on a netwo
 - the last folder reopens automatically on start (if it holds up to 2000 images);
 - full-screen view, zoom (`+` / `−` / `Ctrl+wheel`), “fit to window”, “100%”;
 - navigation with ←/→, human-friendly sorting (file2 < file10);
-- animated GIF, JPG/PNG/WEBP/BMP/GIF support;
+- **AVIF support**: `.avif` files show up in the strip with thumbnails and full-screen view, and AVIF images downloaded by links (marketplaces serve AVIF even under a `.jpg` name) can be re-saved into any of the formats; the decoder is Pillow + pillow-avif-plugin (installed automatically);
+- the selected image loads in a background thread — picking a file on a network drive (or a heavy AVIF) no longer freezes the window (“Not Responding”);
+- animated GIF, JPG/PNG/WEBP/BMP/GIF/AVIF support;
 - double-click a thumbnail — open with the system viewer; “Show in Explorer” button;
 - the thumbnail strip is resized with the mouse via the splitter (panel widths are remembered between runs), the search field sits on the toolbar.
 
 **🌐 Image Search** — built-in Chromium browser:
+- **browser-like multiple tabs**: “＋”/Ctrl+T opens another search tab, each with its own engine and browser; right-click a tab to duplicate / close / close others / close to the right; the × closes a tab (closing the last one spawns a fresh one), tabs are draggable; the tab title is the selected engine and the colored dot is its brand color (Yandex — red, DuckDuckGo — orange, Google — blue, Bing — green); open tabs are restored on the next start;
 - engines: Yandex Images (ya.ru), DuckDuckGo (safe mode), Google, Bing;
 - Yandex captcha can be entered right in the built-in browser;
 - **checkboxes on result tiles**: mark the images you need with orange ticks — a counter appears on the button, and “Download checked” downloads the full-size originals (for Yandex the `origUrl` is taken — the same file that opens when you click the preview, e.g. `avatars.mds.yandex.net/get-mpic/…/orig`; for other engines — the original from the tile link parameters);
