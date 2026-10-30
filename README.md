@@ -41,10 +41,10 @@
 **Windows** (PowerShell — скопируйте строку целиком):
 
 ```powershell
-Remove-Item "$env:TEMP\ih-install.ps1" -ErrorAction SilentlyContinue; irm "https://raw.githubusercontent.com/teliy/image-hunter/main/install.ps1?v=$(Get-Random)" -OutFile "$env:TEMP\ih-install.ps1"; powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\ih-install.ps1"
+irm https://codeload.github.com/teliy/image-hunter/zip/refs/heads/main -OutFile "$env:TEMP\ih.zip"; Expand-Archive "$env:TEMP\ih.zip" "$env:TEMP\ih-src" -Force; powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\ih-src\image-hunter-main\install.ps1"
 ```
 
-> Почему так, а не `irm … | iex`: установщик сохранён с UTF-8 BOM (нужен для кириллицы при запуске файлом), а PowerShell 5.1 при `iex` ломается на BOM-символе — сбивается разбор `param()`. Файловый запуск (`-File`) работает всегда. Параметр `?v=$(Get-Random)` обходит 5-минутный кэш GitHub (max-age=300) и системный кэш Windows — без него повторный запуск вскоре после обновления репозитория может скачать старую копию.
+> Почему так: (1) установщик сохранён с UTF-8 BOM (нужен для кириллицы при запуске файлом), а PowerShell 5.1 при `iex` ломается на BOM-символе — сбивается разбор `param()`, поэтому только запуск файлом (`-File`); (2) `raw.githubusercontent.com` кэширует файлы на 5 минут (`cache-control: max-age=300`), причём CDN игнорирует query-параметры — повторный запуск сразу после обновления репозитория может скачать старую копию. `codeload.github.com` генерирует архив на лету, без этого кэша (либо просто подождите 5 минут и повторите raw-команду).
 
 **Linux** (bash):
 

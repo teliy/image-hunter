@@ -2,10 +2,11 @@
 #  Image Hunter — автоматический установщик для Windows
 #
 #  Установка одной строкой (PowerShell) — для ПУБЛИЧНОГО репозитория:
-#    Remove-Item "$env:TEMP\ih-install.ps1" -ErrorAction SilentlyContinue; irm "https://raw.githubusercontent.com/teliy/image-hunter/main/install.ps1?v=$(Get-Random)" -OutFile "$env:TEMP\ih-install.ps1"; powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\ih-install.ps1"
+#    irm https://codeload.github.com/teliy/image-hunter/zip/refs/heads/main -OutFile "$env:TEMP\ih.zip"; Expand-Archive "$env:TEMP\ih.zip" "$env:TEMP\ih-src" -Force; powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\ih-src\image-hunter-main\install.ps1"
 #  ВАЖНО: 1) не заменяйте это на "irm ... | iex" — PowerShell 5.1 при iex ломается на
-#  BOM-символе (кириллица) и разборе param(); 2) ?v=$(Get-Random) обходит 5-минутный
-#  кэш GitHub (cache-control: max-age=300) и кэш Windows при повторных запусках.
+#  BOM-символе (кириллица) и разборе param(); 2) не качайте установщик с raw.githubusercontent
+#  сразу после коммита — raw кэшируется CDN на 5 минут (max-age=300) и query-параметры
+#  игнорируются; codeload генерирует zip на лету и всегда свежий.
 #
 #  Для ПРИВАТНОГО репозитория (raw.githubusercontent отдаёт 404 без токена):
 #    $t="ghp_xxx"; iwr https://raw.githubusercontent.com/teliy/image-hunter/main/install.ps1 -Headers @{Authorization="token $t"} -UseBasicParsing -OutFile "$env:TEMP\ih-install.ps1"; $env:IH_GH_TOKEN=$t; powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\ih-install.ps1"
