@@ -11,6 +11,7 @@ import tempfile
 from PySide6.QtCore import (
     QObject,
     QMimeData,
+    QPoint,
     QRunnable,
     QSettings,
     QSize,
@@ -339,23 +340,80 @@ def make_file_urls_mime(paths: list[str]) -> QMimeData:
 
 
 class _ThumbList(QListWidget):
-    """Список миниатюр с drag'n'drop: выделенные файлы перетаскиваются мышью
-    в Проводник, почту и другие приложения (text/uri-list с путями файлов).
-    Выделение нескольких файлов — Ctrl и Shift, как в Проводнике."""
+    """Список миниатюр: перетаскивание выделенных файлов мышью в другие приложения.
+
+    Зажали кнопку на плитке и потянули — полетели все выделенные файлы
+    (Ctrl и Shift выделяют, как в Проводнике). Перетаскивание запускается
+    вручную из mousePressEvent/mouseMoveEvent: встроенная механика QListWidget
+    (dragEnabled → startDrag) в режиме IconMode срабатывает не во всех сборках
+    Qt, поэтому не полагаемся на неё — она оставлена лишь запасным путём.
+    """
+
+    DRAG_THRESHOLD = 12        # px манхэттенского смещения, после которого тянем
+    DRAG_FACTORY = QDrag       # для подмены в тестах
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._press_index = None     # плитка, на которой зажали мышь
+        self._press_pos = None       # точка нажатия в координатах виджета
+        self._dragging = False
+
+    def _selected_paths(self) -> list[str]:
+        return [it.data(Qt.UserRole) for it in self.selectedItems()
+                if it.data(Qt.UserRole)]
 
     def startDrag(self, actions) -> None:  # noqa: N802 (Qt API)
-        items = self.selectedItems()
-        paths = [it.data(Qt.UserRole) for it in items if it.data(Qt.UserRole)]
-        if not paths or not (int(actions) & int(Qt.CopyAction)):
+        if self._dragging:
+            return   # в этом нажатии уже потащили — второй раз не стартуем
+        self.exec_drag()
+
+    def exec_drag(self) -> None:
+        """Собрать выделенные файлы и запустить перетаскивание."""
+        paths = self._selected_paths()
+        if not paths:
             return
-        drag = QDrag(self)
-        drag.setMimeData(make_file_urls_mime(paths))
+        drag = self.DRAG_FACTORY(self)
+        mime = make_file_urls_mime(paths)
+        # запасной формат для программ, которые не понимают uri-list
+        mime.setText("\n".join(paths))
+        drag.setMimeData(mime)
         # за курсором едет миниатюра первого выбранного файла
-        pix = items[0].icon().pixmap(THUMB, THUMB)
-        if not pix.isNull():
-            drag.setPixmap(pix.scaled(96, 96, Qt.KeepAspectRatio,
-                                      Qt.SmoothTransformation))
+        items = self.selectedItems()
+        if items:
+            pix = items[0].icon().pixmap(THUMB, THUMB)
+            if not pix.isNull():
+                drag.setPixmap(pix.scaled(96, 96, Qt.KeepAspectRatio,
+                                          Qt.SmoothTransformation))
+        self._dragging = True
         drag.exec(Qt.CopyAction)
+
+    # ---------- ручной запуск перетаскивания мышью ----------
+
+    def mousePressEvent(self, ev) -> None:  # noqa: N802 (Qt API)
+        self._dragging = False
+        if ev.button() == Qt.MouseButton.LeftButton:
+            idx = self.indexAt(ev.position().toPoint())
+            self._press_index = idx if idx.isValid() else None
+            self._press_pos = ev.position().toPoint()
+        super().mousePressEvent(ev)   # выделение работает как раньше
+
+    def mouseMoveEvent(self, ev) -> None:  # noqa: N802 (Qt API)
+        if (self._press_index is not None and not self._dragging
+                and ev.buttons() & Qt.MouseButton.LeftButton
+                and self._press_pos is not None
+                and (ev.position().toPoint() - self._press_pos).manhattanLength()
+                > self.DRAG_THRESHOLD):
+            item = self.itemFromIndex(self._press_index)
+            if item is not None and item.isSelected():
+                self.exec_drag()      # блокирует до отпускания кнопки
+                self._press_index = None
+                ev.accept()
+                return
+        super().mouseMoveEvent(ev)
+
+    def mouseReleaseEvent(self, ev) -> None:  # noqa: N802 (Qt API)
+        self._press_index = None
+        super().mouseReleaseEvent(ev)
 
 
 class _GripEdit(QLineEdit):
