@@ -7,6 +7,7 @@ import os
 import random
 import re
 import tempfile
+import time
 
 from PySide6.QtCore import (
     QEvent,
@@ -331,6 +332,85 @@ class _SearchTask(QRunnable):
         self.signals.done.emit(self.gen, len(found), truncated)
 
 
+# ---------- фоновый поиск папок для дерева «Диски и папки» ----------
+
+class _FolderSearchSignals(QObject):
+    batch = Signal(int, list)            # поколение поиска, порция [путь]
+    done = Signal(int, int, bool)        # поколение, всего найдено, усечено ли
+
+
+class _FolderSearchTask(QRunnable):
+    """Рекурсивный поиск папок по имени от корней дерева (Домой, Изображения,
+    все диски). Один os.scandir на папку, без stat() на каждый элемент —
+    важно для сетевых дисков. Совпадения отдаются порциями, не дожидаясь
+    конца обхода. Симлинки не разворачиваются (нет циклов), скрытые папки
+    пропускаются. Пределы количества/времени страхуют от гигантских деревьев
+    и медленных носителей: поиск всегда завершается сам."""
+
+    MAX_RESULTS = 400        # предел выдачи
+    MAX_DIRS = 150_000       # предел обхода
+    TIME_BUDGET = 12.0       # секунд — страховка от очень медленных дисков
+    MAX_DEPTH = 40           # защита от аномально глубоких деревьев
+    BATCH = 30
+
+    def __init__(self, roots: list[str], needle: str, gen: int,
+                 signals: _FolderSearchSignals, handle: _SearchHandle):
+        super().__init__()
+        self.roots = list(roots)
+        self.needle = needle.lower()
+        self.gen, self.signals, self.handle = gen, signals, handle
+
+    def run(self) -> None:
+        found = 0
+        pending: list[str] = []
+        truncated = False
+        scanned = 0
+        seen: set[str] = set()   # уже просмотренные папки — корни могут пересекаться
+        deadline = time.monotonic() + self.TIME_BUDGET
+        stack: list[tuple[str, int]] = [(path, 0) for path in reversed(self.roots)]
+        while stack:
+            if self.handle.cancelled:
+                return
+            if (found >= self.MAX_RESULTS or scanned >= self.MAX_DIRS
+                    or time.monotonic() > deadline):
+                truncated = True
+                break
+            path, depth = stack.pop()
+            key = os.path.normcase(os.path.normpath(path))
+            if key in seen:
+                continue
+            seen.add(key)
+            scanned += 1
+            subdirs: list[str] = []
+            try:
+                with os.scandir(path) as it:
+                    for entry in it:
+                        if entry.name.startswith(".") or _is_hidden_entry(entry):
+                            continue
+                        try:
+                            if entry.is_dir(follow_symlinks=False):
+                                subdirs.append(entry.path)
+                        except OSError:
+                            continue
+            except OSError:
+                continue
+            subdirs.sort(key=lambda p: natural_key(os.path.basename(p)))
+            for sub in subdirs:
+                if self.needle in os.path.basename(sub).lower():
+                    found += 1
+                    pending.append(sub)
+            if depth < self.MAX_DEPTH:
+                stack.extend((sub, depth + 1) for sub in reversed(subdirs))
+            if len(pending) >= self.BATCH:
+                self.signals.batch.emit(self.gen, pending)
+                pending = []
+        if self.handle.cancelled:
+            return
+        if pending:
+            self.signals.batch.emit(self.gen, pending)
+        self.signals.done.emit(self.gen, found, truncated)
+
+
 # ---------- виджет ----------
 
 def make_file_urls_mime(paths: list[str]) -> QMimeData:
@@ -609,6 +689,11 @@ class LocalViewer(QWidget):
         self._thumb_done_rows: set[int] = set()    # строки с уже выставленной миниатюрой
         self._thumbs_enabled = QSettings("ImageHunter", "ImageHunter").value(
             "viewer/thumbs", True, type=bool)      # выключатель предпросмотра
+        self._fs_gen = 0                 # поколение поиска папок в дереве
+        self._fs_handle = None           # флажок отмены текущего поиска папок
+        self._fs_count = 0               # сколько папок показано
+        self._fs_seen: set[str] = set()  # normpath уже показанных совпадений
+        self._fs_in_search = False       # дерево сейчас показывает результаты поиска папок
 
         # --- верхняя панель ---
         bar = QHBoxLayout()
@@ -662,7 +747,7 @@ class LocalViewer(QWidget):
         self.search_edit.returnPressed.connect(self._start_search_now)
         bar.addWidget(self.search_edit)
         esc = QShortcut(QKeySequence("Esc"), self)
-        esc.activated.connect(self.search_edit.clear)
+        esc.activated.connect(self._escape_search)   # Esc чистит то поле, где фокус
         bar.addStretch(1)
         self.status = QLabel(tr("viewer.pick"))
         self.status.setStyleSheet("color: #666;")
@@ -714,9 +799,28 @@ class LocalViewer(QWidget):
         btn_refresh.setText("⟳")
         btn_refresh.setToolTip(tr("viewer.refresh_tip"))
         btn_refresh.setAutoRaise(True)
-        btn_refresh.clicked.connect(lambda: self.refresh_drives())
+        btn_refresh.clicked.connect(self._on_tree_refresh_clicked)
         tree_hdr.addWidget(btn_refresh)
         tree_lay.addLayout(tree_hdr)
+
+        # --- поиск папок: поле над деревом «Диски и папки» ---
+        self.folder_search = QLineEdit()
+        self.folder_search.setPlaceholderText(tr("viewer.folders_search_ph"))
+        self.folder_search.setClearButtonEnabled(True)
+        self.folder_search.setToolTip(tr("viewer.folders_search_tip"))
+        self.folder_search.textChanged.connect(self._on_folder_search_text_changed)
+        self.folder_search.returnPressed.connect(self._open_first_folder_result)
+        fs_lay = QHBoxLayout()
+        fs_lay.setContentsMargins(8, 2, 8, 2)
+        fs_lay.addWidget(self.folder_search)
+        tree_lay.addLayout(fs_lay)
+
+        # строка под полем: «Поиск папок…» / «Найдено папок: N» — видна только в поиске
+        self.tree_info = QLabel("")
+        self.tree_info.setStyleSheet("color: #666;")
+        self.tree_info.setContentsMargins(8, 0, 8, 0)
+        self.tree_info.hide()
+        tree_lay.addWidget(self.tree_info)
         tree_lay.addWidget(self.tree, 1)
 
         # --- область просмотра ---
@@ -774,6 +878,14 @@ class LocalViewer(QWidget):
         self._search_timer.setSingleShot(True)
         self._search_timer.setInterval(350)
         self._search_timer.timeout.connect(self._start_search_now)
+        # поиск папок в дереве: сигналы + дебаунс набора (300 мс)
+        self._fs_signals = _FolderSearchSignals()
+        self._fs_signals.batch.connect(self._on_fs_batch)
+        self._fs_signals.done.connect(self._on_fs_done)
+        self._fs_timer = QTimer(self)
+        self._fs_timer.setSingleShot(True)
+        self._fs_timer.setInterval(300)
+        self._fs_timer.timeout.connect(self._start_folder_search_now)
         # ленивые миниатюры: пересчёт видимых строк не чаще раза в 120 мс
         self._visible_timer = QTimer(self)
         self._visible_timer.setSingleShot(True)
@@ -794,12 +906,23 @@ class LocalViewer(QWidget):
             b.setToolTip(tr(tip_key))
         self.search_edit.setPlaceholderText(tr("viewer.search_ph"))
         self.search_edit.setToolTip(tr("viewer.search_tip"))
+        self.folder_search.setPlaceholderText(tr("viewer.folders_search_ph"))
+        self.folder_search.setToolTip(tr("viewer.folders_search_tip"))
         self.list.setToolTip(tr("viewer.dnd_tip"))
         self.tree_hdr_label.setText(tr("viewer.drives"))
         if not self._paths:
             self.status.setText(tr("viewer.pick"))
-        # быстрые ссылки «Домой»/«Изображения» тоже переводятся
-        self.refresh_drives()
+        if self._fs_in_search:
+            # режим поиска папок: дерево не перечитываем — не затирать результаты
+            if self._fs_handle is not None:
+                self.tree_info.setText(tr("viewer.folders_searching_found", n=self._fs_count))
+            elif self._fs_count:
+                self.tree_info.setText(tr("viewer.folders_found", n=self._fs_count))
+            else:
+                self.tree_info.setText(tr("viewer.folders_none"))
+        else:
+            # быстрые ссылки «Домой»/«Изображения» тоже переводятся
+            self.refresh_drives()
 
     # ---------- публичное ----------
 
@@ -968,6 +1091,139 @@ class LocalViewer(QWidget):
         self.status.setText(tr("viewer.search_done", q=self._search_needle,
                                n=total, tail=tail))
         applog.event("log.event.search_done", q=self._search_needle, n=total)
+
+    # ---------- поиск папок в дереве «Диски и папки» ----------
+
+    def _escape_search(self) -> None:
+        """Esc чистит то поле поиска, где сейчас фокус."""
+        if QApplication.focusWidget() is self.folder_search:
+            self.folder_search.clear()
+        else:
+            self.search_edit.clear()
+
+    def _on_folder_search_text_changed(self, text: str) -> None:
+        if not text.strip():
+            self._cancel_folder_search()
+            self._exit_folder_search_mode()
+            return
+        self._fs_timer.start()   # дебаунс: не запускаем обход на каждое нажатие
+
+    def _cancel_folder_search(self) -> None:
+        self._fs_timer.stop()
+        if self._fs_handle is not None:
+            self._fs_handle.cancelled = True
+            self._fs_handle = None
+
+    def _on_tree_refresh_clicked(self) -> None:
+        if self.folder_search.text():
+            self.folder_search.clear()   # выйдет из режима поиска и перерисует дерево
+        if not self._fs_in_search:
+            self.refresh_drives()
+
+    def _search_roots(self) -> list[str]:
+        """Корни для поиска папок: те же, что показывает дерево
+        (Домой, Изображения и все не-виртуальные смонтированные диски)."""
+        roots: list[str] = []
+        home = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.HomeLocation)
+        pics = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.PicturesLocation)
+        if home and os.path.isdir(home):
+            roots.append(home)
+        if pics and os.path.isdir(pics) and os.path.normpath(pics) != os.path.normpath(home):
+            roots.append(pics)
+        for si in QStorageInfo.mountedVolumes():
+            if not si.isValid() or not si.isReady() or self._is_virtual(si):
+                continue
+            root = si.rootPath()
+            if root and os.path.isdir(root):
+                roots.append(root)
+        uniq: list[str] = []
+        seen: set[str] = set()
+        for root in roots:
+            key = os.path.normcase(os.path.normpath(root))
+            if key not in seen:
+                seen.add(key)
+                uniq.append(root)
+        return uniq
+
+    def _start_folder_search_now(self) -> None:
+        self._fs_timer.stop()
+        needle = self.folder_search.text().strip()
+        if not needle:
+            return
+        self._cancel_folder_search()
+        handle = _SearchHandle()
+        self._fs_handle = handle
+        self._fs_gen += 1
+        self._fs_count = 0
+        self._fs_seen = set()
+        self._fs_in_search = True
+        self.tree.clear()
+        self.tree.setColumnCount(2)
+        self.tree.setColumnWidth(0, 120)
+        self.tree_info.show()
+        self.tree_info.setText(tr("viewer.folders_searching"))
+        applog.event("log.event.folder_search", q=needle)
+        QThreadPool.globalInstance().start(
+            _FolderSearchTask(self._search_roots(), needle, self._fs_gen,
+                              self._fs_signals, handle))
+
+    def _add_folder_result(self, path: str) -> None:
+        key = os.path.normcase(os.path.normpath(path))
+        if key in self._fs_seen:
+            return
+        self._fs_seen.add(key)
+        name = os.path.basename(path) or path
+        item = QTreeWidgetItem([name, os.path.dirname(path)])   # имя + путь родителя серым
+        item.setData(0, Qt.ItemDataRole.UserRole, path)
+        item.setIcon(0, self.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon))
+        item.setToolTip(0, path)
+        item.setToolTip(1, path)
+        item.setForeground(1, self.palette().brush(QPalette.ColorRole.PlaceholderText))
+        item.addChild(self._dummy_item())   # результат можно раскрыть прямо в дереве
+        self.tree.addTopLevelItem(item)
+
+    def _on_fs_batch(self, gen: int, items: list) -> None:
+        if gen != self._fs_gen or not self._fs_in_search:
+            return
+        for path in items:
+            self._add_folder_result(path)
+        self._fs_count = len(self._fs_seen)
+        self.tree_info.setText(tr("viewer.folders_searching_found", n=self._fs_count))
+        if self.tree.currentItem() is None and self.tree.topLevelItemCount():
+            self.tree.setCurrentItem(self.tree.topLevelItem(0))
+
+    def _on_fs_done(self, gen: int, total: int, truncated: bool) -> None:
+        if gen != self._fs_gen or not self._fs_in_search:
+            return
+        self._fs_handle = None
+        self._fs_count = len(self._fs_seen)
+        if not self._fs_count:
+            self.tree_info.setText(tr("viewer.folders_none"))
+            return
+        tail = tr("viewer.folders_trunc", n=total) if truncated else ""
+        self.tree_info.setText(tr("viewer.folders_found", n=self._fs_count) + tail)
+        applog.event("log.event.folder_search_done",
+                     q=self.folder_search.text().strip(), n=self._fs_count)
+
+    def _open_first_folder_result(self) -> None:
+        """Enter в поле поиска папок — открыть первую (или выделенную) находку."""
+        if not self._fs_in_search:
+            return
+        item = self.tree.currentItem() or self.tree.topLevelItem(0)
+        if item is not None:
+            self._on_tree_clicked(item, 0)
+
+    def _exit_folder_search_mode(self) -> None:
+        """Вернуть обычное дерево: корни + текущая папка раскрыта и подсвечена."""
+        if not self._fs_in_search:
+            return
+        self._fs_in_search = False
+        self.tree.clear()
+        self.tree.setColumnCount(1)
+        self.tree_info.hide()
+        self.refresh_drives()
+        if self._folder and os.path.isdir(self._folder):
+            self._sync_tree(self._folder)
 
     # ---------- ленивые миниатюры: грузим только видимую часть ----------
 

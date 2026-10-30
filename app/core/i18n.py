@@ -28,8 +28,6 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ru": "⬇️ Загрузки", "en": "⬇️ Downloads", "zh": "⬇️ 下载"},
     "tab.log": {
         "ru": "📜 Журнал", "en": "📜 Log", "zh": "📜 日志"},
-    "tab.log": {
-        "ru": "📜 Журнал", "en": "📜 Log", "zh": "📜 日志"},
     "main.ready": {
         "ru": "Готово: откройте папку на вкладке «Мои картинки» или найдите картинки во вкладке «Поиск».",
         "en": "Ready: open a folder on the “My Pictures” tab or search for images on the “Search” tab.",
@@ -231,6 +229,32 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ru": "Диск /", "en": "Drive /", "zh": "磁盘 /"},
     "viewer.free_space": {
         "ru": "Свободно: {free} из {total}", "en": "Free: {free} of {total}", "zh": "可用：{free} / {total}"},
+    "viewer.folders_search_ph": {
+        "ru": "🔍 Поиск папки…", "en": "🔍 Search folders…", "zh": "🔍 搜索文件夹…"},
+    "viewer.folders_search_tip": {
+        "ru": "Быстрый поиск папок по имени: Домой, Изображения и все диски.\n"
+              "Введите часть имени — совпадения появятся в дереве, клик открывает папку.\n"
+              "Регистр не важен, масок нет. Enter — открыть первую найденную, Esc — сброс.",
+        "en": "Quickly find folders by name: Home, Pictures and all drives.\n"
+              "Type part of a name — matches appear in the tree; click opens the folder.\n"
+              "Case-insensitive, no masks. Enter opens the first match, Esc — reset.",
+        "zh": "按名称快速查找文件夹：主目录、图片和所有磁盘。\n"
+              "输入名称的一部分 — 匹配项将显示在树中，单击即可打开文件夹。\n"
+              "不区分大小写，无通配符。回车打开第一个结果，Esc — 重置。"},
+    "viewer.folders_searching": {
+        "ru": "Поиск папок…", "en": "Searching folders…", "zh": "正在搜索文件夹…"},
+    "viewer.folders_searching_found": {
+        "ru": "Поиск папок… найдено: {n}",
+        "en": "Searching folders… found: {n}",
+        "zh": "正在搜索文件夹… 已找到：{n}"},
+    "viewer.folders_found": {
+        "ru": "Найдено папок: {n}", "en": "Folders found: {n}", "zh": "已找到文件夹：{n}"},
+    "viewer.folders_none": {
+        "ru": "Папок с таким именем не найдено",
+        "en": "No folders with this name",
+        "zh": "未找到同名文件夹"},
+    "viewer.folders_trunc": {
+        "ru": " (показаны первые {n})", "en": " (first {n} shown)", "zh": "（仅显示前 {n} 个）"},
     "unit.b": {"ru": "Б", "en": "B", "zh": "B"},
     "unit.kb": {"ru": "КБ", "en": "KB", "zh": "KB"},
     "unit.mb": {"ru": "МБ", "en": "MB", "zh": "MB"},
@@ -378,6 +402,14 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ru": "Поиск «{q}»: найдено {n}",
         "en": "Search “{q}”: found {n}",
         "zh": "搜索“{q}”：找到 {n}"},
+    "log.event.folder_search": {
+        "ru": "Поиск папок «{q}» запущен",
+        "en": "Folder search “{q}” started",
+        "zh": "已启动文件夹搜索“{q}”"},
+    "log.event.folder_search_done": {
+        "ru": "Поиск папок «{q}»: найдено {n}",
+        "en": "Folder search “{q}”: found {n}",
+        "zh": "文件夹搜索“{q}”：找到 {n}"},
     "log.event.drag_start": {
         "ru": "Перетаскивание начато: {n} файлов → {names}",
         "en": "Drag started: {n} files → {names}",
