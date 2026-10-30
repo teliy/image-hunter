@@ -26,6 +26,11 @@ $Branch    = 'main'
 $AppName   = 'Image Hunter'
 $DefaultDir = Join-Path $env:LOCALAPPDATA 'ImageHunter'
 
+# нормализация параметров: пустые/пробельные строки → $null
+# (иначе Join-Path падает на пустом пути, а неигнорируемые ошибки у нас Stop)
+$InstallDir = if ($InstallDir) { $t = $InstallDir.Trim(); if ($t) { $t } else { $null } } else { $null }
+$Token      = if ($Token)      { $t = $Token.Trim();      if ($t) { $t } else { $null } } else { $null }
+
 # ---------------------------------------------------------------- утилиты
 function Write-Step($msg)  { Write-Host "==> " -ForegroundColor Green -NoNewline; Write-Host $msg }
 function Write-Warn2($msg) { Write-Host "предупреждение: " -ForegroundColor Yellow -NoNewline; Write-Host $msg }
@@ -281,14 +286,16 @@ if ($Uninstall) {
 
 $existsHere = $false
 foreach ($d in @($DefaultDir, $InstallDir)) {
-  if ($d -and (Test-Path (Join-Path $d 'main.py'))) { $existsHere = $true; $FoundDir = $d; break }
+  if (-not $d) { continue }
+  if (Test-Path (Join-Path $d 'main.py')) { $existsHere = $true; $FoundDir = $d; break }
 }
 
 # подхватываем токен, сохранённый прошлой установкой (для авто-обновлений приватного репо)
 if (-not $Token) {
   foreach ($d in @($InstallDir, $DefaultDir)) {
+    if (-not $d) { continue }
     $tf = Join-Path $d '.gh_token'
-    if ($d -and (Test-Path $tf)) { $Token = (Get-Content $tf -Raw).Trim(); break }
+    if (Test-Path $tf) { $Token = (Get-Content $tf -Raw).Trim(); break }
   }
 }
 
