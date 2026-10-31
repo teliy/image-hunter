@@ -28,6 +28,20 @@ Image Hunter was written from day one for the scenario “photos live on a netwo
 
 **8. Updates bypass the CDN cache.** The installer and the update check fetch code via `codeload.github.com`, which generates the archive on the fly: a new version is available right after the push, without the 5-minute cache of `raw.githubusercontent.com`.
 
+## Instant startup and freeze protection (v0.7.0)
+
+The main source of weight and freezes in Image Hunter is the embedded browser of the search tabs: every QWebEngineView is a whole Chromium process. Since v0.7.0 the architecture is modular and lazy — heavy things start only when they are actually needed:
+
+**1. Zero Chromium at app startup.** Previously every search tab created its browser immediately at startup and opened the start page: restoring 11 tabs meant 11 Chromium processes and 11 simultaneous page loads — on a weak machine or a slow network this looked like a freeze. Now a tab at startup is only its toolbar (a few kilobytes of UI). The tab's browser is created the first time the tab is shown (`showEvent`). Until you open the "Image search" tab, Chromium does not start at all — the window appears instantly.
+
+**2. "Search everywhere" without a load storm.** Searching in all engines at once no longer fires a dozen loads simultaneously: tabs without a browser only remember the request (pending) and run it when you open the tab. Network, memory and CPU are spent exactly on what you are looking at; a tab you never open has not cost a single megabyte.
+
+**3. All WebEngine configuration in one module.** `app/core/webengine.py` is the single place: platform-plugin warning capture (broken Wayland), `--disable-gpu` (auto-detected, IH_GPU), `--disable-dev-shm-usage` (on systems with a tiny /dev/shm tabs silently crashed and restarted in a loop), `--disable-breakpad`, and `--no-sandbox` — only when the kernel forbids user namespaces (otherwise tabs crash in a loop and look frozen; the switch is visible in the Log, bring the sandbox back with `IH_NO_SANDBOX=0`).
+
+**4. Watchdog for "eternal" loads.** A page that has not opened within 45 seconds (dead network, hanging redirect) is stopped automatically — a tab never spins an endless load, and the Log shows which URL failed.
+
+**5. Search engine data in a separate module.** The engine list, URL templates and SERP recognition moved to `app/core/engines.py` — pure data without UI: reusable anywhere and testable without Qt.
+
 ## Features
 
 **📁 My Pictures** — local viewer:
@@ -214,6 +228,26 @@ sandbox cannot start), add `--no-sandbox`:
 **A search tab is grey and the terminal mentions a render process** — the app
 now restarts a crashed tab renderer on its own (two attempts); the event is
 visible in the Log.
+
+**A page loads forever and the tab does not respond** — since v0.7.0 the load
+is stopped automatically after 45 seconds and the Log shows the URL. If it
+happens on every site, check your network/proxy.
+
+**A Log entry mentions the sandbox** — your Linux kernel forbids user
+namespaces; without them the Chromium sandbox cannot start and tabs crash in
+a loop (which looks like a freeze). The app has started the browser without
+the sandbox on its own. To bring it back: `IH_NO_SANDBOX=0 image-hunter`.
+
+**Terminal errors like `handshake failed … net_error -202`** — not an app
+freeze but a certificate trust failure: check the system clock, any
+HTTPS-intercepting antivirus/proxy and the presence of system root
+certificates (`ca-certificates`). After `net_error -100` (connection closed)
+check network availability.
+
+**It is an old version that freezes** — if the terminal shows
+`js: Uncaught TypeError … appendChild`, you are running something older than
+v0.6.4: please update (`ImageHunter.bat update` on Windows, `image-hunter
+update` on Linux).
 
 ## License
 

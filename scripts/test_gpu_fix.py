@@ -1,11 +1,11 @@
-"""Оффлайн-тест защиты от зависаний QtWebEngine на Linux (v0.6.4).
+"""Оффлайн-тест защиты от зависаний QtWebEngine на Linux (v0.7.0).
 
 Проверяется:
-1. wayland_fallback_failed(): распознаёт ровно ту строку из пользовательских
+1. webengine.wayland_fallback_failed(): распознаёт ровно ту строку из пользовательских
    отчётов (``Could not load the Qt platform plugin "wayland" … even though
    it was found``) и вариант «Could not find»; чужие предупреждения (xcb,
    обычные варнинги) и пустой список — не сигнал;
-2. _apply_webengine_gpu_fix(): IH_GPU=1 — GPU остаётся; IH_GPU=0 —
+2. webengine.apply_gpu_fix(): IH_GPU=1 — GPU остаётся; IH_GPU=0 —
    --disable-gpu принудительно; чужие флаги QTWEBENGINE_CHROMIUM_FLAGS
    дополняются, а не затираются; без предупреждений и override — ничего
    не меняется; при предупреждении wayland — --disable-gpu добавляется
@@ -42,7 +42,7 @@ def check(name: str, cond: bool, extra: str = "") -> None:
 
 # ---------- части 1–2: чистый Python, Qt не нужен ----------
 
-import main as entry  # noqa: E402  # корневой main.py приложения
+from app.core import webengine as entry  # noqa: E402  (вся настройка WebEngine — тут)
 
 WAYLAND_MSG = ('qt.qpa.plugin: Could not load the Qt platform plugin "wayland" in "" '
                'even though it was found.')
@@ -87,27 +87,27 @@ def test_gpu_fix() -> None:
         os.environ.pop("QTWEBENGINE_CHROMIUM_FLAGS", None)
         entry._qpa_warnings.clear()
         entry._qpa_warnings.append(WAYLAND_MSG)
-        check("IH_GPU=1: фикс не применяется", entry._apply_webengine_gpu_fix() is False)
+        check("IH_GPU=1: фикс не применяется", entry.apply_gpu_fix() is False)
         check("IH_GPU=1: флаги не тронуты",
               "QTWEBENGINE_CHROMIUM_FLAGS" not in os.environ)
 
         # IH_GPU=0 — принудительно, даже без предупреждений
         os.environ["IH_GPU"] = "0"
         entry._qpa_warnings.clear()
-        check("IH_GPU=0: фикс применён", entry._apply_webengine_gpu_fix() is True)
+        check("IH_GPU=0: фикс применён", entry.apply_gpu_fix() is True)
         check("IH_GPU=0: --disable-gpu выставлен",
               os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "") == "--disable-gpu",
               os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", ""))
 
         # чужие флаги дополняются
         os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = "--force-color-profile=srgb"
-        entry._apply_webengine_gpu_fix()
+        entry.apply_gpu_fix()
         flags = os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "")
         check("чужие флаги сохранены", "--force-color-profile=srgb" in flags, flags)
         check("--disable-gpu дописан", "--disable-gpu" in flags, flags)
 
         # повторный вызов не дублирует флаг
-        entry._apply_webengine_gpu_fix()
+        entry.apply_gpu_fix()
         flags2 = os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "")
         check("повтор не дублирует флаг", flags2.count("--disable-gpu") == 1, flags2)
 
@@ -116,12 +116,12 @@ def test_gpu_fix() -> None:
         entry._qpa_warnings[:] = [WAYLAND_MSG]
         os.environ.pop("QTWEBENGINE_CHROMIUM_FLAGS", None)
         check("автодетект wayland: фикс применён",
-              entry._apply_webengine_gpu_fix() is True
+              entry.apply_gpu_fix() is True
               and "--disable-gpu" in os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", ""))
         os.environ.pop("QTWEBENGINE_CHROMIUM_FLAGS", None)
         entry._qpa_warnings[:] = [XCB_MSG]
         check("автодетект xcb: ничего не делает",
-              entry._apply_webengine_gpu_fix() is False
+              entry.apply_gpu_fix() is False
               and "QTWEBENGINE_CHROMIUM_FLAGS" not in os.environ)
     finally:
         _env_restore(bak)
@@ -201,7 +201,7 @@ def test_qt_parts() -> None:
 
     # 4. гейт опроса: не-выдача → без обхода фреймов, счётчик в 0
     ws.isVisible = lambda: True          # type: ignore[method-assign]
-    ws.view = _StubView("https://example.com/gallery")   # type: ignore[assignment]
+    ws._view = _StubView("https://example.com/gallery")   # type: ignore[assignment]
     ws._on_poll_result(3)                # сделаем счётчик ненулевым
     calls.clear()
     ws._poll_checked_count()
@@ -210,7 +210,7 @@ def test_qt_parts() -> None:
           ws._checked_count == 0 and not ws.btn_checked.isEnabled())
 
     # выдача → запрос __IH_CB_COUNT к главному фрейму
-    ws.view = _StubView("https://ya.ru/images/search?text=cats")   # type: ignore[assignment]
+    ws._view = _StubView("https://ya.ru/images/search?text=cats")   # type: ignore[assignment]
     calls.clear()
     ws._poll_checked_count()
     check("гейт: на выдаче счётчик опрашивается",
@@ -223,7 +223,7 @@ def test_qt_parts() -> None:
             app.processEvents()
             time.sleep(0.02)
 
-    ws.view = _StubView("https://ya.ru/images/search?text=cats")   # type: ignore[assignment]
+    ws._view = _StubView("https://ya.ru/images/search?text=cats")   # type: ignore[assignment]
     ws._reload_tries = 0
     bad = QWebEnginePage.RenderProcessTerminationStatus.AbnormalTerminationStatus
     ws._on_render_gone(bad, 777)

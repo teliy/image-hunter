@@ -4,7 +4,10 @@
 ВСЕХ поисковиках, по вкладке на каждый («Найти везде» или Enter).
 
 Каждая вложенная вкладка — самостоятельный WebSearch: своя строка поиска,
-свой поисковик и свой встроенный браузер. Умеет то же, что браузер:
+свой поисковик и свой встроенный браузер. Браузер ленивый: вкладки
+восстанавливаются мгновенно, без единого процесса Chromium — он запускается
+только для вкладки, которую реально открыли (и выполняет отложенный поиск
+фоновых вкладок в этот же момент). Умеет то же, что браузер:
 
 • «＋» — новая вкладка (Ctrl+T), поисковик берётся у текущей вкладки;
 • крестик на вкладке — закрыть (Ctrl+W), последнюю заменяет свежая —
@@ -35,9 +38,10 @@ from PySide6.QtWidgets import (
 )
 
 from app.core import applog, i18n
+from app.core.engines import ENGINES
 from app.core.i18n import tr
 from app.core.image_saver import SAVE_FORMATS
-from app.ui.web_search import ENGINES, WebSearch
+from app.ui.web_search import WebSearch
 
 MAX_TABS = 16   # каждая вкладка — целый браузер; больше не открываем
                 # (поисковиков 11 — «Найти везде» открывает их все сразу)
@@ -154,7 +158,10 @@ class SearchTabs(QWidget):
             if name not in have and self.add_tab(
                     engine_name=name, focus=False, quiet=True) is not None:
                 opened += 1
-        # каждому поисковику — свой запрос в его вкладке
+        # каждому поисковику — свой запрос в его вкладке. Фоновые вкладки
+        # (без браузера) лишь запомнят его: Chromium запустится, когда вкладку
+        # откроют, — вместо шторма из десятка одновременных загрузок
+        # (отложенный поиск внутри WebSearch.open_url)
         for i in range(self.tabs.count()):
             ws = self.tabs.widget(i)
             if isinstance(ws, WebSearch):
@@ -217,7 +224,7 @@ class SearchTabs(QWidget):
             return
         engine = ws.engine_meta()[0]
         query = ws.query.text().strip()
-        url = ws.view.url().toString()
+        url = ws.current_url().toString()   # без браузера — пустой QUrl
         new = self.add_tab(engine_name=engine)
         if new is None:
             return
@@ -225,7 +232,7 @@ class SearchTabs(QWidget):
             new.query.setText(query)
             new.search()          # тот же запрос тем же поисковиком заново
         elif url:
-            new.view.load(url)    # открытая страница — просто скопировать
+            new.open_url(url)     # открытая страница — просто скопировать
 
     def _close_others(self, index: int) -> None:
         for i in range(self.tabs.count() - 1, -1, -1):

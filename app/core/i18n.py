@@ -534,6 +534,19 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ru": "Процесс отрисовки вкладки упал (код {code}) — перезапускаю…",
         "en": "Tab render process crashed (code {code}) — restarting…",
         "zh": "标签页渲染进程崩溃（代码 {code}）——正在重启……"},
+    "log.event.load_watchdog": {
+        "ru": "Страница не открылась за {sec} с — загрузка остановлена: {url}",
+        "en": "Page did not load within {sec} s — load stopped: {url}",
+        "zh": "页面在 {sec} 秒内未加载完成——已停止加载:{url}"},
+    "log.event.sandbox_off": {
+        "ru": "Ядро Linux запрещает пользовательские пространства имён — встроенный "
+              "браузер работает без песочницы Chromium (иначе вкладки циклически "
+              "падали и выглядели зависшими). Вернуть песочницу: IH_NO_SANDBOX=0.",
+        "en": "This Linux kernel forbids user namespaces — the built-in browser runs "
+              "without the Chromium sandbox (otherwise tabs crashed in a loop and "
+              "looked frozen). To re-enable: IH_NO_SANDBOX=0.",
+        "zh": "此 Linux 内核禁止用户命名空间——内置浏览器在无 Chromium 沙箱的情况下运行"
+              "（否则标签页会反复崩溃并看似卡死）。恢复沙箱请设置:IH_NO_SANDBOX=0。"},
     "log.event.save_file_err": {
         "ru": "ОШИБКА сохранения: {url} — {err}",
         "en": "SAVE ERROR: {url} — {err}",

@@ -7,14 +7,24 @@
 3. «Сохранить в папку» — отмеченные плитки перекодируются в выбранный
    формат (WebP/PNG/JPEG/BMP/TIFF) и сохраняются в папку, открытую
    во вкладке «Мои картинки» (название.ext, название-1.ext…).
+
+Скорость и устойчивость (модульность + ленивость):
+* встроенный браузер (QWebEngineView, целый Chromium) создаётся НЕ при
+  старте программы, а при первом показе вкладки — сколько бы вкладок
+  поиска ни было открыто в прошлый раз, программа стартует мгновенно,
+  без единого процесса Chromium;
+* поиск во фоновой вкладке не запускает загрузку сразу, а запоминается
+  (pending) и выполняется при первом показе вкладки — «Найти везде»
+  больше не устраивает шторм из десятка одновременных загрузок;
+* каждая вкладка снабжена watchdog'ом загрузки (45 с): зависшая
+  страница останавливается, а не крутится вечно (см. app/core/webengine).
 """
 
 from __future__ import annotations
 
-from urllib.parse import parse_qs, quote_plus, urlparse
+from urllib.parse import quote_plus
 
 from PySide6.QtCore import QSettings, QTimer, QUrl, Signal
-from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
@@ -25,7 +35,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.core import applog, i18n
+from app.core import applog, i18n, webengine
+from app.core.engines import ENGINES, is_image_search_url   # реэкспорт (см. __all__)
 from app.core.extractor import (
     collect_image_urls,
     fetch_checked_selections,
@@ -35,75 +46,19 @@ from app.core.extractor import (
 from app.core.i18n import tr
 from app.core.image_saver import SAVE_FORMATS
 
-# (полное имя в списке, шаблон поиска, короткое имя вкладки, фирменный цвет бренда)
-ENGINES: list[tuple[str, str, str, str]] = [
-    ("Яндекс.Картинки", "https://ya.ru/images/search?text={}",
-     "Яндекс", "#FC3F1D"),
-    # iax=images&ia=images — канонический адрес выдачи картинок DDG (устаревший
-    # iar=images страницу картинок больше не открывает); kp=1 — строгий safe search
-    ("DuckDuckGo (safe)", "https://duckduckgo.com/?q={}&iax=images&ia=images&kp=1&t=h_",
-     "DuckDuckGo", "#DE5833"),
-    ("Google Картинки", "https://www.google.com/search?q={}&udm=2",
-     "Google", "#4285F4"),
-    ("Bing Картинки", "https://www.bing.com/images/search?q={}",
-     "Bing", "#008373"),
-    ("Brave Картинки", "https://search.brave.com/images?q={}",
-     "Brave", "#FB542B"),
-    ("Startpage Картинки", "https://www.startpage.com/sp/search?query={}&cat=images",
-     "Startpage", "#6573FF"),
-    ("Mojeek Картинки", "https://www.mojeek.com/images?q={}",
-     "Mojeek", "#455A64"),
-    ("Baidu Картинки", "https://image.baidu.com/search/index?tn=baiduimage&ie=utf-8&word={}",
-     "Baidu", "#2932E1"),
-    ("Sogou Картинки", "https://pic.sogou.com/pics?query={}",
-     "Sogou", "#FF6A00"),
-    ("Naver Картинки", "https://search.naver.com/search.naver?where=image&query={}",
-     "Naver", "#03C75A"),
-    ("Mail.ru Картинки", "https://go.mail.ru/search_images?q={}",
-     "Mail.ru", "#005FF9"),
-]
+# страница, которую показывает новая вкладка до первого поиска
+START_URL = "https://ya.ru/images/"
 
-_YANDEX_HOSTS = ("ya.ru", "yandex.ru", "yandex.com", "yandex.by", "yandex.kz", "yandex.uz")
-
-
-def is_image_search_url(url: str) -> bool:
-    """Это страница картинок известного поисковика? (только там ставим чекбоксы)"""
-    try:
-        parts = urlparse(url)
-        host = (parts.hostname or "").lower()
-        path = parts.path or ""
-        query = parse_qs(parts.query or "")
-    except Exception:
-        return False
-    have = lambda k: (query.get(k) or [""])[0]  # noqa: E731
-    if any(host == h or host.endswith("." + h) for h in _YANDEX_HOSTS):
-        return path.startswith("/images")
-    if host.endswith("duckduckgo.com"):
-        # выдача картинок: iax/ia (актуально) или iar (старые сохранённые ссылки)
-        return "images" in (have("ia"), have("iax"), have("iar"))
-    if host.endswith(("google.com", "google.ru", "google.by", "google.kz", "google.com.ua")):
-        return (query.get("udm") or [""])[0] == "2" or path.startswith("/imgres")
-    if host.endswith("bing.com"):
-        return path.startswith("/images")
-    if host.endswith("brave.com"):
-        return path.startswith("/images")
-    if host.endswith("mojeek.com"):
-        return path.startswith("/images")
-    if host == "image.baidu.com":
-        return True
-    if host == "pic.sogou.com":
-        return True
-    if host.endswith("naver.com"):
-        return have("where") == "image" or path.startswith("/image-search")
-    if host.endswith("startpage.com"):
-        return path.startswith(("/sp/search", "/do/search")) and have("cat") == "images"
-    if host == "go.mail.ru":
-        return path.startswith("/search_images")
-    return False
+__all__ = ["ENGINES", "WebSearch", "START_URL", "is_image_search_url"]
 
 
 class WebSearch(QWidget):
     """Строка поиска + встроенный браузер + чекбоксы на плитках + сбор ссылок.
+
+    Браузер ленивый: QWebEngineView создаётся при первом показе вкладки
+    или первом действии, требующем страницы (см. _ensure_view). В фоновой
+    вкладке поиск запоминается (self._pending_url) и выполняется при
+    показе — программа не плодит процессы Chromium впустую.
 
     У части поисковиков выдача открыта не в главной странице, а во вложенном
     фрейме (Mail.ru показывает Яндекс.Картинки внутри go.mail.ru) — поэтому
@@ -175,29 +130,81 @@ class WebSearch(QWidget):
         bar.addWidget(self.btn_save)
         bar.addWidget(self.btn_clear)
 
-        self.view = QWebEngineView()
-        self.view.setUrl(QUrl("https://ya.ru/images/"))
-        self.view.loadFinished.connect(self._on_load_finished)
-        # SPA-переходы (новый поиск изнутри страницы Google/DDG) меняют URL
-        # без перезагрузки — инъекция идемпотентна, ставим чекбоксы и на неё
-        self.view.urlChanged.connect(self._on_url_changed)
-        # упавший процесс отрисовки (OOM, песочница, драйвер) — перезапускаем
-        self._reload_tries = 0
-        self.view.page().renderProcessTerminated.connect(self._on_render_gone)
+        # Браузер НЕ создаётся здесь: QWebEngineView — целый процесс Chromium,
+        # он появится при первом показе вкладки или первом действии (см.
+        # _ensure_view). Приложение стартует мгновенно при любом количестве
+        # восстановленных вкладок, «Найти везде» не плодит десятки процессов.
+        self._view = None         # QWebEngineView | None (ленивый браузер)
+        self._pending_url = ""    # поиск фоновой вкладки — выполнится при показе
+        self._reload_tries = 0    # счётчик аварийных перезапусков рендера
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         layout.addLayout(bar)
-        layout.addWidget(self.view, 1)
 
-        # счётчик отмеченных плиток — лёгкий опрос страницы
+        # счётчик отмеченных плиток — лёгкий опрос страницы (вместе с браузером)
         self._checked_count = 0
         self._poll = QTimer(self)
         self._poll.setInterval(700)
         self._poll.timeout.connect(self._poll_checked_count)
-        self._poll.start()
         i18n.signals.changed.connect(self._retranslate)
+
+    # ---------- ленивый встроенный браузер ----------
+
+    def _ensure_view(self):
+        """Создать QWebEngineView при первой необходимости (и вернуть его).
+
+        До этого момента вкладка стоит ровно столько, сколько весит её
+        панель инструментов: ни процесса Chromium, ни сетевой активности.
+        Начальная страница — отложенный поиск фоновой вкладки, если он был,
+        иначе START_URL.
+        """
+        if self._view is not None:
+            return self._view
+        from PySide6.QtWebEngineWidgets import QWebEngineView   # ленивый импорт
+        view = QWebEngineView()
+        start, self._pending_url = (self._pending_url or START_URL), ""
+        view.setUrl(QUrl(start))
+        view.loadFinished.connect(self._on_load_finished)
+        # SPA-переходы (новый поиск изнутри страницы Google/DDG) меняют URL
+        # без перезагрузки — инъекция идемпотентна, ставим чекбоксы и на неё
+        view.urlChanged.connect(self._on_url_changed)
+        # упавший процесс отрисовки (OOM, песочница, драйвер) — перезапускаем
+        view.page().renderProcessTerminated.connect(self._on_render_gone)
+        # watchdog: страница, не открывшаяся за 45 с, останавливается —
+        # вкладка никогда не крутит «вечную загрузку»
+        webengine.attach_load_watchdog(view)
+        self._view = view
+        self.layout().addWidget(view, 1)
+        self._poll.start()
+        return view
+
+    @property
+    def view(self):
+        """Встроенный браузер вкладки (создаётся при первом обращении)."""
+        return self._ensure_view()
+
+    def current_url(self) -> QUrl:
+        """Адрес браузера вкладки; пустой QUrl, если браузер ещё не создан."""
+        return self._view.url() if self._view is not None else QUrl()
+
+    def open_url(self, url: str) -> None:
+        """Открыть адрес во встроенном браузере вкладки.
+
+        Фоновая вкладка (ещё без браузера) просто запомнит адрес — загрузка
+        начнётся при первом показе: шторма одновременных загрузок нет.
+        """
+        if self._view is None and not self.isVisible():
+            self._pending_url = url
+            return
+        self._pending_url = ""
+        self._ensure_view().load(QUrl(url))
+
+    def showEvent(self, event) -> None:  # noqa: N802 (Qt API)
+        """Первый показ вкладки — единственный момент, где запускается Chromium."""
+        super().showEvent(event)
+        self._ensure_view()
 
     # ---------- действия ----------
 
@@ -223,7 +230,7 @@ class WebSearch(QWidget):
             self.query.setFocus()
             return
         template = self.engine_meta()[1]
-        self.view.load(QUrl(template.format(quote_plus(text))))
+        self.open_url(template.format(quote_plus(text)))
 
     def collect(self) -> None:
         def emit(parts: list) -> None:
@@ -270,9 +277,11 @@ class WebSearch(QWidget):
 
     def clear_checked(self) -> None:
         """Снять все отметки с плиток на текущей странице выдачи."""
-        for target in (self._serp_frames() or [self._main_frame()]):
-            uncheck_all_selections(target)
-        # мгновенный отклик кнопок, не дожидаясь следующего опроса (700 мс)
+        if self._view is not None:
+            for target in (self._serp_frames() or [self._main_frame()]):
+                uncheck_all_selections(target)
+        # мгновенный отклик кнопок, не дожидаясь следующего опроса (700 мс) —
+        # даже если браузер ещё не создан (снимать не с чего, но кнопки гасим)
         self._on_poll_result(0)
 
     # ---------- внутреннее ----------
@@ -281,21 +290,21 @@ class WebSearch(QWidget):
         if not urls:
             self._info_no_links()
             return
-        self.images_found.emit(urls, self.view.url().toString())
+        self.images_found.emit(urls, self.current_url().toString())
 
     def _on_checked(self, items: list[dict]) -> None:
         best = [it["best"] for it in items if it.get("best")]
         if not best:
             self._info_no_checked()
             return
-        self.images_found.emit(best, self.view.url().toString())
+        self.images_found.emit(best, self.current_url().toString())
 
     def _on_checked_save(self, items: list[dict]) -> None:
         best = [it["best"] for it in items if it.get("best")]
         if not best:
             self._info_no_checked()
             return
-        self.save_requested.emit(best, self.view.url().toString())
+        self.save_requested.emit(best, self.current_url().toString())
 
     def _info_no_checked(self) -> None:
         QMessageBox.information(self, "Image Hunter", tr("ws.no_checked"))
@@ -306,8 +315,14 @@ class WebSearch(QWidget):
     # ---------- фреймы выдачи (Mail.ru показывает Яндекс во вложенном фрейме) ----------
 
     def _main_frame(self):
-        """Главный фрейм встроенного браузера (QWebEngineFrame)."""
-        return self.view.page().mainFrame()
+        """Главный фрейм встроенного браузера (QWebEngineFrame).
+
+        Браузер мог ещё не создаться (ленивый запуск) — тогда None,
+        и вызывающий код просто не найдёт фреймов выдачи.
+        """
+        if self._view is None:
+            return None
+        return self._view.page().mainFrame()
 
     def _serp_frames(self) -> list:
         """Все фреймы, где сейчас открыта выдача картинок.
@@ -318,6 +333,8 @@ class WebSearch(QWidget):
         картинок известного поисковика.
         """
         out = []
+        if self._view is None:
+            return out
         try:
             stack = [self._main_frame()]
         except Exception:
@@ -348,7 +365,12 @@ class WebSearch(QWidget):
         ссылку на колбэк ``runJavaScript`` у фрейма — без нашей ссылки его
         собирает сборщик мусора, и результат никогда не приходит.
         """
-        targets = self._serp_frames() or [self._main_frame()]
+        targets = self._serp_frames()
+        if not targets:
+            mf = self._main_frame()
+            if mf is None:
+                return    # браузер ещё не создан — собирать не с чего
+            targets = [mf]
         parts: list = []
         state = {"pending": len(targets), "done": False, "cbs": []}
 
@@ -382,7 +404,7 @@ class WebSearch(QWidget):
         if not ok:
             return
         self._reload_tries = 0    # страница загрузилась — счётчик аварийных перезапусков обнулён
-        url = self.view.url().toString()
+        url = self.current_url().toString()
         if not is_image_search_url(url):
             return
         # выдача может быть во вложенном фрейме (Mail.ru), который грузится
@@ -412,20 +434,21 @@ class WebSearch(QWidget):
                 return
         except Exception:
             pass
-        if self._reload_tries >= 2 or self.view.url().isEmpty():
+        if self._view is None or self._reload_tries >= 2 \
+                or self._view.url().isEmpty():
             return
         self._reload_tries += 1
         applog.event("log.event.render_gone", code=exit_code)
-        QTimer.singleShot(1000, self.view.reload)
+        QTimer.singleShot(1000, self._view.reload)
 
     def _poll_checked_count(self) -> None:
-        if not self.isVisible():
+        if self._view is None or not self.isVisible():
             return
         # Вне выдачи картинок дерево фреймов не обходим: пустой обход дёргает
         # браузерные IPC каждые 700 мс просто так, а на не-выдаче чекбоксов
         # нет — счётчик обнуляем без похода в браузер (как раньше давал
         # запрос к главной странице: __IH_CB_COUNT там не существует → 0).
-        if not is_image_search_url(self.view.url().toString()):
+        if not is_image_search_url(self._view.url().toString()):
             self._on_poll_result(0)
             return
         targets = self._serp_frames() or [self._main_frame()]
