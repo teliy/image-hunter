@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import re
 from urllib.parse import parse_qs, urlparse
 
 # (полное имя в списке, шаблон поиска, короткое имя вкладки, фирменный цвет бренда)
@@ -37,11 +38,18 @@ ENGINES: list[tuple[str, str, str, str]] = [
      "Sogou", "#FF6A00"),
     ("Naver Картинки", "https://search.naver.com/search.naver?where=image&query={}",
      "Naver", "#03C75A"),
-    ("Mail.ru Картинки", "https://go.mail.ru/search_images?q={}",
+    # mail.ru/search?type=images — конечный адрес: go.mail.ru/search_images
+    # теперь редиректит сюда (портал поиска Mail.ru объединён), а выдача
+    # картинок открывается вложенным фреймом yandex.ru/images внутри
+    ("Mail.ru Картинки", "https://mail.ru/search?text={}&type=images",
      "Mail.ru", "#005FF9"),
 ]
 
 _YANDEX_HOSTS = ("ya.ru", "yandex.ru", "yandex.com", "yandex.by", "yandex.kz", "yandex.uz")
+
+# www.google.de, google.co.uk, google.com.br… — Google сам переезжает между
+# национальными доменами, список TLD не сузишь; udm=2 всё равно обязателен
+_GOOGLE_HOST_RE = re.compile(r"(^|\.)google\.[a-z.]{2,6}$")
 
 
 def is_image_search_url(url: str) -> bool:
@@ -59,7 +67,7 @@ def is_image_search_url(url: str) -> bool:
     if host.endswith("duckduckgo.com"):
         # выдача картинок: iax/ia (актуально) или iar (старые сохранённые ссылки)
         return "images" in (have("ia"), have("iax"), have("iar"))
-    if host.endswith(("google.com", "google.ru", "google.by", "google.kz", "google.com.ua")):
+    if _GOOGLE_HOST_RE.search(host):
         return (query.get("udm") or [""])[0] == "2" or path.startswith("/imgres")
     if host.endswith("bing.com"):
         return path.startswith("/images")
@@ -77,4 +85,9 @@ def is_image_search_url(url: str) -> bool:
         return path.startswith(("/sp/search", "/do/search")) and have("cat") == "images"
     if host == "go.mail.ru":
         return path.startswith("/search_images")
+    # Mail.ru объединил поисковый портал: go.mail.ru/search_images редиректит
+    # на mail.ru/search?...&type=images, выдача — вложенный фрейм Яндекса.
+    # Без type=images это обычный веб-поиск — там чекбоксов быть не должно.
+    if host == "mail.ru" or host.endswith(".mail.ru"):
+        return path.startswith("/search") and have("type") == "images"
     return False

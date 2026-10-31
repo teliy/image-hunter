@@ -41,6 +41,7 @@ from app.core.extractor import (
     collect_image_urls,
     fetch_checked_selections,
     inject_checkbox_ui,
+    run_js,
     uncheck_all_selections,
 )
 from app.core.i18n import tr
@@ -61,9 +62,11 @@ class WebSearch(QWidget):
     показе — программа не плодит процессы Chromium впустую.
 
     У части поисковиков выдача открыта не в главной странице, а во вложенном
-    фрейме (Mail.ru показывает Яндекс.Картинки внутри go.mail.ru) — поэтому
-    инъекция чекбоксов, опрос отметок и сбор ссылок выполняются во всех
-    фреймах-выдачах (см. _serp_frames), а не только на самой странице.
+    фрейме (Mail.ru: mail.ru/search — фрейм yandex.ru/images внутри, туда же
+    редиректит старый go.mail.ru/search_images) — поэтому инъекция чекбоксов,
+    опрос отметок и сбор ссылок выполняются во всех фреймах-выдачах (см.
+    _serp_frames), а не только на самой странице, и НЕ привязаны к адресу
+    главной страницы: страница-обёртка сама выдачей не является.
     """
 
     images_found = Signal(list, str)  # (ссылки, URL страницы-источника)
@@ -137,6 +140,10 @@ class WebSearch(QWidget):
         self._view = None         # QWebEngineView | None (ленивый браузер)
         self._pending_url = ""    # поиск фоновой вкладки — выполнится при показе
         self._reload_tries = 0    # счётчик аварийных перезапусков рендера
+        self._poll_tick = 0       # тики опроса отметок (для редких обходов фреймов)
+        self._frames_scan_url = ""  # адрес страницы, для которой обходили фреймы
+        self._frames_scan_hit = False  # нашли ли там фреймы-выдачи
+        self._box_log_key = None  # дедупликация диагностической строки журнала
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -328,7 +335,7 @@ class WebSearch(QWidget):
         """Все фреймы, где сейчас открыта выдача картинок.
 
         У большинства поисковиков это главный фрейм; у Mail.ru — вложенный
-        фрейм yandex.ru/images/search внутри go.mail.ru. Обходим дерево
+        фрейм yandex.ru/images/search внутри mail.ru/search. Обходим дерево
         фреймов (mainFrame().children()) и отбираем те, чей URL — страница
         картинок известного поисковика.
         """
@@ -397,27 +404,71 @@ class WebSearch(QWidget):
 
     def _inject_serp(self) -> None:
         """Инъекция чекбоксов во все фреймы-выдачи (идемпотентно)."""
-        for fr in self._serp_frames():
+        frames = self._serp_frames()
+        if not frames:
+            return
+        for fr in frames:
             inject_checkbox_ui(fr)
+        self._log_boxes(frames)
+
+    def _log_boxes(self, frames: list) -> None:
+        """Диагностика в журнал: сколько плиток с чекбоксами установлено.
+
+        Одна строка на каждое новое значение счётчика в пределах одной
+        страницы — по ней в отчёте пользователя видно, дошла ли инъекция
+        до выдачи и сколько плиток распознано (случай «чекбоксов нет
+        вовсе» отлаживается без угадывания).
+        """
+        url = self.current_url().toString()
+        state = {"n": 0, "left": len(frames)}
+        cbs: list = []   # ссылки на колбэки (иначе GC убивает их для фреймов)
+
+        def make_cb():
+            def cb(value):
+                try:
+                    state["n"] += int(value or 0)
+                except (TypeError, ValueError):
+                    pass
+                state["left"] -= 1
+                if state["left"] > 0:
+                    return
+                key = (url, state["n"])
+                if key == self._box_log_key:
+                    return
+                self._box_log_key = key
+                if state["n"] > 0:
+                    applog.event("log.event.serp_boxes",
+                                 count=state["n"], frames=len(frames))
+                else:
+                    applog.event("log.event.serp_boxes_zero",
+                                 frames=len(frames))
+            cbs.append(cb)
+            return cb
+
+        for fr in frames:
+            try:
+                run_js(fr, "window.__IH_CB_COUNT || 0", make_cb())
+            except Exception:
+                state["left"] -= 1
 
     def _on_load_finished(self, ok: bool) -> None:
         if not ok:
             return
         self._reload_tries = 0    # страница загрузилась — счётчик аварийных перезапусков обнулён
-        url = self.current_url().toString()
-        if not is_image_search_url(url):
-            return
-        # выдача может быть во вложенном фрейме (Mail.ru), который грузится
-        # ПОСЛЕ страницы-обёртки; плитки часто дорисовываются несколько секунд
-        # (Google) — инъекция идемпотентна, повторяем несколько раз
+        # Инъекция НЕ привязана к адресу страницы-обёртки: выдача может быть
+        # во вложенном фрейме (Mail.ru: mail.ru/search -> фрейм yandex.ru/images),
+        # поэтому гейт по главному URL здесь вреден — _serp_frames сама находит
+        # фреймы-выдачи, а на страницах без выдачи инъекция просто не делает
+        # ничего. Плитки часто дорисовываются несколько секунд (Google) —
+        # инъекция идемпотентна, повторяем несколько раз.
         for ms in (0, 1500, 3500, 7000, 12000):
             QTimer.singleShot(ms, self._inject_serp)
 
     def _on_url_changed(self, url: QUrl) -> None:
         """Новый поиск/вертикаль без перезагрузки страницы — тоже выдача."""
-        if not is_image_search_url(url.toString()):
-            return
-        # идемпотентно: если чекбоксы уже стоят — просто пройдётся скан
+        # без гейта по адресу (см. _on_load_finished): редиректы обёрток
+        # (go.mail.ru -> mail.ru/search) тоже приходят сюда, а решать, выдача
+        # ли это, должен разбор фреймов, а не адрес главной страницы
         self._inject_serp()
         for ms in (1500, 4000, 9000):
             QTimer.singleShot(ms, self._inject_serp)
@@ -444,14 +495,26 @@ class WebSearch(QWidget):
     def _poll_checked_count(self) -> None:
         if self._view is None or not self.isVisible():
             return
-        # Вне выдачи картинок дерево фреймов не обходим: пустой обход дёргает
-        # браузерные IPC каждые 700 мс просто так, а на не-выдаче чекбоксов
-        # нет — счётчик обнуляем без похода в браузер (как раньше давал
-        # запрос к главной странице: __IH_CB_COUNT там не существует → 0).
-        if not is_image_search_url(self._view.url().toString()):
-            self._on_poll_result(0)
-            return
-        targets = self._serp_frames() or [self._main_frame()]
+        main = self._view.url().toString()
+        if is_image_search_url(main):
+            targets = self._serp_frames() or [self._main_frame()]
+        else:
+            # Страница-обёртка (Mail.ru): сама она не выдача, но выдача открыта
+            # во вложенном фрейме yandex.ru/images. Обходить дерево фреймов
+            # каждые 700 мс дорого (IPC с браузером) — обход при смене адреса
+            # и раз в ~7 с (фрейм с выдачей появляется с задержкой); на прочих
+            # страницах опрос остаётся бесплатным.
+            self._poll_tick += 1
+            if main != self._frames_scan_url or self._poll_tick % 10 == 0:
+                self._frames_scan_url = main
+                self._frames_scan_hit = bool(self._serp_frames())
+            if not self._frames_scan_hit:
+                self._on_poll_result(0)
+                return
+            targets = self._serp_frames()
+            if not targets:
+                self._on_poll_result(0)
+                return
         counts: dict = {}
         cbs: list = []   # ссылки на колбэки (иначе GC убивает их для фреймов)
 

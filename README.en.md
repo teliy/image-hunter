@@ -58,6 +58,18 @@ The Log diagnostics (⏱ lines and "⚠ The UI did not respond") showed that on 
 
 **6. Honest wording in the Log.** Slow operations from worker threads are marked "⏱ SLOW (in background, UI stays alive)", while "…this blocks the UI" remains only for operations that actually stalled the GUI thread — the log shows at a glance where the freeze was.
 
+## Checkboxes on Google and Mail.ru work again (v0.7.3)
+
+Neither case is "broken outright" — both search engines changed their markup, so the checkbox injection stopped reaching the tiles:
+
+**1. Mail.ru unified its search portal.** The address `go.mail.ru/search_images` now redirects to `mail.ru/search?...&type=images`, and the image results themselves open in a nested `yandex.ru/images` frame inside. The old gate "inject only if the main page IS a results page" cut Mail.ru off for good: the wrapper address is not a results page. Now SERP frames are looked up regardless of the wrapper address: injection and the checked-counter work on any page that has a results frame inside, and the Mail.ru engine entry opens the final address `mail.ru/search?text=…&type=images` directly (no extra redirect).
+
+**2. Google changed its tile markup again.** Google's hashed class names change from release to release, and any single-class selector stops matching sooner or later. Instead of playing the class-name lottery, the checkbox now "climbs" by quality: if the container does not look like a tile and the best candidate is just a thumbnail, the scan walks up the parents and takes the minimal wrapper that knows the true original (the `/imgres?imgurl=…` anchor) — but never a wrapper that swallows neighboring tiles. One checkbox per tile, and the "best" is still the original.
+
+**3. Diagnostics in the Journal.** After the injection the log gets a line "Image SERP: tiles with checkboxes: N (frames: M)"; if no tiles were recognized — "Image SERP found, but no checkbox tiles were recognized… please send this log to the developer": the next "checkboxes gone" report immediately tells whether the injection arrived and how many tiles were recognized.
+
+Additionally, `udm=2` counts as a results page on any national Google domain (google.de, google.co.uk, …) — Google moves between them on its own; the checkbox scan is isolated per tile (one broken tile no longer wrecks the whole scan).
+
 ## Features
 
 **📁 My Pictures** — local viewer:
@@ -91,7 +103,9 @@ The Log diagnostics (⏱ lines and "⚠ The UI did not respond") showed that on 
 - **checkboxes on result tiles**: mark the images you need with orange ticks — a counter appears on the button, and “Download checked” downloads the full-size originals (for Yandex the `origUrl` is taken — the same file that opens when you click the preview, e.g. `avatars.mds.yandex.net/get-mpic/…/orig`; for other engines — the original from the tile link parameters);
 - checkboxes work with the current DuckDuckGo markup (2025): tiles without familiar class names, and “originals” from the Bing cache that have no file extension are recognized and marked;
 - checkboxes also work with the current Google Images markup (udm=2): extension-less `encrypted-tbn0.gstatic.com`/`googleusercontent` thumbnails are recognized, lazy tiles whose picture loads after rendering get their tick, and continuous page re-rendering no longer delays the checkboxes;
-- checkboxes also work with the current Brave markup (extension-less `imgs.search.brave.com` proxy thumbnails — the true original is unwrapped from the base64 in the URL path), Sogou (tile classes and the `drag-img` attribute) and Mail.ru (results live in a nested frame — checkboxes and collection work inside frames too);
+- checkboxes also work with the current Brave markup (extension-less `imgs.search.brave.com` proxy thumbnails — the true original is unwrapped from the base64 in the URL path), Sogou (tile classes and the `drag-img` attribute) and Mail.ru (results live in a nested frame — checkboxes and collection work inside frames too). Mail.ru has unified its search portal: go.mail.ru/search_images now redirects to mail.ru/search?type=images — that address is recognized as a results page as well, and the injection is no longer tied to the wrapper page URL;
+- when a search engine changes its tile markup (Google rotates hashed class names regularly), the checkbox "climbs" from the thumbnail to the nearest wrapper that knows the true original — ticks and originals are not lost;
+- the Journal shows checkbox diagnostics: how many tiles got ticks on the results page (or "none recognized" — please send the log to the developer);
 - checkboxes pick up tiles loaded while scrolling the endless feed;
 - **“✕ Clear checks”** — removes all orange ticks with one click (enabled when there is at least one);
 - **“💾 Save to folder”** — checked tiles are converted to the selected format (WebP, PNG, JPEG, BMP, TIFF — the picker sits next to the button and is remembered) and saved to the folder open on the “My Pictures” tab: the first file is `name.ext`, then `name-1.ext`, `name-2.ext`… **Existing files are never overwritten:** occupied names are skipped and the name is re-checked right before writing — if `name.webp` and `name-2.webp` already exist, the new files become `name-1.webp` and `name-3.webp`. Transparency is flattened onto white for JPEG/BMP, EXIF rotation is respected. The name is asked on save (default — the search query); if no folder is open, the app offers to pick one; saved files appear in the viewer immediately.

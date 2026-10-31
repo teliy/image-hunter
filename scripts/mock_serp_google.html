@@ -35,6 +35,15 @@
   <!-- плитка 3: ленивая — src появится позже (проверка attributes-observer'а) -->
   <div class="tile"><img id="late-img" alt="3"></div>
 
+  <!-- плитка 4: хешированные классы, которых НЕТ в списке селекторов (Google
+       регулярно меняет разметку), а якорь с imgurl — соседняя ветка, не
+       обёртка миниатюры. Первым корнем здесь будет <img>: скан должен
+       подняться до обёртки div и взять оригинал из imgurl (подъём хоста). -->
+  <div class="plainHash2026">
+    <g-img><img src="https://encrypted-tbn3.gstatic.com/images?q=tbn:plain1&amp;s" alt="4"></g-img>
+    <a href="https://www.google.com/imgres?imgurl=https%3A%2F%2Fexample-parts.com%2Fpic5.jpg&amp;imgrefurl=https%3A%2F%2Fexample-parts.com%2Fpage5&amp;docid=X5&amp;tbnid=Y5"></a>
+  </div>
+
   <!-- не-картинка: чекбокса быть не должно -->
   <p><a href="https://example.com/some/page">Just a web result</a></p>
 

@@ -542,6 +542,19 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ru": "Страница не открылась за {sec} с — загрузка остановлена: {url}",
         "en": "Page did not load within {sec} s — load stopped: {url}",
         "zh": "页面在 {sec} 秒内未加载完成——已停止加载:{url}"},
+    "log.event.serp_boxes": {
+        "ru": "Выдача: плиток с чекбоксами: {count} (фреймов: {frames})",
+        "en": "Image SERP: tiles with checkboxes: {count} (frames: {frames})",
+        "zh": "图片搜索结果:带复选框的图块:{count}(框架:{frames})"},
+    "log.event.serp_boxes_zero": {
+        "ru": "Выдача найдена, но плиток для чекбоксов не распознано (фреймов: "
+              "{frames}) — поисковик сменил разметку. Пришлите этот журнал "
+              "разработчику.",
+        "en": "Image SERP found, but no checkbox tiles were recognized (frames: "
+              "{frames}) — the search engine changed its markup. Please send "
+              "this log to the developer.",
+        "zh": "已找到搜索结果页,但未识别出可加复选框的图块(框架:{frames})"
+              "——搜索引擎更改了页面结构。请将此日志发送给开发者。"},
     "log.event.sandbox_off": {
         "ru": "Ядро Linux запрещает пользовательские пространства имён — встроенный "
               "браузер работает без песочницы Chromium (иначе вкладки циклически "

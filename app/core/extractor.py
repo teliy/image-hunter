@@ -233,7 +233,10 @@ CHECKBOX_INIT_JS = r"""
   };
 
   // Кандидаты-«оригиналы» внутри одного элемента выдачи.
-  const collectCandidates = (root) => {
+  // Возвращает записи {u: url, s: score}, отсортированные по убыванию
+  // «качества» (оригиналы — выше, запасные миниатюры — ниже); оценка нужна
+  // процедуре подъёма хоста (см. scan).
+  const collectCandidateRecs = (root) => {
     const out = [];
     const seen = new Map();
     // root и его потомки: querySelectorAll не видит атрибуты самого root
@@ -378,8 +381,9 @@ CHECKBOX_INIT_JS = r"""
 
     out.forEach((rec) => { if (/\/orig(\/|$|\?)/i.test(rec.u)) rec.s += 15; });
     out.sort((a, b) => b.s - a.s);
-    return out.map((rec) => rec.u);
+    return out;
   };
+  const collectCandidates = (root) => collectCandidateRecs(root).map((rec) => rec.u);
 
   const SEL = new Map(); // элемент-плитка -> { cands, cb, input, checked }
 
@@ -451,6 +455,7 @@ CHECKBOX_INIT_JS = r"""
         roots.add(host);
       });
     roots.forEach((host) => {
+      try {
       if (host.dataset.ihCbDone === 'ok') return;
       // не вешаем чекбокс на всю страницу или общий контейнер плиток
       if (host === document.body || host === document.documentElement) {
@@ -471,17 +476,46 @@ CHECKBOX_INIT_JS = r"""
         });
         if (dup) { host.dataset.ihCbDone = 'dup'; return; }
       }
-      const cands = collectCandidates(host);
-      if (!cands.length) { delete host.dataset.ihCbDone; return; } // ленивые картинки — попробуем позже
+      const recs = collectCandidateRecs(host);
+      if (!recs.length) { delete host.dataset.ihCbDone; return; } // ленивые картинки — попробуем позже
       if (!matched) {
+        // Поисковики (Google в первую очередь) регулярно меняют хешированные
+        // классы плиток — селектор перестал совпадать, и хостом становится
+        // случайный внутренний элемент (обычно голый <img>). Тогда лучшим
+        // кандидатом остаётся только миниатюра, а настоящий оригинал прячется
+        // в якоре-обёртке (/imgres?imgurl=… у Google, u= у DDG…). Поднимаемся
+        // от хоста к минимальной обёртке, которая ЗНАЕТ оригинал: пока у
+        // кандидата слабая оценка (одна миниатюра), перебираем родителей,
+        // но не выше тех, что захватывают чужие <img> (соседние плитки)
+        // или содержат настоящую плитку по селектору.
+        let bestHost = host, bestRecs = recs, bestScore = recs[0].s;
+        // количество <img> считаем включительно с самим элементом: у голого
+        // <img> querySelectorAll('img') пуст, и guard всегда срабатывал бы
+        const imgCount = (el) =>
+          (el.matches && el.matches('img') ? 1 : 0)
+          + el.querySelectorAll('img').length;
+        let probe = host;
+        for (let hop = 0; hop < 8; hop++) {
+          const p = probe.parentElement;
+          if (!p || p === document.body || p === document.documentElement) break;
+          if (imgCount(p) !== imgCount(host)) break;
+          if (p.matches(ITEM_SEL) || p.querySelectorAll(ITEM_SEL).length > 0) break;
+          const pc = collectCandidateRecs(p);
+          const ps = pc.length ? pc[0].s : -1;
+          if (ps > bestScore) { bestHost = p; bestRecs = pc; bestScore = ps; }
+          probe = p;
+        }
+        if (bestHost !== host) { host = bestHost; recs = bestRecs; }
         let same = false;
         SEL.forEach((rec, h) => {
-          if (h !== host && !h.contains(host) && !host.contains(h) && rec.cands[0] === cands[0]) same = true;
+          if (h !== host && !h.contains(host) && !host.contains(h) && rec.cands[0] === recs[0].u) same = true;
         });
         if (same) { host.dataset.ihCbDone = 'dup'; return; }
       }
+      const cands = recs.map((rec) => rec.u);
       host.dataset.ihCbDone = 'ok';
       attach(host, cands);
+      } catch (e) {}   // одна битая плитка не должна рушить весь скан
     });
     refresh();
   };
@@ -540,7 +574,10 @@ CHECKBOX_INIT_JS = r"""
   const schedule = () => {
     clearTimeout(pend);
     const wait = Math.max(0, lastScan + 400 - Date.now());
-    pend = setTimeout(() => { lastScan = Date.now(); scan(); }, wait);
+    pend = setTimeout(() => {
+      lastScan = Date.now();
+      try { scan(); } catch (e) {}   // скан из таймера — без защиты падал бы молча
+    }, wait);
   };
   const startObserver = () => {
     const b = document.body || document.documentElement;

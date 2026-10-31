@@ -13,7 +13,9 @@
    ленивые плитки (src появляется позже — attributes-observer) и шторм
    мутаций не мешают появлению чекбоксов;
 9. все 11 поисковиков: шаблон каждой вкладки — страница картинок,
-   веб-выдача этих же поисковиков — нет;
+   веб-выдача этих же поисковиков — нет; конечный адрес Mail.ru
+   (mail.ru/search?type=images — туда редиректит go.mail.ru) и Google
+   на национальных доменах (google.de/co.uk…) считаются выдачей;
 10. выдача Brave: прокси-миниатюры imgs.search.brave.com без расширения —
    оригинал распаковывается из base64 пути, иконки-фавиконы отбрасываются;
 11. выдача Sogou: плитки img-layout/img-height, картинка в атрибуте drag-img
@@ -391,8 +393,12 @@ def run_google_mock_test() -> None:
     2. ленивые плитки получают src ПОЗЖЕ отрисовки — смену атрибута
        childList-observer не видел;
     3. миниатюры gstatic/googleusercontent без расширения отбрасывались
-       looksImage — у плиток без якоря imgurl не оставалось кандидатов.
-    Проверяем все три исправления.
+       looksImage — у плиток без якоря imgurl не оставалось кандидатов;
+    4. Google регулярно меняет хешированные классы плиток: когда селектор
+       перестаёт совпадать, хостом становится голый <img>, и оригинал из
+       якоря-соседа не попадает в кандидаты — теперь хост поднимается до
+       обёртки, знающей оригинал (подъём хоста по качеству кандидата).
+    Проверяем все четыре исправления.
     """
     from PySide6.QtCore import QEventLoop
     from PySide6.QtWidgets import QApplication
@@ -411,7 +417,7 @@ def run_google_mock_test() -> None:
     wait_ms(900)
 
     n_boxes = run_js(view.page(), "document.querySelectorAll('.ih-cb input').length")
-    check("чекбоксы на первых 2 плитках Google", n_boxes == 2, f"найдено: {n_boxes}")
+    check("чекбоксы на первых 3 плитках Google", n_boxes == 3, f"найдено: {n_boxes}")
 
     in_img = run_js(view.page(), "document.querySelectorAll('img .ih-cb').length")
     check("чекбокс никогда не внутри <img>", in_img == 0, f"внутри img: {in_img}")
@@ -428,7 +434,7 @@ def run_google_mock_test() -> None:
     run_js(view.page(), CLICK_ALL_JS)
     wait_ms(200)
     count = run_js(view.page(), "window.__IH_CB_COUNT || 0")
-    check("счётчик отмеченных == 2", count == 2, f"{count}")
+    check("счётчик отмеченных == 3", count == 3, f"{count}")
 
     got: dict = {}
     loop = QEventLoop()
@@ -443,8 +449,9 @@ def run_google_mock_test() -> None:
     expected = {
         "https://example-parts.com/pic1.jpg",                  # imgurl якоря
         "https://lh3.googleusercontent.com/pw/ABFCqux7dZm0w=s500",  # миниатюра без расширения
+        "https://example-parts.com/pic5.jpg",                  # imgurl через подъём хоста
     }
-    check("оригинал из imgurl; миниатюра googleusercontent принята",
+    check("оригиналы: imgurl, googleusercontent, подъём хоста",
           bests == expected,
           f"лишние: {bests - expected}; не хватает: {expected - bests}")
 
@@ -468,7 +475,7 @@ def run_google_mock_test() -> None:
     wait_ms(1600)   # шторм ещё идёт — при debounce плитка была бы непомеченной
     n_storm = run_js(view.page(), "document.querySelectorAll('.ih-cb input').length")
     check("плитка, добавленная во время шторма мутаций, получила чекбокс",
-          n_storm == 3, f"найдено: {n_storm}")
+          n_storm == 4, f"найдено: {n_storm}")
     run_js(view.page(), "clearInterval(window.__storm)")
 
     # --- ленивая плитка: src появляется позже отрисовки ---
@@ -476,7 +483,7 @@ def run_google_mock_test() -> None:
           "'https://encrypted-tbn2.gstatic.com/images?q=tbn:late2&s'")
     wait_ms(1600)   # смену атрибута подхватывает attributes-observer
     n_late = run_js(view.page(), "document.querySelectorAll('.ih-cb input').length")
-    check("ленивая плитка (поздний src) получила чекбокс", n_late == 4,
+    check("ленивая плитка (поздний src) получила чекбокс", n_late == 5,
           f"найдено: {n_late}")
 
     got2: dict = {}
@@ -520,6 +527,20 @@ def run_engines_test() -> None:
               is_image_search_url(tpl.format("cats")) and color.startswith("#"),
               tpl)
 
+    # Mail.ru объединил портал: go.mail.ru/search_images редиректит на
+    # mail.ru/search?...&type=images (выдача — фрейм Яндекса внутри) —
+    # конечный адрес обязан считаться выдачей, иначе чекбоксов не будет;
+    # Google мигрирует между национальными доменами — udm=2 принимаем
+    # с любого google.*
+    positives = [
+        "https://mail.ru/search?text=cats&type=images",
+        "https://mail.ru/search?autologin=no&text=cats&mstatid=&type=images&q=cats",
+        "https://www.google.co.uk/search?q=cats&udm=2",
+        "https://www.google.de/search?q=cats&udm=2&hl=ru",
+    ]
+    for u in positives:
+        check(f"выдача картинок: {u}", is_image_search_url(u), u)
+
     negatives = [
         "https://www.google.com/search?q=cats",            # веб-выдача Google
         "https://search.brave.com/search?q=cats",
@@ -529,6 +550,8 @@ def run_engines_test() -> None:
         "https://www.baidu.com/s?wd=cats",
         "https://www.sogou.com/web?query=cats",
         "https://go.mail.ru/search?q=cats",
+        "https://mail.ru/search?text=cats",                # веб-поиск Mail.ru (без type=images)
+        "https://mail.ru/",                                # портал без поиска
         "https://example.com/?q=cats",
         # поисковики, убранные из списка: страницы картинок больше не считаются
         "https://images.search.yahoo.com/search/images?p=cats",
@@ -673,11 +696,13 @@ def run_sogou_mock_test() -> None:
 def run_frame_mock_test() -> None:
     """Mail.ru: выдача во вложенном фрейме — чекбоксы и «Скачать отмеченные».
 
-    go.mail.ru/search_images не содержит плиток: выдача — вложенный фрейм
-    (в реале yandex.ru/images/search, в моке — локальный файл). Раньше
-    инъекция шла только в главную страницу, и на Mail.ru чекбоксов не было
-    вовсе. Проверяем: инъекция доходит до дочернего фрейма, а сбор
-    отмеченных (_gather_serp) забирает их именно оттуда.
+    mail.ru/search?type=images (сейчас именно туда редиректит
+    go.mail.ru/search_images) не содержит плиток: выдача — вложенный фрейм
+    yandex.ru/images/search. Раньше инъекция шла только в главную страницу,
+    а в 0.7.x гейт по главному URL (mail.ru/search — не выдача) и вовсе
+    блокировал инъекцию — чекбоксов не было вовсе. Проверяем: инъекция
+    доходит до дочернего фрейма, а сбор отмеченных (_gather_serp) забирает
+    их именно оттуда.
     """
     from PySide6.QtCore import QEventLoop
     from PySide6.QtWidgets import QApplication
