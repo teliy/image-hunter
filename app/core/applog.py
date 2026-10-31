@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import threading
 import time
 import traceback
 
@@ -210,7 +211,14 @@ class _Timed:
         slow = self._slow_ms is not None and ms >= self._slow_ms
         if not (self._always or self._forced or slow or exc_type is not None):
             return False          # быстрая рутина — журнал не засоряем
-        key = "log.event.timing_slow" if slow else "log.event.timing"
+        if slow:
+            # формулировка зависит от потока: медленный блок в GUI-потоке
+            # заминает весь интерфейс, в рабочем — только саму задачу
+            key = ("log.event.timing_slow"
+                   if threading.current_thread() is threading.main_thread()
+                   else "log.event.timing_slow_worker")
+        else:
+            key = "log.event.timing"
         level = logging.WARNING if slow else logging.ERROR if exc_type else logging.INFO
         _log(level, _tr(key, op=self._op, ms=ms, extra=extra(**self._kv)))
         return False
@@ -220,6 +228,19 @@ def timed(op: str, slow_ms: int | None = None,
           always: bool = True, **kv) -> _Timed:
     """Замерить длительность блока и написать её в «Журнал» (см. _Timed)."""
     return _Timed(op, slow_ms=slow_ms, always=always, **kv)
+
+
+def slow_event(op: str, ms: int, **kv) -> None:
+    """Строка «⏱ МЕДЛЕННО» для замера вне with-блока (фоновые задачи).
+
+    Формулировка зависит от потока: в GUI-потоке медленная операция
+    заминает весь интерфейс («это блокирует интерфейс»), в рабочем —
+    только саму задачу («фоном, интерфейс жив») — по журналу сразу
+    видно, замерил ли GUI-поток или задача в фоне.
+    """
+    main = threading.current_thread() is threading.main_thread()
+    key = "log.event.timing_slow" if main else "log.event.timing_slow_worker"
+    _log(logging.WARNING, _tr(key, op=op, ms=ms, extra=extra(**kv)))
 
 
 class _UiWatchdog(QObject):

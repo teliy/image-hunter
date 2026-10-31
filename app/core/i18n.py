@@ -215,6 +215,10 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ru": "Нечего удалять — выделите картинки в ленте",
         "en": "Nothing to delete — select images in the strip first",
         "zh": "没有可删除的内容 — 请先在缩略图条中选择图片"},
+    "viewer.delete_busy": {
+        "ru": "Удаляю файлы…", "en": "Deleting files…", "zh": "正在删除文件…"},
+    "viewer.folder_reading": {
+        "ru": "Читаю папку…", "en": "Reading folder…", "zh": "正在读取文件夹…"},
     "viewer.del_done": {
         "ru": "Удалено в корзину: {n}", "en": "Moved to Recycle Bin: {n}", "zh": "已移入回收站：{n}"},
     "viewer.del_done_err": {
@@ -641,6 +645,10 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ru": "⏱ МЕДЛЕННО: {op} — {ms} мс, это блокирует интерфейс{extra}",
         "en": "⏱ SLOW: {op} — {ms} ms, this blocks the UI{extra}",
         "zh": "⏱ 缓慢：{op} —— {ms} 毫秒，这会阻塞界面{extra}"},
+    "log.event.timing_slow_worker": {
+        "ru": "⏱ МЕДЛЕННО (фоном, интерфейс жив): {op} — {ms} мс{extra}",
+        "en": "⏱ SLOW (in background, UI stays alive): {op} — {ms} ms{extra}",
+        "zh": "⏱ 缓慢（后台执行，界面正常）：{op} —— {ms} 毫秒{extra}"},
     "log.event.ui_freeze": {
         "ru": "⚠ Интерфейс не отвечал ≈{ms} мс — GUI-поток был заблокирован. "
               "Что происходило перед этим — см. строки ⏱ выше",

@@ -6,6 +6,7 @@ import hashlib
 import os
 import random
 import re
+import shiboken6
 import stat
 import sys
 import tempfile
@@ -73,6 +74,34 @@ IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".avif", ".avifs
 THUMB = 160
 TREE_WIDTH = 230
 THUMB_CACHE_MAX = 256 * 1024 * 1024   # предел кэша миниатюр на диске
+_RESTORE_MAX_FILES = 2000   # автопоказ последней папки: больше — только вручную
+_TREE_TOKEN_ROLE = Qt.ItemDataRole.UserRole + 2   # жетон фоновой догрузки узла
+
+# сетевость дисков уже выясненное (кэш): буква диска -> DRIVE_REMOTE
+_REMOTE_DRIVE_CACHE: dict[str, bool] = {}
+
+
+def _is_remote_path(path: str) -> bool:
+    """Сетевой ли путь: подключённый диск (WebDAV, SMB) на Windows.
+
+    Чтение таких файлов идёт через отдельный узкий пул (v0.7.2): когда
+    сервер подвис, ждут одна-две задачи, а не весь пул сразу — локальные
+    миниатюры продолжают грузиться. На других ОС путь считается локальным:
+    чтение файла обычным I/O отпускает GIL и интерфейс не трогает."""
+    if sys.platform != "win32" or not path:
+        return False
+    try:
+        root = os.path.splitdrive(os.path.abspath(path))[0]
+        if len(root) < 2:
+            return False
+        remote = _REMOTE_DRIVE_CACHE.get(root)
+        if remote is None:
+            import ctypes
+            remote = ctypes.windll.kernel32.GetDriveTypeW(root + "\\") == 4
+            _REMOTE_DRIVE_CACHE[root] = remote
+        return remote
+    except Exception:                       # noqa: BLE001 — не получилось — считаем локальным
+        return False
 
 # виртуальные файловые системы и точки монтирования, которые не показываем в дереве
 _VIRTUAL_FS = {
@@ -199,6 +228,19 @@ def _remove_forever(path: str) -> tuple[bool, str]:
         return False, str(exc)
 
 
+def _trash_file(path: str) -> tuple[bool, str]:
+    """Перенести файл в корзину средствами Qt (вызывается из рабочего потока)."""
+    try:
+        if not os.path.isfile(path):
+            return False, tr("viewer.del_missing")
+        res = QFile.moveToTrash(path)
+        # PySide6 может вернуть bool или (bool, новый путь) — сминаем оба вида
+        ok = bool(res[0]) if isinstance(res, tuple) else bool(res)
+        return ok, "" if ok else tr("viewer.del_failed")
+    except Exception as exc:       # noqa: BLE001
+        return False, str(exc)
+
+
 # ---------- фоновые миниатюры с постоянным кэшем на диске ----------
 
 class _ThumbSignals(QObject):
@@ -292,9 +334,8 @@ class _ThumbTask(QRunnable):
         self.signals.ready.emit(self.gen, self.row, img)
         ms = round((time.perf_counter() - t0) * 1000)
         if ms >= 400:   # долгое чтение/декодирование файла (сеть, большой файл) — в журнал
-            applog.event("log.event.timing_slow",
-                         op=tr("perf.op.thumb_decode", name=os.path.basename(self.path)),
-                         ms=ms, extra=applog.extra(source="cache" if cache_hit else "decode"))
+            applog.slow_event(tr("perf.op.thumb_decode", name=os.path.basename(self.path)),
+                              ms, source="cache" if cache_hit else "decode")
 
     def _store(self, cache_path: str, img: QImage) -> None:
         tmp = f"{cache_path}.{os.getpid()}.tmp"
@@ -336,11 +377,89 @@ class _ViewTask(QRunnable):
         t0 = time.perf_counter()
         img, err = imgload.load_file(self.path)
         ms = round((time.perf_counter() - t0) * 1000)
-        if ms >= 400:   # медленное декодирование (сеть, AVIF, огромный файл) — в журнал
-            applog.event("log.event.timing_slow",
-                         op=tr("perf.op.view_decode", name=os.path.basename(self.path)),
-                         ms=ms, extra=applog.extra(err=err) if err else "")
+        if ms >= 400:   # медленное чтение/декодирование (сеть, AVIF, огромный файл) — в журнал
+            name = os.path.basename(self.path)
+            applog.slow_event(tr("perf.op.view_decode", name=name), ms,
+                              **({"err": err} if err else {}))
         self.signals.ready.emit(self.row, self.path, img, err)
+
+
+# ---------- фоновое чтение папок и дерева (сеть не заминает интерфейс, v0.7.2) ----------
+
+class _ScanSignals(QObject):
+    done = Signal(int, str, list)      # поколение, папка, [(путь, размер, mtime)]
+
+
+class _ScanTask(QRunnable):
+    """Скан папки с картинками в рабочем потоке (см. load_folder).
+
+    os.scandir по сети (WebDAV, SMB) может занять секунды, а на подвисшем
+    сервере — сетевой тайм-аут целиком; в GUI-потоке это было бы зависанием
+    окна целиком (v0.7.2: открытие папки стало асинхронным)."""
+
+    def __init__(self, folder: str, gen: int, signals: _ScanSignals):
+        super().__init__()
+        self.folder, self.gen, self.signals = folder, gen, signals
+
+    def run(self) -> None:
+        t0 = time.perf_counter()
+        entries = scan_image_entries(self.folder)
+        ms = round((time.perf_counter() - t0) * 1000)
+        if ms >= 400:   # медленный скан (сеть, проснувшийся диск) — в журнал
+            applog.slow_event(tr("perf.op.scan_folder"), ms, files=len(entries))
+        self.signals.done.emit(self.gen, self.folder, entries)
+
+
+class _SubdirsSignals(QObject):
+    ready = Signal(int, object, str, list)   # жетон, узел дерева, папка, подпапки
+
+
+class _SubdirsTask(QRunnable):
+    """Чтение подпапок узла дерева в рабочем потоке (см. _populate_children)."""
+
+    def __init__(self, path: str, token: int, item, signals: _SubdirsSignals):
+        super().__init__()
+        self.path, self.token, self.item = path, token, item
+        self.signals = signals
+
+    def run(self) -> None:
+        t0 = time.perf_counter()
+        subs = LocalViewer._list_subdirs(self.path)
+        ms = round((time.perf_counter() - t0) * 1000)
+        if ms >= 400:   # медленное чтение папки (сеть) — в журнал
+            applog.slow_event(
+                tr("perf.op.populate_children",
+                   folder=os.path.basename(self.path) or self.path),
+                ms, dirs=len(subs))
+        self.signals.ready.emit(self.token, self.item, self.path, subs)
+
+
+class _DeleteSignals(QObject):
+    done = Signal(int, list)   # фаза (1 — корзина, 2 — окончательно), [(путь, ok, ошибка)]
+
+
+class _DeleteTask(QRunnable):
+    """Удаление файлов в рабочем потоке (см. delete_selected_files).
+
+    По сети moveToTrash/remove может подвиснуть на сетевой тайм-аут —
+    в GUI-потоке это было бы зависанием окна с диалогом «Не отвечает».
+    """
+
+    def __init__(self, paths: list[str], perm: bool, phase: int,
+                 signals: _DeleteSignals):
+        super().__init__()
+        self.paths, self.perm, self.phase = paths, perm, phase
+        self.signals = signals
+
+    def run(self) -> None:
+        results: list[tuple[str, bool, str]] = []
+        for p in self.paths:
+            if self.perm:
+                ok, err = _remove_forever(p)
+            else:
+                ok, err = _trash_file(p)
+            results.append((p, ok, err))
+        self.signals.done.emit(self.phase, results)
 
 
 # ---------- фоновый поиск по имени ----------
@@ -950,6 +1069,24 @@ class LocalViewer(QWidget):
         self._visible_timer.setSingleShot(True)
         self._visible_timer.setInterval(120)
         self._visible_timer.timeout.connect(self._queue_visible_thumbs)
+        # асинхронное чтение папок и дерева: скан по сети не должен
+        # останавливать интерфейс (v0.7.2)
+        self._scan_signals = _ScanSignals()
+        self._scan_signals.done.connect(self._on_scan_done)
+        self._subdir_signals = _SubdirsSignals()
+        self._subdir_signals.ready.connect(self._on_subdirs_ready)
+        self._delete_signals = _DeleteSignals()
+        self._delete_signals.done.connect(self._on_delete_done)
+        # узкий пул для сетевых файлов: пока сервер подвис, ждут одна-две
+        # задачи — локальные миниатюры продолжают грузиться (v0.7.2)
+        self._net_pool = QThreadPool(self)
+        self._net_pool.setMaxThreadCount(2)
+        self._tree_token = 0
+        self._scan_sync_tree = False
+        self._scan_restore = False
+        self._delete_perm = False
+        self._delete_phase = 0
+        self._delete_t0 = 0.0
 
         self.refresh_drives()
         self._restore_last_folder()
@@ -1004,8 +1141,11 @@ class LocalViewer(QWidget):
         st.setValue("viewer/last_query", self.search_edit.text().strip())
 
     def refresh(self) -> None:
-        """Пересканировать текущую папку (например, после сохранения в неё WebP)."""
-        if self._folder and os.path.isdir(self._folder):
+        """Пересканировать текущую папку (например, после сохранения в неё WebP).
+
+        Скан идёт в рабочем потоке (см. load_folder) — пропавшая папка
+        или подвисшая сеть не замораживают окно."""
+        if self._folder:
             self.load_folder(self._folder)
 
     # ---------- запасной перенос файлов: через буфер обмена ----------
@@ -1032,24 +1172,16 @@ class LocalViewer(QWidget):
         if n:
             applog.event("log.event.select_all", n=n)
 
-    def _delete_row_forever(self, r: int, path: str,
-                            deleted: set[str]) -> bool:
-        """Окончательно удалить файл в строке r; успех — убрать из ленты."""
-        ok, err = _remove_forever(path)
-        if ok:
-            deleted.add(os.path.normcase(os.path.normpath(path)))
-            self.list.takeItem(r)
-        else:
-            applog.error(tr("log.event.trash_err", path=path, err=err))
-        return ok
-
     def delete_selected_files(self) -> None:
         """Удалить выделенные файлы (Delete или контекстное меню).
 
         По умолчанию — в корзину (восстановимо). На дисках без корзины
         (сетевые, часть съёмных) сразу предлагается окончательное удаление;
-        если корзина откажала — тоже спрашивается второе подтверждение.
-        Каждая неудача пишется в журнал с причиной."""
+        если корзина отказала — тоже спрашивается второе подтверждение.
+        Каждая неудача пишется в журнал с причиной. Само удаление идёт в
+        рабочем потоке (_DeleteTask): по сети файл может удаляться секунды,
+        а на подвисшем сервере — сетевой тайм-аут целиком, и окно не должно
+        замереть «Не отвечает» посреди диалога (v0.7.2)."""
         items = [it for it in self.list.selectedItems() if it.data(Qt.UserRole)]
         if not items:
             self.status.setText(tr("viewer.del_nothing"))
@@ -1070,52 +1202,52 @@ class LocalViewer(QWidget):
                 QMessageBox.StandardButton.No)
         if ans != QMessageBox.StandardButton.Yes:
             return
-        rows = sorted({self.list.row(it) for it in items}, reverse=True)
-        trash_n, perm_n, failed_n = 0, 0, 0
-        deleted: set[str] = set()
-        retry: list[tuple[int, str]] = []   # корзина отказала — попытка 2
-        t_del = time.perf_counter()   # удаление может тянуться (сеть, корзина) — замерим
-        for r in rows:
-            path = self._paths[r]
-            if force_perm:
-                if self._delete_row_forever(r, path, deleted):
-                    perm_n += 1
-                else:
-                    failed_n += 1
-                continue
-            ok, err = False, ""
-            try:
-                if not os.path.isfile(path):
-                    err = tr("viewer.del_missing")
-                else:
-                    res = QFile.moveToTrash(path)
-                    # PySide6 может вернуть bool или (bool, новый путь) — сминаем оба вида
-                    ok = bool(res[0]) if isinstance(res, tuple) else bool(res)
-                    if not ok:
-                        err = tr("viewer.del_failed")
-            except Exception as exc:   # noqa: BLE001 — причина уйдёт в журнал
-                err = str(exc)
+        self._delete_perm = force_perm
+        self._start_delete(paths, phase=1)
+
+    def _start_delete(self, paths: list[str], phase: int) -> None:
+        """Запустить фазу удаления в рабочем потоке (1 — корзина, 2 — навсегда)."""
+        self._delete_phase = phase
+        self._delete_t0 = time.perf_counter()
+        self._set_view_busy(True)
+        self.status.setText(tr("viewer.delete_busy"))
+        QThreadPool.globalInstance().start(
+            _DeleteTask(paths, perm=(phase == 2 or self._delete_perm),
+                        phase=phase, signals=self._delete_signals))
+
+    def _on_delete_done(self, phase: int, results: list) -> None:
+        """Файлы удалены в фоне — обновить ленту; при отказе корзины спросить
+        про окончательное удаление и запустить вторую фазу."""
+        trash_n = perm_n = failed_n = 0
+        retry: list[str] = []               # корзина отказала — попытка 2
+        for path, ok, err in results:
             if ok:
-                trash_n += 1
-                deleted.add(os.path.normcase(os.path.normpath(path)))
-                self.list.takeItem(r)
+                if phase == 1:
+                    trash_n += 1
+                else:
+                    perm_n += 1
+                self._remove_row_by_path(path)
             else:
                 applog.error(tr("log.event.trash_err", path=path, err=err))
-                retry.append((r, path))
-        if retry:
+                failed_n += 1
+                if phase == 1:
+                    retry.append(path)
+        if phase == 1 and retry and not self._delete_perm:
+            self._set_view_busy(False)
             ans = QMessageBox.question(
                 self, tr("viewer.del_perm_ask_title"),
                 tr("viewer.del_perm_ask", n=len(retry)),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No)
             if ans == QMessageBox.StandardButton.Yes:
-                for r, path in retry:
-                    if self._delete_row_forever(r, path, deleted):
-                        perm_n += 1
-                    else:
-                        failed_n += 1
-            else:
-                failed_n += len(retry)
+                self._start_delete(retry, phase=2)
+                return
+        self._finish_delete(trash_n, perm_n, failed_n)
+
+    def _finish_delete(self, trash_n: int, perm_n: int, failed_n: int) -> None:
+        """Итог удаления: события в журнал, статус, порядок строк в ленте."""
+        self._delete_phase = 0
+        self._set_view_busy(False)
         done = trash_n + perm_n
         if done:
             if trash_n:
@@ -1124,17 +1256,13 @@ class LocalViewer(QWidget):
             if perm_n:
                 applog.event("log.event.delete_perm", n=perm_n,
                              folder=self._folder or "—")
-            keep = [i for i, p in enumerate(self._paths)
-                    if os.path.normcase(os.path.normpath(p)) not in deleted]
-            self._paths = [self._paths[i] for i in keep]
-            self._meta = [self._meta[i] for i in keep]
             # строки сместились — кэш миниатюр по номерам строк больше не верен
             self._pending_thumbs.clear()
             self._thumb_queued.clear()
             self._thumb_done_rows.clear()
             self._schedule_visible_thumbs()
             if self.list.currentItem() is None and self.list.count():
-                self.list.setCurrentRow(min(rows[-1], self.list.count() - 1))
+                self.list.setCurrentRow(0)
             elif not self.list.count():
                 self._pixmap = None
                 self._movie = None
@@ -1150,9 +1278,23 @@ class LocalViewer(QWidget):
             self.status.setText(tr("viewer.del_done", n=done))
         if done or failed_n:
             applog.event("log.event.timing", op=tr("perf.op.delete_files"),
-                         ms=round((time.perf_counter() - t_del) * 1000),
+                         ms=round((time.perf_counter() - self._delete_t0) * 1000),
                          extra=applog.extra(trash=trash_n, perm=perm_n,
                                             fail=failed_n))
+
+    def _remove_row_by_path(self, path: str) -> None:
+        """Убрать удалённый файл из ленты и из _paths (строки смещаются)."""
+        norm = os.path.normcase(os.path.normpath(path))
+        for r in range(self.list.count()):
+            it = self.list.item(r)
+            p = it.data(Qt.UserRole)
+            if p and os.path.normcase(os.path.normpath(p)) == norm:
+                self.list.takeItem(r)
+                break
+        keep = [i for i, p in enumerate(self._paths)
+                if os.path.normcase(os.path.normpath(p)) != norm]
+        self._paths = [self._paths[i] for i in keep]
+        self._meta = [self._meta[i] for i in keep]
 
     def _list_context_menu(self, pos) -> None:
         """Правый клик на ленте: открыть / копировать выделенные файлы."""
@@ -1174,28 +1316,44 @@ class LocalViewer(QWidget):
 
     def load_folder(self, folder: str, entries: list[tuple[str, int, float]] | None = None,
                     sync_tree: bool = False) -> None:
-        # таймер вокруг всей загрузки: по журналу видно, что именно долго —
-        # скан папки (диск/сеть) или построение ленты
+        """Открыть папку (или показать готовые entries, например из поиска).
+
+        Когда entries не переданы, папку сканирует рабочий поток
+        (_ScanTask): os.scandir по сети может занять секунды, а на подвисшем
+        сервере — сетевой тайм-аут целиком; GUI-поток не ждёт — лента на это
+        время очищается, статус показывает «Читаю папку…» (v0.7.2)."""
+        self._cancel_search()
+        self._folder = folder
+        self._gen += 1
+        # не начатые задачи прошлой папки больше не нужны
+        self._pool.clear()
+        self._net_pool.clear()
+        self._paths = []
+        self._meta = []
+        self.list.clear()
+        self._pending_thumbs.clear()
+        self._thumb_queued.clear()
+        self._thumb_done_rows.clear()
+        self._thumbs_done = 0
+        self._pixmap = None
+        self._movie = None
+        if entries is None:
+            self._scan_restore = False
+            self._scan_sync_tree = sync_tree
+            self.status.setText(tr("viewer.folder_reading"))
+            QThreadPool.globalInstance().start(
+                _ScanTask(folder, self._gen, self._scan_signals))
+            return
+        self._fill_folder(folder, entries, sync_tree)
+
+    def _fill_folder(self, folder: str, entries: list[tuple[str, int, float]],
+                     sync_tree: bool) -> None:
+        """Построить ленту миниатюр из готового списка файлов (GUI-поток)."""
+        # таймер вокруг построения ленты: по журналу видно, что именно долго
         with applog.timed(tr("perf.op.load_folder")) as t:
-            self._cancel_search()
-            self._folder = folder
-            if entries is None:
-                with applog.timed(tr("perf.op.scan_folder")) as ts:
-                    entries = scan_image_entries(folder)
-                    ts.set(files=len(entries))
-            self._gen += 1
-            self._pool.clear()   # не начатые миниатюры прошлой папки больше не нужны
             self._paths = [p for p, _s, _m in entries]
             self._meta = [(s, m) for _p, s, m in entries]
             applog.event("log.event.folder", folder=folder, n=len(self._paths))
-            self.list.clear()
-            self._pending_thumbs.clear()
-            self._thumb_queued.clear()
-            self._thumb_done_rows.clear()
-            self._thumbs_done = 0
-            self._pixmap = None
-            self._movie = None
-
             placeholder = QPixmap(THUMB, THUMB)
             placeholder.fill(Qt.darkGray)
 
@@ -1219,6 +1377,18 @@ class LocalViewer(QWidget):
             if sync_tree:
                 self._sync_tree(folder)
             t.set(files=len(self._paths))
+
+    def _on_scan_done(self, gen: int, folder: str,
+                      entries: list[tuple[str, int, float]]) -> None:
+        """Скан папки завершён в фоне — построить ленту, если папка ещё актуальна."""
+        if gen != self._gen or folder != self._folder:
+            return                       # пока сканировали, выбрали другую папку
+        if self._scan_restore and not (0 < len(entries) <= _RESTORE_MAX_FILES):
+            self._scan_restore = False   # автопоказ: пустая/гигантская — молча пропускаем
+            return
+        self._scan_restore = False
+        self._fill_folder(folder, entries, self._scan_sync_tree)
+        self._scan_sync_tree = False
 
     # ---------- поиск по имени (без wildcard: подстрока, регистр не важен) ----------
 
@@ -1369,7 +1539,7 @@ class LocalViewer(QWidget):
             i += 1
             if item.data(0, Qt.ItemDataRole.UserRole) and \
                     not item.data(0, Qt.ItemDataRole.UserRole + 1):
-                self._populate_children(item)   # один scandir на папку
+                self._populate_children_sync(item)   # один scandir на папку
                 budget -= 1
             for j in range(item.childCount()):
                 child = item.child(j)
@@ -1455,6 +1625,7 @@ class LocalViewer(QWidget):
             self._schedule_visible_thumbs()
         else:
             self._pool.clear()            # не начатые задачи больше не нужны
+            self._net_pool.clear()
             self._pending_thumbs.clear()
             self._thumb_queued.clear()    # при повторном включении их можно повторить
             self._thumb_timer.stop()
@@ -1501,8 +1672,12 @@ class LocalViewer(QWidget):
                 continue
             self._thumb_queued.add(row)
             size, mtime = self._meta[row] if row < len(self._meta) else (0, 0.0)
-            self._pool.start(_ThumbTask(self._paths[row], row, self._gen,
-                                        self._thumb_signals, cache_dir, size, mtime))
+            path = self._paths[row]
+            # сетевые файлы — через узкий отдельный пул: пока сервер подвис,
+            # локальные миниатюры продолжают грузиться (v0.7.2)
+            pool = self._net_pool if _is_remote_path(path) else self._pool
+            pool.start(_ThumbTask(path, row, self._gen,
+                                  self._thumb_signals, cache_dir, size, mtime))
 
     # ---------- просмотр ----------
 
@@ -1544,7 +1719,9 @@ class LocalViewer(QWidget):
         self._view_inflight += 1
         self._set_view_busy(True)
         self.status.setText(f"{os.path.basename(path)}  •  {tr('viewer.loading')}")
-        QThreadPool.globalInstance().start(_ViewTask(path, row, self._view_signals))
+        # сетевой файл — через узкий отдельный пул (v0.7.2, см. _is_remote_path)
+        pool = self._net_pool if _is_remote_path(path) else QThreadPool.globalInstance()
+        pool.start(_ViewTask(path, row, self._view_signals))
 
     def _on_view_ready(self, row: int, path: str, img: QImage, err: str) -> None:
         self._view_inflight = max(0, self._view_inflight - 1)
@@ -1675,8 +1852,57 @@ class LocalViewer(QWidget):
         marker.setData(0, Qt.ItemDataRole.UserRole, "")
         return marker
 
-    def _populate_children(self, item: QTreeWidgetItem) -> None:
-        """Ленивая загрузка подпапок на один уровень при раскрытии."""
+    def _populate_children(self, item: QTreeWidgetItem, _col: int = 0) -> None:
+        """Ленивая загрузка подпапок при раскрытии — scandir в рабочем потоке.
+
+        Чтение подпапок по сети (WebDAV, SMB) может занять секунды, а на
+        подвисшем сервере — сетевой тайм-аут целиком, поэтому узел дерева
+        заполняется асинхронно: клик и раскрытие интерфейс не заминают
+        (v0.7.2). Фильтр папок и подсветка текущей папки используют
+        синхронный вариант — им результат нужен немедленно
+        (см. _populate_children_sync)."""
+        if item.data(0, Qt.ItemDataRole.UserRole + 1):  # уже раскрывали / уже сканируем
+            return
+        path = item.data(0, Qt.ItemDataRole.UserRole)
+        if not path:
+            return
+        item.setData(0, Qt.ItemDataRole.UserRole + 1, True)
+        self._tree_token += 1
+        token = self._tree_token
+        item.setData(0, _TREE_TOKEN_ROLE, token)
+        while item.childCount():
+            item.removeChild(item.child(0))   # убираем старую заглушку
+        item.addChild(self._dummy_item())     # узел выглядит раскрываемым, пока читаем
+        QThreadPool.globalInstance().start(
+            _SubdirsTask(path, token, item, self._subdir_signals))
+
+    def _on_subdirs_ready(self, token: int, item, path: str, subs: list) -> None:
+        """Подпапки прочитаны в фоне — достроить узел дерева (узел мог умереть)."""
+        try:
+            if not shiboken6.isValid(item):
+                return                        # дерево уже перестроено (refresh_drives)
+        except RuntimeError:
+            return
+        if item.data(0, _TREE_TOKEN_ROLE) != token:
+            return                            # узел уже перечитали заново
+        while item.childCount():
+            item.removeChild(item.child(0))
+        dir_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon)
+        for sub in subs:
+            child = QTreeWidgetItem([os.path.basename(sub)])
+            child.setData(0, Qt.ItemDataRole.UserRole, sub)
+            child.setIcon(0, dir_icon)
+            child.setToolTip(0, sub)
+            child.addChild(self._dummy_item())
+            item.addChild(child)
+        if self.folder_search.text().strip() and not self._fs_applying:
+            self._apply_folder_filter()       # новые подпапки — тоже под фильтр
+
+    def _populate_children_sync(self, item: QTreeWidgetItem) -> None:
+        """Синхронное чтение подпапок — для фильтра папок и подсветки текущей
+        папки, которым результат нужен немедленно. Обход ограничен бюджетом
+        вызывающего (см. _load_for_filter), но подвисший сервер всё же может
+        задержать вызов — поэтому из кликов он больше не вызывается."""
         if item.data(0, Qt.ItemDataRole.UserRole + 1):  # уже раскрывали
             return
         item.setData(0, Qt.ItemDataRole.UserRole + 1, True)
@@ -1738,16 +1964,18 @@ class LocalViewer(QWidget):
             self.load_folder(path)
 
     def _restore_last_folder(self) -> None:
+        """Автопоказ последней открытой папки: скан в рабочем потоке, чтобы
+        запуск оставался мгновенным даже на сетевом диске (v0.7.2). Пустая
+        или гигантская (> _RESTORE_MAX_FILES) папка молча пропускается."""
         last = QSettings("ImageHunter", "ImageHunter").value("viewer/last_folder", "")
-        if not (last and os.path.isdir(last)):
+        if not last:
             return
-        # авто-открытие только для папок разумного размера, чтобы не тормозить запуск
-        with applog.timed(tr("perf.op.scan_folder"),
-                          always=False, slow_ms=800) as ts:
-            entries = scan_image_entries(last)
-            ts.set(files=len(entries))
-        if 0 < len(entries) <= 2000:
-            self.load_folder(last, entries=entries, sync_tree=True)
+        self._scan_restore = True
+        self._scan_sync_tree = True
+        self._folder = last
+        self._gen += 1
+        QThreadPool.globalInstance().start(
+            _ScanTask(last, self._gen, self._scan_signals))
 
     @staticmethod
     def _is_under(path_n: str, base_n: str) -> bool:
@@ -1774,7 +2002,7 @@ class LocalViewer(QWidget):
             self.tree.scrollToItem(target)
 
     def _expand_towards(self, item: QTreeWidgetItem, folder_n: str):
-        self._populate_children(item)
+        self._populate_children_sync(item)
         item.setExpanded(True)
         for i in range(item.childCount()):
             child = item.child(i)

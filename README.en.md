@@ -42,6 +42,22 @@ The main source of weight and freezes in Image Hunter is the embedded browser of
 
 **5. Search engine data in a separate module.** The engine list, URL templates and SERP recognition moved to `app/core/engines.py` — pure data without UI: reusable anywhere and testable without Qt.
 
+## Network drives and huge folders: freezes eliminated (v0.7.2)
+
+The Log diagnostics (⏱ lines and "⚠ The UI did not respond") showed that on a WebDAV drive (Z:) thumbnails and folder opening froze the whole process for the network timeout (~60 s). Since v0.7.2 no network operation ever touches the GUI thread or Qt file reading:
+
+**1. Images are read with Python I/O and decoded from memory.** `app/core/imgload.py` reads the whole file with a plain `open().read()` first — CPython releases the GIL during the read, so a file stuck on the network blocks only its worker thread while the UI and all other threads keep running. Decoding happens from memory (QImageReader over QBuffer, AVIF via Pillow); the file is also traversed once instead of two-three times like path-based QImageReader (size() + read() + AVIF sniff) — three times fewer round-trips on a network drive.
+
+**2. Folder opening is asynchronous.** The folder scan (os.scandir over the network) runs in a worker thread: clicking a folder or "Open Folder…" instantly clears the strip, shows "Reading folder…", and files appear when ready. You can switch folders while scanning — the stale result is dropped. The auto-shown last folder at startup scans in the background too, so startup stays instant even on a network drive.
+
+**3. The folder tree loads in the background.** Clicking and expanding a node no longer wait for scandir: subfolders appear once read (until then the node still looks expandable). Synchronous reading remains only where the result is needed immediately — the folder filter and highlighting the current folder.
+
+**4. Network thumbnails use a dedicated narrow pool.** Files on mapped drives (Windows, DRIVE_REMOTE — WebDAV/SMB) load through a 2-thread pool: when the server hangs, one or two tasks wait while local thumbnails keep loading. Full-size viewing follows the same scheme.
+
+**5. Deletion runs in the background.** Recycle Bin and permanent deletion are done by a worker thread (dialogs stay in the GUI): deleting many files over the network no longer stops the window. Recycle Bin failures still ask about permanent deletion, as before.
+
+**6. Honest wording in the Log.** Slow operations from worker threads are marked "⏱ SLOW (in background, UI stays alive)", while "…this blocks the UI" remains only for operations that actually stalled the GUI thread — the log shows at a glance where the freeze was.
+
 ## Features
 
 **📁 My Pictures** — local viewer:
