@@ -32,12 +32,11 @@ Image Hunter was written from day one for the scenario “photos live on a netwo
 
 **📁 My Pictures** — local viewer:
 - **drive and folder tree on the left**: mounted drives and devices (free space in the tooltip), quick links “Home” and “Pictures”; folders expand lazily, a click on a folder shows its images right away; the panel width is adjusted with the mouse; the “⟳” button refreshes the drive list (after plugging in a USB stick);
-- **quick folder search**: the “🔍 Search folders…” box above the tree finds a folder by part of its name — inside
-  the folder selected in the tree (at any depth); while nothing is selected — Home, Pictures and all drives;
-  the search scope is shown above the tree and written to the log; matches appear in the tree as the background
-  scan goes (name + parent path in gray), a click opens the folder, Enter opens the first match, Esc resets;
-  case-insensitive, hidden folders are not scanned, results and scan time are capped — even a huge disk cannot
-  freeze the window;
+- **folder filter**: the “🔍 Filter folders…” box above the tree — as you type, the tree keeps only folders whose
+  names contain those letters: the rest are hidden, branches to the matches expand, and a counter above the tree
+  shows how many folders matched; it is instant and does not rescan the disk — the tree just loads more levels
+  within a budget (300 folders or 1.5 s at a time), so even a huge or network disk cannot freeze the window;
+  case-insensitive, a click opens the folder, Enter opens the first match, Esc resets; hidden folders are not shown;
 - **lazy thumbnails** (see the network section above) and the “🖼 Thumbnails” on/off toggle;
 - **multi-select and drag'n'drop**: select images in the strip (Ctrl/Shift, like in Explorer) and drag them into Explorer, e-mail or any other application — the original files are passed on (`text/uri-list`); the drag start is backed by three independent paths (event filter, own mouse-move tracking, built-in Qt mechanics) and every step is written to the Log; **if dragging does not work — a no-drag fallback:** `Ctrl+C` (or right-click → “Copy selected files”), then paste them wherever needed — `Ctrl+V` into Explorer or a browser;
 - **search by file name**: type part of the name — all images in the current folder and all subfolders are found; no masks or stars, case-insensitive, results appear as the scan goes; the **“ignore hyphens”** checkbox matches without hyphens — the query “23542-23523” finds “2354223523” and “23542-23523” alike (part numbers are written with the hyphen elsewhere or not at all); the checkbox state is remembered;

@@ -305,50 +305,25 @@ _STRINGS: dict[str, dict[str, str]] = {
     "viewer.free_space": {
         "ru": "Свободно: {free} из {total}", "en": "Free: {free} of {total}", "zh": "可用：{free} / {total}"},
     "viewer.folders_search_ph": {
-        "ru": "🔍 Поиск папки…", "en": "🔍 Search folders…", "zh": "🔍 搜索文件夹…"},
+        "ru": "🔍 Фильтр папок…", "en": "🔍 Filter folders…", "zh": "🔍 筛选文件夹…"},
     "viewer.folders_search_tip": {
-        "ru": "Быстрый поиск папок по имени. Если в дереве выбрана папка —\n"
-              "поиск идёт только в её подпапках (на любой глубине); если ничего\n"
-              "не выбрано — в Домой, Изображениях и на всех дисках.\n"
-              "Регистр не важен, масок нет. Enter — открыть первую найденную, Esc — сброс.",
-        "en": "Quickly find folders by name. If a folder is selected in the tree,\n"
-              "only its subfolders are searched (any depth); if nothing is selected\n"
-              "— Home, Pictures and all drives.\n"
-              "Case-insensitive, no masks. Enter opens the first match, Esc — reset.",
-        "zh": "按名称快速查找文件夹。如果在树中选择了文件夹，\n"
-              "则仅搜索其子文件夹（任意深度）；如果未选择任何内容，\n"
-              "则搜索主目录、图片和所有磁盘。\n"
-              "不区分大小写，无通配符。回车打开第一个结果，Esc — 重置。"},
-    "viewer.folders_searching": {
-        "ru": "Поиск папок…", "en": "Searching folders…", "zh": "正在搜索文件夹…"},
-    "viewer.folders_searching_in": {
-        "ru": "Поиск папок в «{where}»…",
-        "en": "Searching folders in “{where}”…",
-        "zh": "正在搜索文件夹：{where}…"},
-    "viewer.folders_searching_found": {
-        "ru": "Поиск папок… найдено: {n}",
-        "en": "Searching folders… found: {n}",
-        "zh": "正在搜索文件夹… 已找到：{n}"},
-    "viewer.folders_searching_in_found": {
-        "ru": "Поиск папок в «{where}»… найдено: {n}",
-        "en": "Searching folders in “{where}”… found: {n}",
-        "zh": "正在搜索文件夹：{where}… 已找到：{n}"},
-    "viewer.folders_scope_all": {
-        "ru": "Домой, Изображения и все диски",
-        "en": "Home, Pictures and all drives",
-        "zh": "主目录、图片和所有磁盘"},
+        "ru": "Пока вы вводите буквы, в дереве остаются только папки,\n"
+              "в имени которых они есть — остальные скрываются, а совпавшие\n"
+              "ветки раскрываются. Регистр не важен, масок нет.\n"
+              "Enter — открыть первую найденную, Esc — очистить поле.",
+        "en": "As you type, the tree keeps only folders whose names contain\n"
+              "these letters — the rest are hidden, and matching branches\n"
+              "expand. Case-insensitive, no masks.\n"
+              "Enter opens the first match, Esc clears the field.",
+        "zh": "输入时，树中只保留名称包含这些字母的文件夹\n"
+              "（其余隐藏，匹配的分支自动展开）。\n"
+              "不区分大小写，无通配符。回车打开第一个结果，Esc 清空输入框。"},
     "viewer.folders_found": {
         "ru": "Найдено папок: {n}", "en": "Folders found: {n}", "zh": "已找到文件夹：{n}"},
-    "viewer.folders_found_in": {
-        "ru": "Найдено папок в «{where}»: {n}",
-        "en": "Folders found in “{where}”: {n}",
-        "zh": "在“{where}”中找到文件夹：{n}"},
     "viewer.folders_none": {
         "ru": "Папок с таким именем не найдено",
         "en": "No folders with this name",
         "zh": "未找到同名文件夹"},
-    "viewer.folders_trunc": {
-        "ru": " (показаны первые {n})", "en": " (first {n} shown)", "zh": "（仅显示前 {n} 个）"},
     "viewer.ignore_dash": {
         "ru": "игнорировать дефис", "en": "ignore hyphens", "zh": "忽略连字符"},
     "viewer.ignore_dash_tip": {
@@ -542,14 +517,10 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ru": "Поиск «{q}»: найдено {n}",
         "en": "Search “{q}”: found {n}",
         "zh": "搜索“{q}”：找到 {n}"},
-    "log.event.folder_search": {
-        "ru": "Поиск папок «{q}» запущен (область: {where})",
-        "en": "Folder search “{q}” started (scope: {where})",
-        "zh": "文件夹搜索“{q}”已启动（范围：{where}）"},
-    "log.event.folder_search_done": {
-        "ru": "Поиск папок «{q}»: найдено {n}",
-        "en": "Folder search “{q}”: found {n}",
-        "zh": "文件夹搜索“{q}”：找到 {n}"},
+    "log.event.folder_filter": {
+        "ru": "Фильтр папок «{q}»: найдено {n}",
+        "en": "Folder filter “{q}”: {n} found",
+        "zh": "文件夹筛选“{q}”：找到 {n} 个"},
     "log.event.save_file_err": {
         "ru": "ОШИБКА сохранения: {url} — {err}",
         "en": "SAVE ERROR: {url} — {err}",

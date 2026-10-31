@@ -1,4 +1,9 @@
-"""Оффлайн-тест поиска папок в дереве «Диски и папки».
+"""Оффлайн-тест фильтра папок в дереве «Диски и папки».
+
+Ввод букв скрывает папки, в имени которых их нет: совпавшие папки и их
+предки остаются видимы, ветки к совпавшим раскрываются, счётчик показывается
+над деревом. Дерево ленивое — фильтр сам догружает уровни (с бюджетом папок
+и секунд), чтобы буквы находили и вложенные папки.
 
 Запуск: QT_QPA_PLATFORM=offscreen python scripts/test_folder_search.py
 """
@@ -30,7 +35,7 @@ def check(name: str, cond: bool, extra: str = "") -> None:
         FAILURES.append(name)
 
 
-def wait_until(app, cond, timeout_s: float = 20.0) -> bool:
+def wait_until(app, cond, timeout_s: float = 10.0) -> bool:
     """Крутить цикл событий, пока условие не выполнится (или таймаут)."""
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
@@ -44,6 +49,37 @@ def wait_until(app, cond, timeout_s: float = 20.0) -> bool:
 
 def np(path: str) -> str:
     return os.path.normcase(os.path.normpath(path))
+
+
+def walk_items(item):
+    """Все узлы ПОД item (сам item не возвращается — невидимый корень не папка)."""
+    for j in range(item.childCount()):
+        yield item.child(j)
+        yield from walk_items(item.child(j))
+
+
+def real_paths(viewer) -> set:
+    """Пути всех реальных папок, загруженных в дерево."""
+    return {np(item.data(0, Qt.ItemDataRole.UserRole))
+            for item in walk_items(viewer.tree.invisibleRootItem())
+            if item.data(0, Qt.ItemDataRole.UserRole)}
+
+
+def visible_paths(viewer) -> set:
+    """Пути видимых (не скрытых фильтром) папок."""
+    return {np(item.data(0, Qt.ItemDataRole.UserRole))
+            for item in walk_items(viewer.tree.invisibleRootItem())
+            if item.data(0, Qt.ItemDataRole.UserRole) and not item.isHidden()}
+
+
+def item_by_path(viewer, path: str):
+    """Узел дерева по пути папки."""
+    want = np(path)
+    for item in walk_items(viewer.tree.invisibleRootItem()):
+        p = item.data(0, Qt.ItemDataRole.UserRole)
+        if p and np(p) == want:
+            return item
+    return None
 
 
 class FakeSI:
@@ -85,12 +121,13 @@ def main() -> int:
         return path
 
     target_one = mk("Albums/TargetOne")
-    docs = mk("docs")                     # «выбранная папка» для проверки области поиска
+    docs = mk("docs")
     target_two = mk("docs/TargetTwo")
     deeper = mk("docs/deep/DeeperTarget")
+    photos = mk("photos")
     target_photos = mk("photos/TargetPhotos")
     sub_of_target = mk("photos/TargetPhotos/SubFolder")
-    mk("photos/usual")
+    usual = mk("photos/usual")
     target_file = mk("TargetFile")
     os.makedirs(os.path.join(base, ".hidden/TargetSecret"), exist_ok=True)
     with open(os.path.join(base, "TargetFile.txt"), "w") as f:
@@ -125,125 +162,112 @@ def main() -> int:
     QSettings("ImageHunter", "ImageHunter").setValue("viewer/thumbs", True)
     QSettings("ImageHunter", "ImageHunter").setValue("viewer/last_folder", "")
     QSettings("ImageHunter", "ImageHunter").setValue("viewer/last_query", "")
-    QSettings("ImageHunter", "ImageHunter").setValue("viewer/last_folder", "")
     i18n.set_lang("ru", persist=False)
+
+    # журнал — подменяем, чтобы проверять события
+    events: list[tuple] = []
+    real_log = lv.applog.event
+    lv.applog.event = lambda key, **kw: events.append((key, kw))
 
     viewer = LocalViewer()
     viewer.resize(900, 900)
     viewer.show()
     app.processEvents()
 
-    # 1. корни поиска: Домой + единственный диск
-    roots = viewer._search_roots()
-    check("корни поиска = Домой + диск", np(tmp_root) in map(np, roots) and np(base) in map(np, roots),
-          str(roots))
-
-    # 2. обычное дерево построено из подменённых корней
+    # 1. обычное дерево построено из подменённых корней
     tops = [viewer.tree.topLevelItem(i).data(0, Qt.ItemDataRole.UserRole)
             for i in range(viewer.tree.topLevelItemCount())]
     check("дерево: дом и диск на верхнем уровне",
           np(tmp_root) in map(np, tops) and np(base) in map(np, tops), str(tops))
+    check("счётчик фильтра скрыт, пока поле пустое", not viewer.tree_info.isVisible())
 
-    # 3. поиск: дебаунс + фоновый обход, результаты появляются в дереве
+    # 2. фильтр по дебаунсу (300 мс): «target» находит все 5 папок, включая вложенные
     viewer.folder_search.setText("target")
-    ok = wait_until(app, lambda: viewer._fs_in_search and viewer._fs_handle is None
-                    and viewer._fs_count == 5)
-    check("поиск «target» нашёл все 5 папок", ok,
-          f"in_search={viewer._fs_in_search} count={viewer._fs_count}")
-    got = {viewer.tree.topLevelItem(i).data(0, Qt.ItemDataRole.UserRole)
-           for i in range(viewer.tree.topLevelItemCount())}
-    check("совпадения совпадают с ожидаемыми (регистр не важен)",
-          {np(p) for p in got} == {np(p) for p in expected}, str(got))
+    ok = wait_until(app, lambda: viewer.tree_info.isVisible()
+                    and "5" in viewer.tree_info.text())
+    check("фильтр применился после паузы набора (дебаунс)", ok,
+          viewer.tree_info.text())
+    got = {p for p in visible_paths(viewer)
+           if "target" in os.path.basename(p).lower()}
+    check("«target» нашёл все 5 папок (регистр не важен)",
+          got == {np(p) for p in expected}, str(sorted(got)))
 
-    # 4. фильтры: скрытые папки и файлы не попадают
-    all_got = "\n".join(sorted(got))
-    check("скрытые папки пропущены", ".hidden" not in all_got)
-    check("файлы не попадают в результаты (только папки)", "TargetFile.txt" not in all_got)
+    # 3. несовпадающие папки скрыты, предки совпавших видимы
+    vis = visible_paths(viewer)
+    check("скрытая папка .hidden не загружалась", ".hidden" not in str(vis))
+    check("файлы не попадают в дерево", "TargetFile.txt" not in str(vis))
+    check("непопавшая папка usual скрыта", np(usual) not in vis)
+    check("подпапка без букв скрыта, хотя родитель совпал",
+          np(sub_of_target) not in vis)
+    check("предки совпавших папок видимы",
+          all(np(p) in vis for p in (base, docs, photos,
+                                     os.path.join(base, "Albums"),
+                                     os.path.join(base, "docs", "deep"))))
+    check("верхний уровень без совпадений скрыт", np(tmp_root) not in vis)
+    check("ветка к совпавшей папке раскрылась",
+          item_by_path(viewer, deeper).parent().isExpanded()
+          and item_by_path(viewer, deeper).parent().parent().isExpanded())
+    check("совпавшая папка без совпавших подпапок не раскрывается",
+          not item_by_path(viewer, target_photos).isExpanded())
 
-    # 5. оформление результата: 2 колонки, путь родителя, подсказка, «Найдено папок»
-    check("дерево в режиме результатов (2 колонки)", viewer.tree.columnCount() == 2)
-    first = viewer.tree.topLevelItem(0)
-    check("родительский путь во второй колонке",
-          first.text(1) == os.path.dirname(first.data(0, Qt.ItemDataRole.UserRole)),
-          first.text(1))
-    check("подсказка = полный путь",
-          first.toolTip(0) == first.data(0, Qt.ItemDataRole.UserRole))
-    check("счётчик найденного показан", viewer.tree_info.isVisible()
-          and "5" in viewer.tree_info.text(), viewer.tree_info.text())
-    check("первый результат выделен",
-          viewer.tree.currentItem() is viewer.tree.topLevelItem(0))
+    # 4. оформление: счётчик над деревом, журнал
+    check("счётчик найденного показан", "Найдено папок: 5" in viewer.tree_info.text(),
+          viewer.tree_info.text())
+    check("событие журнала записано",
+          ("log.event.folder_filter", {"q": "target", "n": 5}) in events, str(events[-3:]))
 
-    # 6. клик по результату открывает папку (и поиск не сбрасывается)
-    item_one = next(viewer.tree.topLevelItem(i) for i in range(viewer.tree.topLevelItemCount())
-                    if np(viewer.tree.topLevelItem(i).data(0, Qt.ItemDataRole.UserRole))
-                    == np(target_one))
+    # 5. клик по совпавшей папке открывает её (фильтр не сбрасывается)
+    item_one = item_by_path(viewer, target_one)
     viewer.tree.itemClicked.emit(item_one, 0)
     check("клик по результату открыл папку", viewer.current_folder() == target_one,
           viewer.current_folder())
     check("картинки папки загрузились (1 png)", viewer.list.count() == 1)
-    check("режим поиска не сброшен кликом", viewer._fs_in_search)
+    check("фильтр не сброшен кликом", viewer.tree_info.isVisible())
 
-    # 7. результат можно раскрыть прямо в дереве (ленивые подпапки)
-    photos_item = next(viewer.tree.topLevelItem(i) for i in range(viewer.tree.topLevelItemCount())
-                       if np(viewer.tree.topLevelItem(i).data(0, Qt.ItemDataRole.UserRole))
-                       == np(target_photos))
-    check("родитель вложенной находки виден серым путём",
-          next(viewer.tree.topLevelItem(i) for i in range(viewer.tree.topLevelItemCount())
-               if np(viewer.tree.topLevelItem(i).data(0, Qt.ItemDataRole.UserRole))
-               == np(deeper)).text(1) == os.path.join(base, "docs", "deep"))
-    viewer._populate_children(photos_item)
-    kids = [photos_item.child(i).data(0, Qt.ItemDataRole.UserRole)
-            for i in range(photos_item.childCount())]
-    check("раскрытие результата показывает подпапки", kids == [sub_of_target], f"{kids}")
-
-    # 8. Enter открывает первый (выделенный) результат
-    viewer.tree.setCurrentItem(viewer.tree.topLevelItem(0))
+    # 6. Enter открывает первую совпавшую папку (фильтр применяется сразу,
+    #    не дожидаясь дебаунса)
+    viewer.folder_search.setText("deeper")
     viewer.folder_search.returnPressed.emit()
-    check("Enter открыл первый результат",
-          viewer.current_folder()
-          == viewer.tree.topLevelItem(0).data(0, Qt.ItemDataRole.UserRole),
-          viewer.current_folder())
+    check("Enter открыл единственную совпавшую папку",
+          viewer.current_folder() == deeper, viewer.current_folder())
+    check("после Enter в счётчике 1", "1" in viewer.tree_info.text(),
+          viewer.tree_info.text())
 
-    # 9. смена языка не затирает результаты поиска
+    # 7. смена языка перечитывает дерево и заново применяет фильтр
     i18n.set_lang("en", persist=False)
     app.processEvents()
-    check("после смены языка результаты на месте",
-          viewer._fs_in_search and viewer.tree.topLevelItemCount() == 5)
-    check("счётчик переведён (Folders found: 5)",
-          "Folders found: 5" in viewer.tree_info.text(), viewer.tree_info.text())
-    check("плейсхолдер переведён", "Search folders" in viewer.folder_search.placeholderText())
+    check("счётчик переведён (Folders found: 1)",
+          "Folders found: 1" in viewer.tree_info.text(), viewer.tree_info.text())
+    check("плейсхолдер переведён", "Filter folders" in viewer.folder_search.placeholderText())
     i18n.set_lang("ru", persist=False)
     app.processEvents()
 
-    # 10. очистка поля возвращает обычное дерево и подсвечивает текущую папку
+    # 8. очистка поля возвращает всё дерево
     viewer.folder_search.clear()
     app.processEvents()
-    check("поле очищено — режим поиска выключен", not viewer._fs_in_search)
-    check("дерево снова с одной колонкой", viewer.tree.columnCount() == 1)
     check("счётчик скрыт", not viewer.tree_info.isVisible())
-    tops_after = [viewer.tree.topLevelItem(i).data(0, Qt.ItemDataRole.UserRole)
-                  for i in range(viewer.tree.topLevelItemCount())]
-    check("обычное дерево восстановлено", np(tmp_root) in map(np, tops_after)
-          and np(base) in map(np, tops_after), str(tops_after))
+    loaded = real_paths(viewer)
+    check("все загруженные папки снова видимы", visible_paths(viewer) == loaded,
+          f"{len(loaded)} папок")
+    check("обычное дерево с корнями восстановлено",
+          np(tmp_root) in visible_paths(viewer) and np(base) in visible_paths(viewer))
     cur = viewer.tree.currentItem()
     cur_path = cur.data(0, Qt.ItemDataRole.UserRole) if cur else None
     check("текущая папка подсвечена в дереве", cur_path == viewer.current_folder(),
           f"{cur_path} vs {viewer.current_folder()}")
 
-    # 11. повторный поиск + Esc в поле (фокус в поле) — сброс.
-    #     Выбор папки сбрасываем: имитируем «ничего не выбрано» — глобальный поиск.
-    viewer._folder = ""
+    # 9. Esc в поле чистит фильтр
     viewer.folder_search.setFocus()
     app.processEvents()
     viewer.folder_search.setText("target")
-    ok = wait_until(app, lambda: viewer._fs_handle is None and viewer._fs_count == 5)
-    check("повторный поиск работает", ok, f"count={viewer._fs_count}")
+    wait_until(app, lambda: viewer.tree_info.isVisible())
     viewer._escape_search()
     app.processEvents()
-    check("Esc очистил поле поиска папок", viewer.folder_search.text() == "")
-    check("Esc вернул обычное дерево", not viewer._fs_in_search)
+    check("Esc очистил поле фильтра", viewer.folder_search.text() == "")
+    check("после Esc все папки видимы",
+          visible_paths(viewer) == real_paths(viewer))
 
-    # 12. Esc при фокусе вне поля чистит поиск по имени (прежнее поведение)
+    # 10. Esc вне поля чистит поиск по имени (прежнее поведение)
     viewer.search_edit.setText("заглушка")
     viewer.folder_search.clearFocus()
     viewer.setFocus()
@@ -251,142 +275,108 @@ def main() -> int:
     viewer._escape_search()
     check("Esc вне поля чистит поиск по имени", viewer.search_edit.text() == "")
 
-    # 13. запрос без совпадений: «Папок с таким именем не найдено», дерево пустое
+    # 11. запрос без совпадений: все папки скрыты, сообщение «не найдено»
     viewer.folder_search.setText("нет_такой_папки")
-    ok = wait_until(app, lambda: viewer._fs_handle is None and viewer._fs_in_search
-                    and viewer.tree.topLevelItemCount() == 0)
-    check("без совпадений дерево пустое", ok)
+    wait_until(app, lambda: viewer.tree_info.isVisible()
+               and "не найдено" in viewer.tree_info.text())
+    check("без совпадений все папки скрыты", not visible_paths(viewer))
     check("сообщение «не найдено»", "не найдено" in viewer.tree_info.text(),
           viewer.tree_info.text())
     viewer.folder_search.clear()
     app.processEvents()
 
-    # 14. ⟳ выходит из режима поиска и перечитывает корни
+    # 12. ⟳ снимает фильтр и перечитывает корни
     viewer.folder_search.setText("target")
-    wait_until(app, lambda: viewer._fs_handle is None and viewer._fs_count == 5)
+    wait_until(app, lambda: viewer.tree_info.isVisible())
     viewer._on_tree_refresh_clicked()
     app.processEvents()
-    check("⟳ сбросил поиск и очистил поле",
-          not viewer._fs_in_search and viewer.folder_search.text() == "")
+    check("⟳ сбросил фильтр и очистил поле",
+          viewer.folder_search.text() == "" and not viewer.tree_info.isVisible())
+    check("⟳ вернул корни дерева",
+          np(tmp_root) in visible_paths(viewer) and np(base) in visible_paths(viewer))
 
-    # 15. юнит: пересекающиеся корни — без дублей и без двойного обхода
-    sig = lv._FolderSearchSignals()
-    batches: list[list[str]] = []
-    dones: list[tuple[int, bool]] = []
-    sig.batch.connect(lambda g, items: batches.append(list(items)))
-    sig.done.connect(lambda g, total, trunc: dones.append((total, trunc)))
-    task = lv._FolderSearchTask([base, os.path.join(base, "docs")], "TaRgEt", 1,
-                                sig, lv._SearchHandle())
-    task.run()   # синхронно, в главном потоке
-    flat = [p for b in batches for p in b]
-    check("пересекающиеся корни: дублей нет",
-          dones and dones[0][0] == 5 and len(flat) == 5
-          and len({np(p) for p in flat}) == 5, f"{dones} flat={len(flat)}")
+    # 13. ручное раскрытие при активном фильтре — новые подпапки тоже фильтруются
+    #     (после ⟳ диск уже загружен через _sync_tree, поэтому раскрываем photos)
+    viewer.folder_search.setText("sub")       # дебаунс ещё не истёк
+    viewer._populate_children(item_by_path(viewer, photos))   # «раскрыли» папку вручную
+    app.processEvents()
+    check("раскрытие при фильтре сразу применило фильтр",
+          np(sub_of_target) in visible_paths(viewer)
+          and np(target_photos) in visible_paths(viewer)
+          and np(usual) not in visible_paths(viewer),
+          str(sorted(visible_paths(viewer))))
+    viewer.folder_search.clear()
+    app.processEvents()
 
-    # 16. юнит: усечение выдачи по MAX_RESULTS
-    old_max = lv._FolderSearchTask.MAX_RESULTS
+    # 14. бюджет догрузки: с крошечным бюджетом глубокие папки не находятся,
+    #     но фильтр не виснет; после восстановления бюджета всё находится
+    old_dir_budget, old_time_budget = lv._FS_DIR_BUDGET, lv._FS_TIME_BUDGET
     try:
-        lv._FolderSearchTask.MAX_RESULTS = 2
-        batches.clear()
-        dones.clear()
-        task2 = lv._FolderSearchTask([base], "target", 2, sig, lv._SearchHandle())
-        task2.run()
-        flat2 = [p for b in batches for p in b]
-        check("усечение: найдено ровно 2, помечено как усечённое",
-              dones and dones[0] == (2, True) and len(flat2) == 2, f"{dones}")
+        lv._FS_DIR_BUDGET, lv._FS_TIME_BUDGET = 1, 5.0
+        viewer._folder = ""   # без текущей папки, иначе _sync_tree загрузит ветку в обход бюджета
+        viewer.folder_search.setText("deeper")
+        viewer.refresh_drives()   # свежее дерево; хвостовой вызов применит фильтр
+        app.processEvents()
+        check("бюджет исчерпан: глубокая папка не найдена, сообщение показано",
+              not visible_paths(viewer) and "не найдено" in viewer.tree_info.text(),
+              viewer.tree_info.text())
+        lv._FS_DIR_BUDGET = old_dir_budget
+        viewer._apply_folder_filter()   # повтор: дерево уже частично загружено
+        app.processEvents()
+        check("после восстановления бюджета папка найдена",
+              np(deeper) in visible_paths(viewer)
+              and np(os.path.join(base, "docs", "deep")) in visible_paths(viewer),
+              str(sorted(visible_paths(viewer))))
     finally:
-        lv._FolderSearchTask.MAX_RESULTS = old_max
+        lv._FS_DIR_BUDGET, lv._FS_TIME_BUDGET = old_dir_budget, old_time_budget
+    viewer.folder_search.clear()
+    app.processEvents()
 
-    # 17. юнит: отмена задачи не эмитит done
-    handle3 = lv._SearchHandle()
-    dones.clear()
-    task3 = lv._FolderSearchTask([base], "target", 3, sig, handle3)
-    handle3.cancelled = True
-    task3.run()
-    check("отменённая задача молчит", not dones)
+    # 15. заглушки ленивой загрузки не видны при фильтре (частичная догрузка)
+    lv._FS_DIR_BUDGET = 6
+    viewer._folder = ""
+    viewer.folder_search.setText("target")
+    viewer.refresh_drives()       # хвостовой фильтр загрузит только 6 папок
+    dummies = [item for item in walk_items(viewer.tree.invisibleRootItem())
+               if not item.data(0, Qt.ItemDataRole.UserRole) and not item.isHidden()]
+    check("заглушки скрыты при фильтре", not dummies,
+          str([(d.parent().text(0), d.parent().isHidden()) for d in dummies]))
+    lv._FS_DIR_BUDGET = old_dir_budget
+    viewer._apply_folder_filter()
+    app.processEvents()
+    viewer.folder_search.clear()
+    app.processEvents()
 
-    # 18. новые i18n-ключи есть во всех трёх языках
+    # 16. новые i18n-ключи есть во всех трёх языках
     need = ["viewer.folders_search_ph", "viewer.folders_search_tip",
-            "viewer.folders_searching", "viewer.folders_searching_in",
-            "viewer.folders_searching_found", "viewer.folders_searching_in_found",
-            "viewer.folders_scope_all", "viewer.folders_found",
-            "viewer.folders_found_in", "viewer.folders_none", "viewer.folders_trunc",
-            "log.event.folder_search", "log.event.folder_search_done"]
+            "viewer.folders_found", "viewer.folders_none",
+            "log.event.folder_filter"]
     for key in need:
         langs = i18n._STRINGS.get(key, {})
         check(f"i18n {key}: ru/en/zh",
               all(langs.get(l) for l in ("ru", "en", "zh")), str(sorted(langs)))
+    old = [k for k in i18n._STRINGS
+           if "folder_search" in k or "folders_searching" in k
+           or "folders_scope" in k or "folders_trunc" in k
+           or "folders_found_in" in k]
+    check("старые ключи скан-поиска удалены", not old, str(old))
     check("tr() подставляет {n}", tr("viewer.folders_found", n=7) != "viewer.folders_found")
-    check("tr() подставляет {where}",
-          tr("viewer.folders_searching_in", where="X") != "viewer.folders_searching_in")
+    check("tr() подставляет {q}",
+          tr("log.event.folder_filter", q="X", n=1) != "log.event.folder_filter")
 
-    # 19. поиск по имени ищет только ВНУТРИ выбранной папки, а не по всей системе
-    viewer._folder = ""
-    viewer.load_folder(docs)
-    check("выбранная папка запомнена", viewer.current_folder() == docs,
-          viewer.current_folder())
+    # 17. повторное применение фильтра не перечитывает уже загруженные папки
     viewer.folder_search.setText("target")
-    ok = wait_until(app, lambda: viewer._fs_handle is None and viewer._fs_in_search
-                    and viewer.tree.topLevelItemCount() == 2)
-    check("в выбранной папке найдены только её подпапки (2)", ok,
-          f"count={viewer._fs_count}")
-    got_scope = {viewer.tree.topLevelItem(i).data(0, Qt.ItemDataRole.UserRole)
-                 for i in range(viewer.tree.topLevelItemCount())}
-    check("за пределами выбранной папки ничего не найдено",
-          {np(p) for p in got_scope} == {np(target_two), np(deeper)}, str(got_scope))
-    check("область поиска показана в статусе", "docs" in viewer.tree_info.text(),
-          viewer.tree_info.text())
-
-    # 20. очистка поля возвращает дерево; выбранная папка сохраняется
-    viewer.folder_search.clear()
+    wait_until(app, lambda: viewer.tree_info.isVisible())
+    events.clear()
+    lv.applog.event = lambda key, **kw: events.append((key, kw))  # шум от кликов убран
+    before = real_paths(viewer)
+    viewer._apply_folder_filter()
     app.processEvents()
-    check("очистка вышла из режима поиска", not viewer._fs_in_search)
-    check("выбранная папка сохранилась после поиска", viewer.current_folder() == docs,
-          viewer.current_folder())
-
-    # 21. юнит: задача от выбранного корня не выходит за его пределы
-    batches.clear()
-    dones.clear()
-    task4 = lv._FolderSearchTask([docs], "target", 4, sig, lv._SearchHandle())
-    task4.run()
-    flat4 = [p for b in batches for p in b]
-    check("юнит: обход строго внутри выбранной папки",
-          dones and dones[-1][0] == 2
-          and {np(p) for p in flat4} == {np(target_two), np(deeper)},
-          f"{dones} {flat4}")
-
-    # 22. юнит: в КОРНЕ диска системные и мусорные папки вырезаются —
-    #     именно их обход (C:\Windows\WinSxS, /usr/share…) тормозил глобальный поиск
-    sys_root = tempfile.mkdtemp(prefix="ih_fs_sysroot_")
-    for rel in ("usr/TargetInUsr", "etc/TargetInEtc", "MyPics/TargetOk",
-                "node_modules/TargetJunk", "обычные/TargetUsual"):
-        os.makedirs(os.path.join(sys_root, rel), exist_ok=True)
-    batches.clear(); dones.clear()
-    task5 = lv._FolderSearchTask([sys_root], "target", 5, sig, lv._SearchHandle())
-    task5._disk_roots = {np(sys_root)}   # имитируем корень диска («/» или «C:\»)
-    task5.run()
-    flat5 = [p for b in batches for p in b]
-    check("корень диска: системные (usr, etc) и мусор (node_modules) вырезаны",
-          dones and dones[0][0] == 2
-          and {np(os.path.dirname(p)) for p in flat5}
-          == {np(os.path.join(sys_root, "MyPics")), np(os.path.join(sys_root, "обычные"))},
-          f"{dones} {flat5}")
-
-    # 23. юнит: та же папка БЕЗ статуса «корень диска» — системные имена не режутся
-    batches.clear(); dones.clear()
-    task6 = lv._FolderSearchTask([sys_root], "target", 6, sig, lv._SearchHandle())
-    task6.run()
-    flat6 = [p for b in batches for p in b]
-    check("не-корень диска: usr/etc не вырезаны, node_modules вырезан всегда",
-          dones and dones[0][0] == 4 and len(flat6) == 4
-          and not any("node_modules" in p for p in flat6), f"{dones}")
-
-    # 24. юнит: _is_disk_root различает корень диска и пользовательские пути
-    check("_is_disk_root: «/» — да", lv._is_disk_root("/"))
-    check("_is_disk_root: /home/user — нет", not lv._is_disk_root("/home/user"))
-    check("_is_disk_root: относительный путь — нет", not lv._is_disk_root("pics/cats"))
-    if os.name == "nt":
-        check("_is_disk_root: C:\\ — да", lv._is_disk_root("C:\\"))
+    check("повторный фильтр идентичен (без перезагрузки)",
+          real_paths(viewer) == before and len(before) >= 9, str(len(before)))
+    check("событие журнала на повторном применении",
+          ("log.event.folder_filter", {"q": "target", "n": 5}) in events, str(events))
+    lv.applog.event = real_log
 
     print()
     if FAILURES:
