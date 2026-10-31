@@ -271,20 +271,30 @@ class _ThumbTask(QRunnable):
         self.mtime = mtime
 
     def run(self) -> None:
+        t0 = time.perf_counter()
+        cache_hit = False
+        img = None
         cache_path = ""
         if self.cache_dir:
             key = _thumb_cache_key(self.path, self.size, self.mtime)
             cache_path = os.path.join(self.cache_dir, key + ".png")
             cached = QImage(cache_path)
             if not cached.isNull():
-                self.signals.ready.emit(self.gen, self.row, cached)
-                return
-        img, _err = imgload.load_file(self.path, max_side=THUMB)
+                cache_hit = True
+                img = cached
+        if img is None:
+            loaded, _err = imgload.load_file(self.path, max_side=THUMB)
+            img = loaded
+            if not img.isNull() and cache_path:
+                self._store(cache_path, img)
         if img.isNull():
             return
-        if cache_path:
-            self._store(cache_path, img)
         self.signals.ready.emit(self.gen, self.row, img)
+        ms = round((time.perf_counter() - t0) * 1000)
+        if ms >= 400:   # долгое чтение/декодирование файла (сеть, большой файл) — в журнал
+            applog.event("log.event.timing_slow",
+                         op=tr("perf.op.thumb_decode", name=os.path.basename(self.path)),
+                         ms=ms, extra=applog.extra(source="cache" if cache_hit else "decode"))
 
     def _store(self, cache_path: str, img: QImage) -> None:
         tmp = f"{cache_path}.{os.getpid()}.tmp"
@@ -323,7 +333,13 @@ class _ViewTask(QRunnable):
         self.path, self.row, self.signals = path, row, signals
 
     def run(self) -> None:  # рабочий поток
+        t0 = time.perf_counter()
         img, err = imgload.load_file(self.path)
+        ms = round((time.perf_counter() - t0) * 1000)
+        if ms >= 400:   # медленное декодирование (сеть, AVIF, огромный файл) — в журнал
+            applog.event("log.event.timing_slow",
+                         op=tr("perf.op.view_decode", name=os.path.basename(self.path)),
+                         ms=ms, extra=applog.extra(err=err) if err else "")
         self.signals.ready.emit(self.row, self.path, img, err)
 
 
@@ -373,6 +389,7 @@ class _SearchTask(QRunnable):
         return self.needle in name_l
 
     def run(self) -> None:
+        t0 = time.perf_counter()
         found: list[tuple[str, int, float]] = []
         pending: list[tuple[str, int, float]] = []
         truncated = False
@@ -418,6 +435,11 @@ class _SearchTask(QRunnable):
         if pending:
             self.signals.batch.emit(self.gen, pending)
         self.signals.done.emit(self.gen, len(found), truncated)
+        applog.event("log.event.timing",
+                     op=tr("perf.op.search_scan", q=self.needle),
+                     ms=round((time.perf_counter() - t0) * 1000),
+                     extra=applog.extra(folders=folders, files=len(found),
+                                        cut=truncated))
 
 
 # ---------- фильтр папок в дереве «Диски и папки» ----------
@@ -792,6 +814,11 @@ class LocalViewer(QWidget):
         # запасной перенос без драга: Ctrl+C или правый клик — файлы в буфер обмена
         sc_copy = QShortcut(QKeySequence(QKeySequence.StandardKey.Copy), self.list)
         sc_copy.activated.connect(self.copy_selected_files)
+        # Ctrl+A — выделить всё: явная горячая клавиша (работает и без неё, но
+        # так не зависит от темы/платформы) + отметка в журнале
+        sc_all = QShortcut(QKeySequence(QKeySequence.StandardKey.SelectAll), self.list)
+        sc_all.setContext(Qt.ShortcutContext.WidgetShortcut)
+        sc_all.activated.connect(self._select_all_files)
         # Delete — переместить выделенные файлы в корзину. Контекст WidgetShortcut:
         # срабатывает только когда фокус в списке — Delete в поле поиска
         # продолжает работать как обычно
@@ -998,6 +1025,13 @@ class LocalViewer(QWidget):
         applog.event("log.event.copy_files", n=len(paths))
         self.status.setText(tr("viewer.copied_status", n=len(paths)))
 
+    def _select_all_files(self) -> None:
+        """Ctrl+A на ленте миниатюр: выделить всё и отметить в журнале."""
+        self.list.selectAll()
+        n = len(self.list.selectedItems())
+        if n:
+            applog.event("log.event.select_all", n=n)
+
     def _delete_row_forever(self, r: int, path: str,
                             deleted: set[str]) -> bool:
         """Окончательно удалить файл в строке r; успех — убрать из ленты."""
@@ -1040,6 +1074,7 @@ class LocalViewer(QWidget):
         trash_n, perm_n, failed_n = 0, 0, 0
         deleted: set[str] = set()
         retry: list[tuple[int, str]] = []   # корзина отказала — попытка 2
+        t_del = time.perf_counter()   # удаление может тянуться (сеть, корзина) — замерим
         for r in rows:
             path = self._paths[r]
             if force_perm:
@@ -1113,6 +1148,11 @@ class LocalViewer(QWidget):
             self.status.setText(tr("viewer.del_done_perm", n=perm_n))
         elif done:
             self.status.setText(tr("viewer.del_done", n=done))
+        if done or failed_n:
+            applog.event("log.event.timing", op=tr("perf.op.delete_files"),
+                         ms=round((time.perf_counter() - t_del) * 1000),
+                         extra=applog.extra(trash=trash_n, perm=perm_n,
+                                            fail=failed_n))
 
     def _list_context_menu(self, pos) -> None:
         """Правый клик на ленте: открыть / копировать выделенные файлы."""
@@ -1134,45 +1174,51 @@ class LocalViewer(QWidget):
 
     def load_folder(self, folder: str, entries: list[tuple[str, int, float]] | None = None,
                     sync_tree: bool = False) -> None:
-        self._cancel_search()
-        self._folder = folder
-        if entries is None:
-            entries = scan_image_entries(folder)
-        self._gen += 1
-        self._pool.clear()   # не начатые миниатюры прошлой папки больше не нужны
-        self._paths = [p for p, _s, _m in entries]
-        self._meta = [(s, m) for _p, s, m in entries]
-        applog.event("log.event.folder", folder=folder, n=len(self._paths))
-        self.list.clear()
-        self._pending_thumbs.clear()
-        self._thumb_queued.clear()
-        self._thumb_done_rows.clear()
-        self._thumbs_done = 0
-        self._pixmap = None
-        self._movie = None
+        # таймер вокруг всей загрузки: по журналу видно, что именно долго —
+        # скан папки (диск/сеть) или построение ленты
+        with applog.timed(tr("perf.op.load_folder")) as t:
+            self._cancel_search()
+            self._folder = folder
+            if entries is None:
+                with applog.timed(tr("perf.op.scan_folder")) as ts:
+                    entries = scan_image_entries(folder)
+                    ts.set(files=len(entries))
+            self._gen += 1
+            self._pool.clear()   # не начатые миниатюры прошлой папки больше не нужны
+            self._paths = [p for p, _s, _m in entries]
+            self._meta = [(s, m) for _p, s, m in entries]
+            applog.event("log.event.folder", folder=folder, n=len(self._paths))
+            self.list.clear()
+            self._pending_thumbs.clear()
+            self._thumb_queued.clear()
+            self._thumb_done_rows.clear()
+            self._thumbs_done = 0
+            self._pixmap = None
+            self._movie = None
 
-        placeholder = QPixmap(THUMB, THUMB)
-        placeholder.fill(Qt.darkGray)
+            placeholder = QPixmap(THUMB, THUMB)
+            placeholder.fill(Qt.darkGray)
 
-        # строим только список; миниатюры грузятся ЛЕНИВО — для видимых строк
-        # (см. _queue_visible_thumbs). Вход в сетевую папку с тысячами файлов
-        # больше не запускает чтение всех файлов подряд.
-        for row, (path, _size, _mtime) in enumerate(entries):
-            item = QListWidgetItem(QIcon(placeholder), os.path.basename(path))
-            item.setData(Qt.UserRole, path)
-            item.setToolTip(os.path.basename(path))
-            self.list.addItem(item)
+            # строим только список; миниатюры грузятся ЛЕНИВО — для видимых строк
+            # (см. _queue_visible_thumbs). Вход в сетевую папку с тысячами файлов
+            # больше не запускает чтение всех файлов подряд.
+            for row, (path, _size, _mtime) in enumerate(entries):
+                item = QListWidgetItem(QIcon(placeholder), os.path.basename(path))
+                item.setData(Qt.UserRole, path)
+                item.setToolTip(os.path.basename(path))
+                self.list.addItem(item)
 
-        if self._paths:
-            self.list.setCurrentRow(0)
-        else:
-            self.view_label.setText(tr("viewer.no_images"))
-            self.status.setText(folder or "—")
-        self._schedule_visible_thumbs()
+            if self._paths:
+                self.list.setCurrentRow(0)
+            else:
+                self.view_label.setText(tr("viewer.no_images"))
+                self.status.setText(folder or "—")
+            self._schedule_visible_thumbs()
 
-        QSettings("ImageHunter", "ImageHunter").setValue("viewer/last_folder", folder)
-        if sync_tree:
-            self._sync_tree(folder)
+            QSettings("ImageHunter", "ImageHunter").setValue("viewer/last_folder", folder)
+            if sync_tree:
+                self._sync_tree(folder)
+            t.set(files=len(self._paths))
 
     # ---------- поиск по имени (без wildcard: подстрока, регистр не важен) ----------
 
@@ -1291,8 +1337,17 @@ class LocalViewer(QWidget):
             return
         self._fs_applying = True
         try:
-            self._load_for_filter()
-            n = self._filter_visible(needle)
+            # каждый этап — с таймингом: после зависания в журнале видно,
+            # что именно тянуло GUI-поток (догрузка дерева или скрытие узлов)
+            with applog.timed(tr("perf.op.filter_tree_load"),
+                              always=False, slow_ms=400) as tl:
+                dirs, budget_hit = self._load_for_filter()
+                tl.set(dirs=dirs, budget=budget_hit)
+                if dirs:
+                    tl.force()   # догрузили ветви — покажем, сколько это заняло
+            with applog.timed(tr("perf.op.folder_filter")) as tf:
+                n = self._filter_visible(needle)
+                tf.set(matched=n)
         finally:
             self._fs_applying = False
         self.tree_info.show()
@@ -1300,11 +1355,11 @@ class LocalViewer(QWidget):
                                else tr("viewer.folders_none"))
         applog.event("log.event.folder_filter", q=needle, n=n)
 
-    def _load_for_filter(self) -> None:
+    def _load_for_filter(self) -> tuple[int, bool]:
         """Догрузить уровни дерева для фильтра: обход сверху вниз, пока не
         исчерпан бюджет папок/времени. Уже раскрытые папки не перечитываются
         (_populate_children кэшируется), поэтому каждая следующая буква
-        почти ничего не стоит."""
+        почти ничего не стоит. Возвращает (догружено папок, исчерпан ли бюджет)."""
         deadline = time.monotonic() + _FS_TIME_BUDGET
         queue = [self.tree.invisibleRootItem()]
         i = 0
@@ -1320,6 +1375,7 @@ class LocalViewer(QWidget):
                 child = item.child(j)
                 if child.data(0, Qt.ItemDataRole.UserRole):
                     queue.append(child)         # заглушки не обходятся
+        return _FS_DIR_BUDGET - budget, budget <= 0
 
     def _filter_visible(self, needle: str) -> int:
         """Скрыть папки без этих букв; совпавшие и их предки остаются видимы,
@@ -1554,26 +1610,28 @@ class LocalViewer(QWidget):
 
     def refresh_drives(self, include_all: bool = False) -> None:
         """Перечитает диски/устройства и быстрые ссылки (Домой, Изображения)."""
-        self.tree.clear()
+        with applog.timed(tr("perf.op.refresh_drives")) as t:
+            self.tree.clear()
 
-        home = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.HomeLocation)
-        pics = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.PicturesLocation)
-        if home and os.path.isdir(home):
-            self._add_folder_item(None, home, title=tr("viewer.home"),
-                                  icon=QStyle.StandardPixmap.SP_DirHomeIcon)
-        if pics and os.path.isdir(pics) and os.path.normpath(pics) != os.path.normpath(home):
-            self._add_folder_item(None, pics, title=tr("viewer.pictures"))
+            home = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.HomeLocation)
+            pics = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.PicturesLocation)
+            if home and os.path.isdir(home):
+                self._add_folder_item(None, home, title=tr("viewer.home"),
+                                      icon=QStyle.StandardPixmap.SP_DirHomeIcon)
+            if pics and os.path.isdir(pics) and os.path.normpath(pics) != os.path.normpath(home):
+                self._add_folder_item(None, pics, title=tr("viewer.pictures"))
 
-        for si in QStorageInfo.mountedVolumes():
-            if not si.isValid() or not si.isReady():
-                continue
-            if not include_all and self._is_virtual(si):
-                continue
-            self._add_drive_item(si)
-        if self._folder and os.path.isdir(self._folder):
-            self._sync_tree(self._folder)   # подсветить текущую папку заново
-        if self.folder_search.text().strip():
-            self._apply_folder_filter()   # дерево перечитано — фильтр заново
+            for si in QStorageInfo.mountedVolumes():
+                if not si.isValid() or not si.isReady():
+                    continue
+                if not include_all and self._is_virtual(si):
+                    continue
+                self._add_drive_item(si)
+            if self._folder and os.path.isdir(self._folder):
+                self._sync_tree(self._folder)   # подсветить текущую папку заново
+            if self.folder_search.text().strip():
+                self._apply_folder_filter()   # дерево перечитано — фильтр заново
+            t.set(roots=self.tree.topLevelItemCount())
 
     @staticmethod
     def _is_virtual(si) -> bool:
@@ -1627,14 +1685,23 @@ class LocalViewer(QWidget):
         path = item.data(0, Qt.ItemDataRole.UserRole)
         if not path:
             return
-        dir_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon)
-        for sub in self._list_subdirs(path):
-            child = QTreeWidgetItem([os.path.basename(sub)])
-            child.setData(0, Qt.ItemDataRole.UserRole, sub)
-            child.setIcon(0, dir_icon)
-            child.setToolTip(0, sub)
-            child.addChild(self._dummy_item())
-            item.addChild(child)
+        # scandir по папке может тянуться (сеть, проснувшийся диск) — замерим,
+        # в журнал пишем только заметно медленные (обычные проходят за миллисекунды)
+        with applog.timed(tr("perf.op.populate_children",
+                             folder=os.path.basename(path) or path),
+                          always=False, slow_ms=400) as tp:
+            scan_t0 = time.perf_counter()
+            subs = self._list_subdirs(path)
+            dir_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon)
+            for sub in subs:
+                child = QTreeWidgetItem([os.path.basename(sub)])
+                child.setData(0, Qt.ItemDataRole.UserRole, sub)
+                child.setIcon(0, dir_icon)
+                child.setToolTip(0, sub)
+                child.addChild(self._dummy_item())
+                item.addChild(child)
+            tp.set(dirs=len(subs),
+                   scan_ms=round((time.perf_counter() - scan_t0) * 1000))
         if self.folder_search.text().strip() and not self._fs_applying:
             self._apply_folder_filter()   # новые подпапки — тоже под фильтр
 
@@ -1675,7 +1742,10 @@ class LocalViewer(QWidget):
         if not (last and os.path.isdir(last)):
             return
         # авто-открытие только для папок разумного размера, чтобы не тормозить запуск
-        entries = scan_image_entries(last)
+        with applog.timed(tr("perf.op.scan_folder"),
+                          always=False, slow_ms=800) as ts:
+            entries = scan_image_entries(last)
+            ts.set(files=len(entries))
         if 0 < len(entries) <= 2000:
             self.load_folder(last, entries=entries, sync_tree=True)
 
@@ -1727,14 +1797,17 @@ class LocalViewer(QWidget):
             self._thumb_timer.start()
 
     def _flush_thumbs(self) -> None:
-        pending, self._pending_thumbs = self._pending_thumbs, {}
-        for row, img in pending.items():
-            item = self.list.item(row)
-            if item is not None:
-                item.setIcon(QIcon(QPixmap.fromImage(img)))
-        self._thumbs_done += len(pending)
-        self._thumb_done_rows.update(pending.keys())
-        self._thumb_timer.stop()
+        with applog.timed(tr("perf.op.thumbs_batch"),
+                          always=False, slow_ms=400) as t:
+            pending, self._pending_thumbs = self._pending_thumbs, {}
+            for row, img in pending.items():
+                item = self.list.item(row)
+                if item is not None:
+                    item.setIcon(QIcon(QPixmap.fromImage(img)))
+            self._thumbs_done += len(pending)
+            self._thumb_done_rows.update(pending.keys())
+            self._thumb_timer.stop()
+            t.set(rows=len(pending))
 
     def showEvent(self, event) -> None:  # noqa: N802 (Qt API)
         super().showEvent(event)

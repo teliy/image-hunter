@@ -25,11 +25,14 @@ from __future__ import annotations
 import os
 import re
 import threading
+import time
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Qt, Signal
 from PySide6.QtGui import QImage, QPainter, QImageReader
 
+from app.core import applog
 from app.core.downloader import MAX_FILE_SIZE, fetch_image
+from app.core.i18n import tr
 
 # формат сохранения → (имя для QImage.save, расширение, качество или None)
 SAVE_FORMATS: dict[str, tuple[str, str, int | None]] = {
@@ -162,6 +165,7 @@ class _SaveTask(QRunnable):
         if self.owner.is_stopped():
             self.owner._task_done(self.index, False, "отменено")
             return
+        t0 = time.perf_counter()
         try:
             resp = fetch_image(self.url, self.referer)
             ctype = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
@@ -182,9 +186,17 @@ class _SaveTask(QRunnable):
             target = self.owner._free_write_name(self.folder, self.filename,
                                                  self.base, ext)
             size = save_image(img, os.path.join(self.folder, target), self.fmt_name)
+            applog.event("log.event.timing",
+                         op=tr("perf.op.save_file", name=target),
+                         ms=round((time.perf_counter() - t0) * 1000),
+                         extra=applog.extra(kb=len(buf) // 1024))
             self.owner._task_done(self.index, True,
                                   f"{target} ({size[0]}×{size[1]})")
         except Exception as exc:  # noqa: BLE001 — текст ошибки уходит в статус
+            applog.event("log.event.timing",
+                         op=tr("perf.op.save_file", name=self.url.rsplit("/", 1)[-1][:60]),
+                         ms=round((time.perf_counter() - t0) * 1000),
+                         extra=applog.extra(error=type(exc).__name__))
             self.owner._task_done(self.index, False, str(exc)[:200])
 
 
@@ -205,6 +217,7 @@ class ImageSaver(QObject):
         self._folder = ""
         self._name_lock = threading.Lock()
         self._used: set[str] = set()
+        self._batch_t0 = 0.0
 
     def start(self, jobs: list[tuple[str, str]], referer: str | None, folder: str,
               base: str = "", fmt_name: str = DEFAULT_FORMAT) -> None:
@@ -224,6 +237,7 @@ class ImageSaver(QObject):
         self._pending = len(jobs)
         self._ok = 0
         self._fail = 0
+        self._batch_t0 = time.perf_counter()   # для тайминга пачки в журнале
         ext = SAVE_FORMATS[fmt_name][1]
         if not base:
             first = jobs[0][1]
@@ -271,4 +285,7 @@ class ImageSaver(QObject):
         self.file_done.emit(index, ok, info)
         self._pending -= 1
         if self._pending <= 0:
+            applog.event("log.event.timing", op=tr("perf.op.save_batch"),
+                         ms=round((time.perf_counter() - self._batch_t0) * 1000),
+                         extra=applog.extra(ok=self._ok, fail=self._fail))
             self.finished.emit(self._ok, self._fail, self._folder)

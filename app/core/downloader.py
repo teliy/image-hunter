@@ -16,6 +16,9 @@ from urllib.parse import unquote, urlparse
 import requests
 from PySide6.QtCore import QObject, QRunnable, QSettings, QThreadPool, Signal
 
+from app.core import applog
+from app.core.i18n import tr
+
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
@@ -151,6 +154,7 @@ class _DownloadTask(QRunnable):
         self.directory = directory
 
     def run(self) -> None:  # выполняется в рабочем потоке
+        t0 = time.perf_counter()
         if self.owner.is_stopped():
             self.owner.status_changed.emit(self.row_id, "cancel", "")
             self.owner._task_done(False)
@@ -179,9 +183,18 @@ class _DownloadTask(QRunnable):
                     if received > MAX_FILE_SIZE:
                         raise ValueError("файл слишком большой (>100 МБ)")
                     fh.write(chunk)
+            applog.event("log.event.timing",
+                         op=tr("perf.op.download", name=os.path.basename(path)),
+                         ms=round((time.perf_counter() - t0) * 1000),
+                         extra=applog.extra(kb=received // 1024))
             self.owner.status_changed.emit(self.row_id, "ok", path)
             self.owner._task_done(True)
         except Exception as exc:  # noqa: BLE001 — показываем текст ошибки в таблице
+            # долгая неудача тоже важна: видно, сколько время ушло до ошибки
+            applog.event("log.event.timing",
+                         op=tr("perf.op.download", name=self.url.rsplit("/", 1)[-1][:60]),
+                         ms=round((time.perf_counter() - t0) * 1000),
+                         extra=applog.extra(error=type(exc).__name__))
             self.owner.status_changed.emit(self.row_id, "error", str(exc)[:200])
             self.owner._task_done(False)
 
@@ -202,6 +215,7 @@ class Downloader(QObject):
         self._pending = 0
         self._ok = 0
         self._fail = 0
+        self._batch_t0 = 0.0
 
     # ---------- публичный API (GUI-поток) ----------
 
@@ -228,6 +242,7 @@ class Downloader(QObject):
         self._ok = 0
         self._fail = 0
         self._pending = len(items)
+        self._batch_t0 = time.perf_counter()   # для тайминга пачки в журнале
         for row_id, url in items:
             self._pool.start(_DownloadTask(self, row_id, url, referer, directory))
 
@@ -252,6 +267,10 @@ class Downloader(QObject):
             self._fail += 1
         self._pending -= 1
         if self._pending <= 0:
+            # тайминг пачки: сколько длилось скачивание всего (в т.ч. по вине сети)
+            applog.event("log.event.timing", op=tr("perf.op.download_batch"),
+                         ms=round((time.perf_counter() - self._batch_t0) * 1000),
+                         extra=applog.extra(ok=self._ok, fail=self._fail))
             self.batch_finished.emit(self._ok, self._fail)
 
 

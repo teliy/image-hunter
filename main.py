@@ -45,6 +45,7 @@ def main() -> int:
     from app.core import applog, webengine
     from app.ui.app_icon import icon as app_icon
     from app.ui.main_window import MainWindow
+    from app.ui.style import apply_app_style
 
     webengine.capture_qpa_warnings()    # предупреждение печатается при создании QApplication
     app = QApplication(sys.argv)
@@ -53,6 +54,7 @@ def main() -> int:
     app.setOrganizationName("ImageHunter")
     app.setApplicationVersion(__version__)
     app.setWindowIcon(app_icon())       # значок «фото с лупой» из ресурсов
+    apply_app_style(app)                # яркая подсветка выделения (Ctrl+A) во всех списках
     applog.setup()                      # с этого момента события пишутся в «Журнал»
     applog.event("log.event.start", version=__version__)
     if fixes["gpu_off"]:

@@ -632,6 +632,62 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ru": "Доступна новая версия: {remote}",
         "en": "New version available: {remote}",
         "zh": "发现新版本：{remote}"},
+    # ---------- отладка производительности: тайминги операций в журнале ----------
+    "log.event.timing": {
+        "ru": "⏱ {op}: {ms} мс{extra}",
+        "en": "⏱ {op}: {ms} ms{extra}",
+        "zh": "⏱ {op}：{ms} 毫秒{extra}"},
+    "log.event.timing_slow": {
+        "ru": "⏱ МЕДЛЕННО: {op} — {ms} мс, это блокирует интерфейс{extra}",
+        "en": "⏱ SLOW: {op} — {ms} ms, this blocks the UI{extra}",
+        "zh": "⏱ 缓慢：{op} —— {ms} 毫秒，这会阻塞界面{extra}"},
+    "log.event.ui_freeze": {
+        "ru": "⚠ Интерфейс не отвечал ≈{ms} мс — GUI-поток был заблокирован. "
+              "Что происходило перед этим — см. строки ⏱ выше",
+        "en": "⚠ The UI did not respond for ≈{ms} ms — the GUI thread was blocked. "
+              "See the ⏱ lines above for what happened just before",
+        "zh": "⚠ 界面无响应约 {ms} 毫秒——GUI 线程被阻塞。"
+              "此前发生了什么，请查看上方的 ⏱ 行"},
+    "log.event.watchdog_on": {
+        "ru": "Сторож интерфейса включён: зависания GUI-потока будут отмечены в журнале",
+        "en": "UI watchdog is on: GUI-thread stalls will be noted in the log",
+        "zh": "界面看门狗已开启：GUI 线程卡顿将记录在日志中"},
+    "log.event.select_all": {
+        "ru": "Выделено файлов: {n} (Ctrl+A)",
+        "en": "Selected files: {n} (Ctrl+A)",
+        "zh": "已选中文件：{n} 个 (Ctrl+A)"},
+    "perf.op.load_folder": {
+        "ru": "открытие папки", "en": "open folder", "zh": "打开文件夹"},
+    "perf.op.scan_folder": {
+        "ru": "сканирование папки", "en": "folder scan", "zh": "扫描文件夹"},
+    "perf.op.filter_tree_load": {
+        "ru": "догрузка дерева для фильтра", "en": "tree loading for filter",
+        "zh": "为筛选加载目录树"},
+    "perf.op.folder_filter": {
+        "ru": "фильтр папок", "en": "folder filter", "zh": "文件夹筛选"},
+    "perf.op.populate_children": {
+        "ru": "чтение подпапок «{folder}»", "en": "subfolder scan of “{folder}”",
+        "zh": "读取子文件夹“{folder}”"},
+    "perf.op.refresh_drives": {
+        "ru": "обновление дерева дисков", "en": "drive tree refresh", "zh": "刷新磁盘树"},
+    "perf.op.thumbs_batch": {
+        "ru": "применение миниатюр", "en": "thumbnail batch", "zh": "应用缩略图"},
+    "perf.op.thumb_decode": {
+        "ru": "миниатюра «{name}»", "en": "thumbnail “{name}”", "zh": "缩略图“{name}”"},
+    "perf.op.view_decode": {
+        "ru": "полный просмотр «{name}»", "en": "full view of “{name}”", "zh": "查看原图“{name}”"},
+    "perf.op.search_scan": {
+        "ru": "поиск по файлам «{q}»", "en": "file search “{q}”", "zh": "文件搜索“{q}”"},
+    "perf.op.download": {
+        "ru": "скачивание «{name}»", "en": "download “{name}”", "zh": "下载“{name}”"},
+    "perf.op.download_batch": {
+        "ru": "пакет скачивания", "en": "download batch", "zh": "下载批次"},
+    "perf.op.save_file": {
+        "ru": "сохранение «{name}»", "en": "save “{name}”", "zh": "保存“{name}”"},
+    "perf.op.save_batch": {
+        "ru": "пакет сохранения", "en": "save batch", "zh": "保存批次"},
+    "perf.op.delete_files": {
+        "ru": "удаление файлов", "en": "delete files", "zh": "删除文件"},
 }
 
 # кэш текущего языка: читается на каждый tr() — QSettings трогаем один раз

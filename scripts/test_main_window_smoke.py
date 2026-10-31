@@ -1,7 +1,7 @@
-"""Оффлайн-смоук главного окна целиком (v0.7.0).
+"""Оффлайн-смоук главного окна целиком (v0.7.1).
 
 Проверяется: MainWindow собирается со всеми вкладками (включая новые
-мультивкладки поиска), заголовок содержит версию 0.7.0, наружные сигналы
+мультивкладки поиска), заголовок содержит версию 0.7.1, наружные сигналы
 мультивкладок подключены, кнопки сохранения живы.
 
 Запуск: QT_QPA_PLATFORM=offscreen QTWEBENGINE_CHROMIUM_FLAGS="--no-sandbox --disable-gpu" \
@@ -44,8 +44,8 @@ def main() -> int:
     win.show()
     app.processEvents()
 
-    check("версия 0.7.0", __version__ == "0.7.0", __version__)
-    check("в заголовке версия", "0.7.0" in win.windowTitle(), win.windowTitle())
+    check("версия 0.7.1", __version__ == "0.7.1", __version__)
+    check("в заголовке версия", "0.7.1" in win.windowTitle(), win.windowTitle())
     check("у поиска есть общее поле запроса",
           hasattr(win.web, "global_query") and hasattr(win.web, "btn_all"))
     check("вкладок в главном окне четыре", win.tabs.count() == 4,
