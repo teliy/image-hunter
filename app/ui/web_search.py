@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.core import i18n
+from app.core import applog, i18n
 from app.core.extractor import (
     collect_image_urls,
     fetch_checked_selections,
@@ -181,6 +181,9 @@ class WebSearch(QWidget):
         # SPA-переходы (новый поиск изнутри страницы Google/DDG) меняют URL
         # без перезагрузки — инъекция идемпотентна, ставим чекбоксы и на неё
         self.view.urlChanged.connect(self._on_url_changed)
+        # упавший процесс отрисовки (OOM, песочница, драйвер) — перезапускаем
+        self._reload_tries = 0
+        self.view.page().renderProcessTerminated.connect(self._on_render_gone)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -378,6 +381,7 @@ class WebSearch(QWidget):
     def _on_load_finished(self, ok: bool) -> None:
         if not ok:
             return
+        self._reload_tries = 0    # страница загрузилась — счётчик аварийных перезапусков обнулён
         url = self.view.url().toString()
         if not is_image_search_url(url):
             return
@@ -396,8 +400,33 @@ class WebSearch(QWidget):
         for ms in (1500, 4000, 9000):
             QTimer.singleShot(ms, self._inject_serp)
 
+    def _on_render_gone(self, status, exit_code: int) -> None:
+        """Процесс отрисовки умер (OOM, песочница, драйвер) — перезапустить вкладку.
+
+        Без этого вкладка после падения рендера навсегда остаётся серой,
+        а пользователь решает, что программа зависла."""
+        try:
+            from PySide6.QtWebEngineCore import QWebEnginePage
+            normal = QWebEnginePage.RenderProcessTerminationStatus.NormalTerminationStatus
+            if status == normal:
+                return
+        except Exception:
+            pass
+        if self._reload_tries >= 2 or self.view.url().isEmpty():
+            return
+        self._reload_tries += 1
+        applog.event("log.event.render_gone", code=exit_code)
+        QTimer.singleShot(1000, self.view.reload)
+
     def _poll_checked_count(self) -> None:
         if not self.isVisible():
+            return
+        # Вне выдачи картинок дерево фреймов не обходим: пустой обход дёргает
+        # браузерные IPC каждые 700 мс просто так, а на не-выдаче чекбоксов
+        # нет — счётчик обнуляем без похода в браузер (как раньше давал
+        # запрос к главной странице: __IH_CB_COUNT там не существует → 0).
+        if not is_image_search_url(self.view.url().toString()):
+            self._on_poll_result(0)
             return
         targets = self._serp_frames() or [self._main_frame()]
         counts: dict = {}

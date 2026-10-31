@@ -521,6 +521,19 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ru": "Фильтр папок «{q}»: найдено {n}",
         "en": "Folder filter “{q}”: {n} found",
         "zh": "文件夹筛选“{q}”：找到 {n} 个"},
+    "log.event.gpu_off": {
+        "ru": "Сессия Wayland, но плагин wayland не загрузился — встроенный браузер "
+              "рендерит программно (защита от зависаний).\nВернуть GPU можно "
+              "переменной окружения IH_GPU=1.",
+        "en": "Wayland session, but the wayland platform plugin failed to load — the "
+              "built-in browser renders in software (freeze protection).\nSet the "
+              "IH_GPU=1 environment variable to re-enable GPU.",
+        "zh": "Wayland 会话中 wayland 平台插件加载失败——内置浏览器改用软件渲染"
+              "（防止卡死）。\n设置环境变量 IH_GPU=1 可恢复 GPU 加速。"},
+    "log.event.render_gone": {
+        "ru": "Процесс отрисовки вкладки упал (код {code}) — перезапускаю…",
+        "en": "Tab render process crashed (code {code}) — restarting…",
+        "zh": "标签页渲染进程崩溃（代码 {code}）——正在重启……"},
     "log.event.save_file_err": {
         "ru": "ОШИБКА сохранения: {url} — {err}",
         "en": "SAVE ERROR: {url} — {err}",

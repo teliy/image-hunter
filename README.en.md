@@ -191,6 +191,30 @@ A JS script (`app/core/extractor.py`) runs on the results page and collects `img
 - Respect copyright: download images for personal use only or with the owners’ permission.
 - Possible improvements (roadmap): auto-collecting links while scrolling, image size filter (HEAD requests), a pausable queue, link list export, .exe build via PyInstaller.
 
+## Troubleshooting
+
+**The app freezes on Linux (Wayland session).** When the wayland plugin fails
+to load (the terminal shows `Could not load the Qt platform plugin "wayland"`),
+the app keeps running through XWayland, and the combination of the built-in
+browser with the graphics driver is known to hard-freeze. Since v0.6.4 Image
+Hunter detects this at startup and disables GPU for the built-in browser —
+pages render in software (search and download speed are unaffected) and a note
+is added to the Log. Manual control:
+
+- `IH_GPU=0 image-hunter` — disable GPU unconditionally;
+- `IH_GPU=1 image-hunter` — keep GPU enabled, skip auto-detection;
+- `QTWEBENGINE_CHROMIUM_FLAGS="--disable-gpu" image-hunter` — the same via the
+  standard Chromium flag (list your own flags space-separated).
+
+If search tabs stay blank (Alpine/musl and other systems where the Chromium
+sandbox cannot start), add `--no-sandbox`:
+
+    QTWEBENGINE_CHROMIUM_FLAGS="--no-sandbox --disable-gpu" image-hunter
+
+**A search tab is grey and the terminal mentions a render process** — the app
+now restarts a crashed tab renderer on its own (two attempts); the event is
+visible in the Log.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

@@ -486,25 +486,33 @@ CHECKBOX_INIT_JS = r"""
     refresh();
   };
 
+  // Стили чекбоксов. ВАЖНО: страница-выдача может быть в любой момент
+  // заменена (ошибка сети, переадресация) — document.head и даже
+  // documentElement бывают null, и незащищённый appendChild падал
+  // «Uncaught TypeError», оставаясь в консоли вкладки. Всё под защитой.
   const injectStyle = () => {
-    if (document.getElementById('ih-cb-style')) return;
-    const st = document.createElement('style');
-    st.id = 'ih-cb-style';
-    st.textContent = [
-      '.ih-cb{position:absolute!important;top:8px;left:8px;z-index:2147483640;',
-      'width:26px;height:26px;margin:0;cursor:pointer;display:block;filter:drop-shadow(0 1px 3px rgba(0,0,0,.45));}',
-      '.ih-cb input{position:absolute;opacity:0;width:100%;height:100%;margin:0;cursor:pointer;}',
-      '.ih-cb .ih-cb-box{position:absolute;inset:0;border-radius:7px;',
-      'background:rgba(255,255,255,.93);border:2px solid #ff7a1a;}',
-      '.ih-cb:hover .ih-cb-box{background:#fff;}',
-      '.ih-cb .ih-cb-box::after{content:\'\';position:absolute;left:7px;top:2px;width:6px;height:12px;',
-      'border:solid #fff;border-width:0 3px 3px 0;transform:rotate(45deg);opacity:0;}',
-      '.ih-cb input:checked + .ih-cb-box{background:#ff7a1a;}',
-      '.ih-cb input:checked + .ih-cb-box::after{opacity:1;}',
-      '.ih-cb-host{position:relative!important;}',
-      '.ih-checked{outline:3px solid #ff7a1a!important;outline-offset:-3px;border-radius:6px;}'
-    ].join('');
-    (document.head || document.documentElement).appendChild(st);
+    try {
+      if (document.getElementById('ih-cb-style')) return;
+      const root = document.head || document.documentElement;
+      if (!root) return;      // документ ещё грузится/заменяется — стили поставит следующий скан
+      const st = document.createElement('style');
+      st.id = 'ih-cb-style';
+      st.textContent = [
+        '.ih-cb{position:absolute!important;top:8px;left:8px;z-index:2147483640;',
+        'width:26px;height:26px;margin:0;cursor:pointer;display:block;filter:drop-shadow(0 1px 3px rgba(0,0,0,.45));}',
+        '.ih-cb input{position:absolute;opacity:0;width:100%;height:100%;margin:0;cursor:pointer;}',
+        '.ih-cb .ih-cb-box{position:absolute;inset:0;border-radius:7px;',
+        'background:rgba(255,255,255,.93);border:2px solid #ff7a1a;}',
+        '.ih-cb:hover .ih-cb-box{background:#fff;}',
+        '.ih-cb .ih-cb-box::after{content:\'\';position:absolute;left:7px;top:2px;width:6px;height:12px;',
+        'border:solid #fff;border-width:0 3px 3px 0;transform:rotate(45deg);opacity:0;}',
+        '.ih-cb input:checked + .ih-cb-box{background:#ff7a1a;}',
+        '.ih-cb input:checked + .ih-cb-box::after{opacity:1;}',
+        '.ih-cb-host{position:relative!important;}',
+        '.ih-checked{outline:3px solid #ff7a1a!important;outline-offset:-3px;border-radius:6px;}'
+      ].join('');
+      root.appendChild(st);
+    } catch (e) {}
   };
 
   // массовое снятие отметок (кнопка «Снять отметки» на тулбаре)
@@ -519,8 +527,7 @@ CHECKBOX_INIT_JS = r"""
 
   window.__IH_CB = { scan, uncheckAll };
 
-  injectStyle();
-  scan();
+  try { injectStyle(); scan(); } catch (e) {}   // документ может быть mid-teardown
 
   // Подхватывать плитки, догружаемые при прокрутке (бесконечная выдача).
   // ТРОТТЛИНГ, а не debounce: при шторме мутаций (Google дорисовывает выдачу

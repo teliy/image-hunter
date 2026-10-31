@@ -189,6 +189,27 @@ JS 脚本（`app/core/extractor.py`）在结果页上运行，收集 `img[src]`�
 - 请尊重版权：仅下载个人使用的图片，或经权利人许可。
 - 可能的改进（roadmap）：滚动时自动收集链接、按图片大小过滤（HEAD 请求）、可暂停队列、导出链接列表、通过 PyInstaller 打包 .exe。
 
+## 故障排除
+
+**程序在 Linux 上卡死（Wayland 会话）。** 当 wayland 插件加载失败时（启动时终端
+显示 `Could not load the Qt platform plugin "wayland"`），应用程序会通过 XWayland
+运行，此时内置浏览器与显卡驱动的组合可能会导致整个窗口彻底卡死。从 v0.6.4 起
+Image Hunter 会在启动时自动检测这种情况并禁用内置浏览器的 GPU —— 页面改用软件
+渲染（不影响搜索和下载速度），并在“日志”中写入说明。手动控制：
+
+- `IH_GPU=0 image-hunter` —— 强制禁用 GPU；
+- `IH_GPU=1 image-hunter` —— 保持 GPU 启用，忽略自动检测；
+- `QTWEBENGINE_CHROMIUM_FLAGS="--disable-gpu" image-hunter` —— 通过 Chromium 标准
+  标志达到同样效果（多个标志用空格分隔）。
+
+如果搜索标签页始终空白（Alpine/musl 以及 Chromium 沙箱无法启动的其他系统），
+请添加 `--no-sandbox`：
+
+    QTWEBENGINE_CHROMIUM_FLAGS="--no-sandbox --disable-gpu" image-hunter
+
+**搜索标签页灰色，终端出现 render process 相关信息** —— 程序现在会自动重启崩溃
+的标签页渲染进程（最多两次），事件会显示在“日志”中。
+
 ## 许可证
 
 MIT — 见 [LICENSE](LICENSE)。
