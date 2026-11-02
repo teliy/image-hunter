@@ -1,8 +1,9 @@
-"""Оффлайн-смоук главного окна целиком (v0.7.6).
+"""Оффлайн-смоук главного окна целиком (v0.7.7).
 
 Проверяется: MainWindow собирается со всеми вкладками (включая новые
-мультивкладки поиска), заголовок содержит версию 0.7.6, наружные сигналы
-мультивкладок подключены, кнопки сохранения живы.
+мультивкладки поиска), заголовок содержит версию 0.7.7, наружные сигналы
+мультивкладок подключены, кнопки сохранения живы, статус «Моих картинок»
+переехал в строку статуса внизу окна (левее языка).
 
 Запуск: QT_QPA_PLATFORM=offscreen QTWEBENGINE_CHROMIUM_FLAGS="--no-sandbox --disable-gpu" \
         python scripts/test_main_window_smoke.py
@@ -44,8 +45,8 @@ def main() -> int:
     win.show()
     app.processEvents()
 
-    check("версия 0.7.6", __version__ == "0.7.6", __version__)
-    check("в заголовке версия", "0.7.6" in win.windowTitle(), win.windowTitle())
+    check("версия 0.7.7", __version__ == "0.7.7", __version__)
+    check("в заголовке версия", "0.7.7" in win.windowTitle(), win.windowTitle())
     check("у поиска есть общее поле запроса",
           hasattr(win.web, "global_query") and hasattr(win.web, "btn_all"))
     check("вкладок в главном окне четыре", win.tabs.count() == 4,
@@ -57,6 +58,18 @@ def main() -> int:
     check("кнопка «Обновить» на месте", win.btn_upd.text().endswith("Обновить"))
     check("current_format доступен", win.web.current_format() in
           ("WebP", "PNG", "JPEG", "BMP", "TIFF"), win.web.current_format())
+
+    # статус «Моих картинок» переехал в строку статуса (v0.7.7)
+    st = win.local.status
+    check("статус вьюера — ребёнок статус-бара", st.parent() is win._status,
+          str(st.parent()))
+    check("статус вьюера слева от языка",
+          st.geometry().x() < win.lang_box.geometry().x(),
+          f"{st.geometry().x()} vs {win.lang_box.geometry().x()}")
+    check("язык левее кнопки обновления",
+          win.lang_box.geometry().x() < win.btn_upd.geometry().x(),
+          f"{win.lang_box.geometry().x()} vs {win.btn_upd.geometry().x()}")
+    check("текст статуса вьюера виден", bool(st.text()), st.text())
 
     print()
     if FAILURES:

@@ -914,9 +914,12 @@ class LocalViewer(QWidget):
         esc = QShortcut(QKeySequence("Esc"), self)
         esc.activated.connect(self._escape_search)   # Esc чистит то поле, где фокус
         bar.addStretch(1)
+        # статус поиска/операций («Поиск «…»: N файлов» и т.п.) показывается
+        # не здесь, а внизу окна — в строке статуса главного окна рядом с
+        # языком (v0.7.7). Метка создаётся без родителя: главное окно добавит
+        # её к статус-бару через addPermanentWidget.
         self.status = QLabel(tr("viewer.pick"))
         self.status.setStyleSheet("color: #666;")
-        bar.addWidget(self.status)
 
         # --- список миниатюр ---
         self.list = _ThumbList()

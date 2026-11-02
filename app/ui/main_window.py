@@ -66,6 +66,10 @@ class MainWindow(QMainWindow):
         self.setStatusBar(self._status)
         self._status.showMessage(tr("main.ready"))
 
+        # статус вкладки «Мои картинки» (поиск по имени, копирование, удаление)
+        # теперь живёт здесь, внизу: слева от языка и кнопки обновления (v0.7.7)
+        self._status.addPermanentWidget(self.local.status)
+
         # выбор языка интерфейса: Русский / English / 中文 (запоминается)
         self.lang_box = QComboBox()
         for _code, name in i18n.LANG_ITEMS:
