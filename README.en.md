@@ -74,6 +74,14 @@ Additionally, `udm=2` counts as a results page on any national Google domain (go
 
 Scenario: a name search is active in My Pictures, a batch of images is saved into the same folder from the Image Search tab — and back in the tab the strip was shown unfiltered while the query was still in the field; Enter had to be pressed again. The cause: saving calls `refresh()` on the current folder, and it re-read the folder with a plain scan, ignoring the active query. Now `refresh()` behaves like a tree click: with an active search it re-runs the search from the same folder — the new files join the same result set, nothing to retype. Without a query the behavior is unchanged — the folder is re-read as before.
 
+## The current task is visible at the bottom, in the status bar (v0.7.13)
+
+The log collects the whole chronicle of the app's work, but the tab has to be opened first. Now every log line (events, warnings, errors) is mirrored into the left part of the status bar at the bottom of the window: whatever the app is doing — searching, downloading, removing backgrounds, installing or uninstalling the rembg module, syncing the drive tree — the current task is visible without switching tabs.
+
+Events from worker threads (search, downloads, thumbnails) reach the status bar through the Qt signal queue — the line changes in real time while the UI stays responsive. The display rules are simple: DEBUG lines are not shown (technical noise), multi-line records such as error tracebacks are shown by their first line, and overly long lines are trimmed to 220 characters. The message stays until the next event replaces it: the app “narrates” what it is busy with and does not fade away five seconds into a long module installation.
+
+The other status-bar elements (the My Pictures status on the right, the language picker and the update button) are untouched. Tests: `scripts/test_status_log.py` — 12 checks, including an event from a worker thread and the startup “Ready” message not being overwritten.
+
 ## Background removal right in the app: rembg as a module (v0.7.12)
 
 Marketplace and search images often need their background removed. Image Hunter now integrates **rembg** (github.com/danielgatis/rembg) — the most alive open-source background removal project: MIT code, everything runs locally via ONNX Runtime, no cloud, no keys.

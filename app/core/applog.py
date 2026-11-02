@@ -48,6 +48,8 @@ class _Bridge(QObject):
     """Пересылает готовые строки журнала в интерфейс (GUI-поток)."""
 
     record = Signal(int, str)      # уровень, строка «ЧЧ:ММ:СС текст»
+    # чистый текст без времени и суффикса потока — для статус-бара (v0.7.13)
+    plain = Signal(int, str)
 
 
 bridge = _Bridge()
@@ -73,6 +75,12 @@ class QtLogHandler(logging.Handler):
         if tname and tname != "MainThread":
             line = f"{line} [{tname}]"
         bridge.record.emit(record.levelno, line)
+        try:              # чистый текст для статус-бара (v0.7.13): то же
+            # событие без времени и метки потока; падение не должно
+            # ломать выдачу в журнал, поэтому в своём try
+            bridge.plain.emit(record.levelno, str(record.getMessage()))
+        except Exception:
+            pass
 
 
 def level_tag(level: int) -> str:

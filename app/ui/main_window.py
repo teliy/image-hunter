@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 
 from PySide6.QtCore import QSize, QThreadPool, QTimer
@@ -65,6 +66,12 @@ class MainWindow(QMainWindow):
         self._status = QStatusBar()
         self.setStatusBar(self._status)
         self._status.showMessage(tr("main.ready"))
+
+        # текущее задание — не только в журнале, но и внизу (v0.7.13): каждая
+        # строка журнала дублируется в левую часть статус-бара, так что что бы
+        # ни делала программа (поиск, скачивание, установка модуля, синхро-
+        # низация дерева) — видно без открывания вкладки «Журнал»
+        applog.bridge.plain.connect(self._on_log_record)
 
         # статус вкладки «Мои картинки» (поиск по имени, копирование, удаление)
         # теперь живёт здесь, внизу: слева от языка и кнопки обновления (v0.7.7)
@@ -271,3 +278,32 @@ class MainWindow(QMainWindow):
     def _on_batch_finished(self, ok: int, fail: int) -> None:
         self._status.showMessage(tr("dl.summary_ready", ok=ok, fail=fail), 10000)
         applog.event("log.event.dl_done", ok=ok, fail=fail)
+
+    # ---------- журнал → статусная строка ----------
+
+    LOG_STATUS_MAX = 220
+
+    def _on_log_record(self, level: int, msg: str) -> None:
+        """Строка журнала — внизу, в статусной строке (v0.7.13).
+
+        Журнал — полная хроника работы, но вкладку ещё надо открыть; мост
+        дублирует каждую запись в статус-бар, поэтому текущее задание
+        всегда видно без переключения вкладок. Показываем INFO и выше
+        (DEBUG — технический шум), многострочные записи (трассировки
+        ошибок) — только первой строкой, слишком длинные — обрезаем.
+        Сообщение висит, пока его не сменит следующее событие: программа
+        «рассказывает», чем занята, в темпе своей работы.
+        """
+        if level < logging.INFO:
+            return
+        line = ""
+        for ln in (msg or "").splitlines():
+            ln = ln.strip()
+            if ln:
+                line = ln          # первое непустое: у трассировок это заголовок
+                break
+        if not line:
+            return
+        if len(line) > self.LOG_STATUS_MAX:
+            line = line[: self.LOG_STATUS_MAX - 1] + "…"
+        self._status.showMessage(line)
