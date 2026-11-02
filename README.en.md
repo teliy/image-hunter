@@ -74,6 +74,12 @@ Additionally, `udm=2` counts as a results page on any national Google domain (go
 
 Scenario: a name search is active in My Pictures, a batch of images is saved into the same folder from the Image Search tab — and back in the tab the strip was shown unfiltered while the query was still in the field; Enter had to be pressed again. The cause: saving calls `refresh()` on the current folder, and it re-read the folder with a plain scan, ignoring the active query. Now `refresh()` behaves like a tree click: with an active search it re-runs the search from the same folder — the new files join the same result set, nothing to retype. Without a query the behavior is unchanged — the folder is re-read as before.
 
+## Favorite folders — always at the top of the tree (v0.7.9)
+
+**1. Two ways to add a folder to favorites.** The “☆” button in the tree header adds (and “★” removes) the folder currently open in the tab; right-clicking any folder in the “Drives and folders” tree offers “⭐ Add to favorites” / “Remove from favorites” — handy for nested folders the currently open path does not reach. Adding and removing is written to the Log.
+
+**2. Favorites sit at the top of the tree.** Favorite folders with a gold star come first in the tree — before “Home” and the drive list — on every launch; the list is stored in the settings. Otherwise they behave like ordinary folders: lazy expansion, a click opens them, the folder filter finds them too. Removing from favorites never touches the folders themselves.
+
 ## The log now names the engine behind each event (v0.7.8)
 
 **1. Log lines carry the engine name.** “Find everywhere” opens a tab per engine, and the log used to make it impossible to tell who was who: eight identical “Image SERP found, but no checkbox tiles were recognized…” lines in a row meant eight different engines, with no way to know which one changed its markup. Now every tab event is tagged with the engine’s short name in square brackets: “[Startpage] Page did not load within 45 s…”, “[Google] Image SERP: tiles with checkboxes: 2…”, “[Mail.ru] SAVE ERROR…”, “[Yandex] Saving finished: 3 saved…”, “[Google] Links collected…” — and the render-process crash is tagged too. For a bug report, just send the log: it is immediately clear which engine failed and how.
@@ -91,7 +97,10 @@ Scenario: a name search is active in My Pictures, a batch of images is saved int
 ## Features
 
 **📁 My Pictures** — local viewer:
-- **drive and folder tree on the left**: mounted drives and devices (free space in the tooltip), quick links “Home” and “Pictures”; folders expand lazily, a click on a folder shows its images right away; the panel width is adjusted with the mouse; the “⟳” button refreshes the drive list (after plugging in a USB stick);
+- **drive and folder tree on the left**: mounted drives and devices (free space in the tooltip), favorite
+  folders ⭐ — always at the top, quick links “Home” and “Pictures”; folders expand lazily, a click on a folder
+  shows its images right away; the panel width is adjusted with the mouse; the “⟳” button refreshes the drive
+  list (after plugging in a USB stick);
 - **folder filter**: the “🔍 Filter folders…” box above the tree — as you type, the tree keeps only folders whose
   names contain those letters: the rest are hidden, branches to the matches expand, and a counter above the tree
   shows how many folders matched; it is instant and does not rescan the disk — the tree just loads more levels

@@ -280,6 +280,20 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ru": "Обновить список дисков и папок (например, после подключения флешки)",
         "en": "Refresh the list of drives and folders (e.g. after plugging in a USB stick)",
         "zh": "刷新磁盘和文件夹列表（例如插入 U 盘后）"},
+    "viewer.fav_add": {
+        "ru": "⭐ В избранное", "en": "⭐ Add to favorites", "zh": "⭐ 加入收藏夹"},
+    "viewer.fav_remove": {
+        "ru": "Убрать из избранного", "en": "Remove from favorites", "zh": "从收藏夹移除"},
+    "viewer.fav_add_tip": {
+        "ru": "Добавить текущую папку в избранное — она будет первой\n"
+              "в дереве «Диски и папки» при каждом запуске",
+        "en": "Add the current folder to favorites — it will stay on top\n"
+              "of the “Drives and folders” tree across launches",
+        "zh": "将当前文件夹加入收藏夹——每次启动时它都会\n固定在“磁盘与文件夹”树的顶部"},
+    "viewer.fav_remove_tip": {
+        "ru": "Убрать текущую папку из избранного",
+        "en": "Remove the current folder from favorites",
+        "zh": "从收藏夹移除当前文件夹"},
     "viewer.no_images": {
         "ru": "В этой папке нет изображений", "en": "No images in this folder", "zh": "此文件夹中没有图片"},
     "viewer.pick_first": {
@@ -517,6 +531,14 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ru": "Открыта папка: {folder} — {n} картинок",
         "en": "Folder opened: {folder} — {n} images",
         "zh": "已打开文件夹：{folder} — {n} 张图片"},
+    "log.event.fav_add": {
+        "ru": "В избранное добавлена папка: {folder} (всего {n})",
+        "en": "Folder added to favorites: {folder} ({n} total)",
+        "zh": "已将文件夹加入收藏夹：{folder}（共 {n} 个）"},
+    "log.event.fav_remove": {
+        "ru": "Папка убрана из избранного: {folder} (осталось {n})",
+        "en": "Folder removed from favorites: {folder} ({n} left)",
+        "zh": "已从收藏夹移除文件夹：{folder}（剩余 {n} 个）"},
     "log.event.search_done": {
         "ru": "Поиск «{q}»: найдено {n}",
         "en": "Search “{q}”: found {n}",

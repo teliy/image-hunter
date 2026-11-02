@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import os
 import random
 import re
@@ -18,6 +19,7 @@ from PySide6.QtCore import (
     QObject,
     QMimeData,
     QPoint,
+    QPointF,
     QRunnable,
     QSettings,
     QSize,
@@ -43,6 +45,7 @@ from PySide6.QtGui import (
     QPixmap,
     QShortcut,
 )
+from PySide6.QtGui import QColor, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -78,6 +81,8 @@ _RESTORE_MAX_FILES = 2000   # автопоказ последней папки: 
 _TREE_TOKEN_ROLE = Qt.ItemDataRole.UserRole + 2   # жетон фоновой догрузки узла
 _TREE_SYNC_ROLE = Qt.ItemDataRole.UserRole + 3    # путь-цель асинхронной прогулки к папке
 _TREE_SYNC_SEQ_ROLE = Qt.ItemDataRole.UserRole + 4  # поколение прогулки (для отмены)
+_FAV_ROLE = Qt.ItemDataRole.UserRole + 5          # узел — избранная папка (v0.7.9)
+_FAV_KEY = "viewer/favorites"                     # где лежат избранные папки
 
 # сетевость дисков уже выясненное (кэш): буква диска -> DRIVE_REMOTE
 _REMOTE_DRIVE_CACHE: dict[str, bool] = {}
@@ -113,6 +118,25 @@ _VIRTUAL_FS = {
     "virtiofs", "iso9660",
 }
 _VIRTUAL_PREFIXES = ("/proc", "/sys", "/dev", "/run", "/snap", "/boot", "/var/lib")
+
+
+def _star_icon() -> QIcon:
+    """Золотая звезда избранного: рисуется кодом, чтобы выглядеть одинаково
+    во всех темах и на всех ОС (стандартного значка «звезда» в Qt нет)."""
+    pm = QPixmap(16, 16)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    points = []
+    for i in range(10):   # 5-конечная звезда: вершина/впадина через одну
+        r = 7.0 if i % 2 == 0 else 3.0
+        a = math.radians(-90 + i * 36)
+        points.append(QPointF(8 + r * math.cos(a), 8.6 + r * math.sin(a)))
+    p.setPen(QPen(QColor("#8a6100"), 1.0))
+    p.setBrush(QColor("#F5B301"))
+    p.drawPolygon(QPolygonF(points))
+    p.end()
+    return QIcon(pm)
 
 
 def _fmt_bytes(num: float) -> str:
@@ -964,6 +988,9 @@ class LocalViewer(QWidget):
         self.tree.setUniformRowHeights(True)
         self.tree.itemExpanded.connect(self._populate_children)
         self.tree.itemClicked.connect(self._on_tree_clicked)
+        # правый клик в дереве — добавить/убрать папку в избранном (v0.7.9)
+        self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.tree.customContextMenuRequested.connect(self._tree_context_menu)
 
         tree_panel = QWidget()
         tree_lay = QVBoxLayout(tree_panel)
@@ -974,6 +1001,11 @@ class LocalViewer(QWidget):
         self.tree_hdr_label = QLabel(tr("viewer.drives"))
         tree_hdr.addWidget(self.tree_hdr_label)
         tree_hdr.addStretch(1)
+        # ☆/★ — добавить/убрать ТЕКУЩУЮ папку (открытую во вкладке) в избранное
+        self.btn_fav = QToolButton()
+        self.btn_fav.setAutoRaise(True)
+        self.btn_fav.clicked.connect(self._on_fav_button)
+        tree_hdr.addWidget(self.btn_fav)
         btn_refresh = QToolButton()
         btn_refresh.setText("⟳")
         btn_refresh.setToolTip(tr("viewer.refresh_tip"))
@@ -1094,6 +1126,9 @@ class LocalViewer(QWidget):
         self._delete_phase = 0
         self._delete_t0 = 0.0
 
+        # избранные папки читаются до построения дерева (v0.7.9)
+        self._favorites = self._load_favorites()
+        self._update_fav_button()
         self.refresh_drives()
         self._restore_last_folder()
         # восстановить последний запрос поиска — каким он был перед закрытием
@@ -1118,6 +1153,7 @@ class LocalViewer(QWidget):
         self.folder_search.setToolTip(tr("viewer.folders_search_tip"))
         self.list.setToolTip(tr("viewer.dnd_tip"))
         self.tree_hdr_label.setText(tr("viewer.drives"))
+        self._update_fav_button()   # подсказка ☆/★ — на новом языке
         if not self._paths:
             self.status.setText(tr("viewer.pick"))
         # быстрые ссылки «Домой»/«Изображения» тоже переводятся; активный
@@ -1337,6 +1373,7 @@ class LocalViewer(QWidget):
         время очищается, статус показывает «Читаю папку…» (v0.7.2)."""
         self._cancel_search()
         self._folder = folder
+        self._update_fav_button()   # ☆/★ под текущую папку
         self._gen += 1
         # не начатые задачи прошлой папки больше не нужны
         self._pool.clear()
@@ -1803,6 +1840,10 @@ class LocalViewer(QWidget):
         with applog.timed(tr("perf.op.refresh_drives")) as t:
             self.tree.clear()
 
+            # избранные папки — самыми первыми в дереве (v0.7.9)
+            for k, fav in enumerate(self._favorites):
+                self._add_fav_item(fav, at=k)
+
             home = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.HomeLocation)
             pics = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.PicturesLocation)
             if home and os.path.isdir(home):
@@ -1830,6 +1871,144 @@ class LocalViewer(QWidget):
             return True
         path = si.rootPath()
         return any(path == p or path.startswith(p + "/") for p in _VIRTUAL_PREFIXES)
+
+    # ---------- избранные папки (v0.7.9) ----------
+
+    @staticmethod
+    def _load_favorites() -> list[str]:
+        """Избранные папки из настроек.
+
+        QSettings в INI-формате (Linux) отдаёт список из одного элемента
+        просто строкой — здесь он снова становится списком; мусор и пустые
+        строки отбрасываются, порядок сохраняется."""
+        raw = QSettings("ImageHunter", "ImageHunter").value(_FAV_KEY, [])
+        if isinstance(raw, str):
+            raw = [raw] if raw else []
+        out: list[str] = []
+        for p in raw or []:
+            if isinstance(p, str) and p and p not in out:
+                out.append(p)
+        return out
+
+    def _save_favorites(self) -> None:
+        QSettings("ImageHunter", "ImageHunter").setValue(_FAV_KEY, self._favorites)
+
+    @staticmethod
+    def _fav_key(path: str) -> str:
+        """Ключ сравнения папок: регистр и вид слешей не важны (Windows)."""
+        return os.path.normcase(os.path.normpath(path))
+
+    def is_favorite(self, folder: str) -> bool:
+        key = self._fav_key(folder)
+        return any(self._fav_key(f) == key for f in self._favorites)
+
+    def fav_add(self, folder: str) -> None:
+        """Добавить папку в избранное: с золотой звездой она встанет вверху
+        дерева «Диски и папки», до «Домой» и списка дисков.
+
+        Повторное добавление той же папки (даже в другом написании пути)
+        ничего не меняет. Дерево перестраивается точечно — только секция
+        избранного: полный refresh_drives свернул бы раскрытые ветви, а на
+        сетевом диске ещё и оплатил бы это сетевыми тайм-аутами."""
+        folder = os.path.normpath(folder) if folder else ""
+        if not folder:
+            return
+        key = self._fav_key(folder)
+        if any(self._fav_key(f) == key for f in self._favorites):
+            return
+        self._favorites.append(folder)
+        self._save_favorites()
+        self._rebuild_favorites()
+        if self.folder_search.text().strip():
+            self._apply_folder_filter()   # новый узел — тоже под фильтр
+        applog.event("log.event.fav_add",
+                     folder=os.path.basename(folder) or folder,
+                     n=len(self._favorites))
+
+    def fav_remove(self, folder: str) -> None:
+        """Убрать папку из избранного (сама папка, разумеется, не трогается)."""
+        key = self._fav_key(folder)
+        removed = [f for f in self._favorites if self._fav_key(f) == key]
+        if not removed:
+            return
+        self._favorites = [f for f in self._favorites if self._fav_key(f) != key]
+        self._save_favorites()
+        self._rebuild_favorites()
+        if self.folder_search.text().strip():
+            self._apply_folder_filter()
+        applog.event("log.event.fav_remove",
+                     folder=os.path.basename(removed[0]) or removed[0],
+                     n=len(self._favorites))
+        # убрали папку, внутри которой (или равной которой) мы сейчас
+        # находимся, — вернуть подсветку к текущей папке; прогулка
+        # асинхронная, интерфейс не замирает (v0.7.6)
+        if self._folder:
+            folder_n = self._fav_key(self._folder)
+            if any(folder_n == self._fav_key(f)
+                   or self._is_under(folder_n, self._fav_key(f)) for f in removed):
+                self._sync_tree_async(self._folder)
+
+    def _rebuild_favorites(self) -> None:
+        """Перестроить секцию избранного вверху дерева, не трогая диски и
+        уже раскрытые ветви (см. fav_add)."""
+        for i in range(self.tree.topLevelItemCount() - 1, -1, -1):
+            if self.tree.topLevelItem(i).data(0, _FAV_ROLE):
+                self.tree.takeTopLevelItem(i)
+        for k, fav in enumerate(self._favorites):
+            self._add_fav_item(fav, at=k)
+
+    def _add_fav_item(self, path: str, at: int | None = None) -> None:
+        item = QTreeWidgetItem([os.path.basename(path) or path])
+        item.setData(0, Qt.ItemDataRole.UserRole, path)
+        item.setData(0, _FAV_ROLE, True)
+        item.setIcon(0, _star_icon())
+        item.setToolTip(0, path)
+        item.addChild(self._dummy_item())   # раскрывается как обычная папка
+        if at is None:
+            self.tree.addTopLevelItem(item)
+        else:
+            self.tree.insertTopLevelItem(at, item)
+
+    def _on_fav_button(self) -> None:
+        """Кнопка ☆/★ в шапке дерева: избранное для папки, открытой сейчас."""
+        if not self._folder:
+            return
+        if self.is_favorite(self._folder):
+            self.fav_remove(self._folder)
+        else:
+            self.fav_add(self._folder)
+        self._update_fav_button()   # звезда переключается сразу, без перезагрузки папки
+
+    def _update_fav_button(self) -> None:
+        """Состояние ☆/★: нажимается, когда папка открыта; залита, когда
+        папка уже в избранном."""
+        if self._folder and self.is_favorite(self._folder):
+            self.btn_fav.setText("★")
+            self.btn_fav.setToolTip(tr("viewer.fav_remove_tip"))
+            self.btn_fav.setEnabled(True)
+        else:
+            self.btn_fav.setText("☆")
+            self.btn_fav.setToolTip(tr("viewer.fav_add_tip"))
+            self.btn_fav.setEnabled(bool(self._folder))
+
+    def _tree_context_menu(self, pos) -> None:
+        """Правый клик в дереве «Диски и папки»: добавить/убрать ЭТУ папку
+        в избранном — удобно для вложенных папок, куда кнопка ☆ (текущая
+        папка) не дотягивается."""
+        item = self.tree.itemAt(pos)
+        path = item.data(0, Qt.ItemDataRole.UserRole) if item else None
+        if not path:
+            return
+        menu = QMenu(self)
+        if self.is_favorite(path):
+            act = menu.addAction(tr("viewer.fav_remove"))
+        else:
+            act = menu.addAction(tr("viewer.fav_add"))
+        if menu.exec(self.tree.mapToGlobal(pos)) is act:
+            if self.is_favorite(path):
+                self.fav_remove(path)
+            else:
+                self.fav_add(path)
 
     def _add_drive_item(self, si) -> None:
         path = si.rootPath()
@@ -1974,6 +2153,7 @@ class LocalViewer(QWidget):
         self._populate_children(item)
         item.setExpanded(True)
         self._folder = path
+        self._update_fav_button()
         if self.search_edit.text().strip():
             self._start_search_now()   # поиск от заново выбранной папки
         else:
@@ -1995,6 +2175,7 @@ class LocalViewer(QWidget):
             return
         self._scan_restore = True
         self._folder = last
+        self._update_fav_button()
         self._gen += 1
         self._sync_tree_async(last)
         QThreadPool.globalInstance().start(
