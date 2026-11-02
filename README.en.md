@@ -74,6 +74,14 @@ Additionally, `udm=2` counts as a results page on any national Google domain (go
 
 Scenario: a name search is active in My Pictures, a batch of images is saved into the same folder from the Image Search tab — and back in the tab the strip was shown unfiltered while the query was still in the field; Enter had to be pressed again. The cause: saving calls `refresh()` on the current folder, and it re-read the folder with a plain scan, ignoring the active query. Now `refresh()` behaves like a tree click: with an active search it re-runs the search from the same folder — the new files join the same result set, nothing to retype. Without a query the behavior is unchanged — the folder is re-read as before.
 
+## Checkerboard background for transparent images, slider-sized (v0.7.16)
+
+A request from work: “let the background for transparent formats be a grid of gray and white squares, adjustable in size by a slider”.
+
+Behind transparent images (PNG, GIF, WebP, “*_nobg.png” results…) the viewer now draws the classic checkerboard — white and gray squares, like the transparent canvas in graphics editors. You can instantly see where the image is transparent and where it is painted white; before, both blended into the dark backdrop. The square size is adjusted with a slider on the toolbar (a small checker icon hints at what it controls), and the choice is remembered between runs. The checkerboard appears only for images with an alpha channel: JPEG and other opaque formats keep the plain dark backdrop. The squares scroll together with the image (painted from the image widget origin, like a canvas) and stay crisp on HiDPI screens; no squares under text messages (“Open a folder…”, read errors). The preview in the choice dialog after background removal (v0.7.15) now uses the same colors and cell size as the viewer.
+
+Tests: `scripts/test_checker.py` — tile colors and geometry (white/gray diagonal, HiDPI), painting over QLabel (a transparent pixel shows a square), on for a PNG with alpha and off for a JPEG, the slider (limits, settings persistence, tile rebuild), text without squares, the choice preview following the configured cell.
+
 ## Background removal results can be reverted; the module narrates itself in the status bar (v0.7.15)
 
 Two requests: “make it so there is a choice — keep the file after the background change or revert to the original”, and “let the status bar show what the background removal module is doing — whether the model is downloading, the download status”.

@@ -142,6 +142,15 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ru": "Вписать в окно", "en": "Fit to window", "zh": "适应窗口"},
     "viewer.zoom_in_tip": {
         "ru": "Увеличить", "en": "Zoom in", "zh": "放大"},
+    "viewer.checker_tip": {
+        "ru": "Размер клеток фона-«шахматки»: под прозрачными картинками (PNG, GIF,\n"
+              "WebP…) рисуются белые и серые квадраты — так видно, где картинка\n"
+              "прозрачна. Тяните ползунок, чтобы укрупнить или измельчить клетки.",
+        "en": "Checkerboard cell size: behind transparent images (PNG, GIF, WebP…)\n"
+              "white and gray squares are drawn — so you can see where the image\n"
+              "is transparent. Drag the slider for larger or smaller squares.",
+        "zh": "棋盘格底纹的方格大小：透明图片（PNG、GIF、WebP…）下方会绘制\n"
+              "白色与灰色方格，便于看清图片的透明区域。拖动滑块可放大或缩小方格。"},
     "viewer.reveal": {
         "ru": "🗂 Показать в проводнике", "en": "🗂 Show in Explorer", "zh": "🗂 在文件管理器中显示"},
     "viewer.reveal_tip": {

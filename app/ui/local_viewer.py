@@ -37,6 +37,7 @@ try:
 except ImportError:  # в части сборок PySide6 класс живёт в QtGui
     from PySide6.QtGui import QStorageInfo  # type: ignore[no-redef]
 from PySide6.QtGui import (
+    QBrush,
     QDesktopServices,
     QDrag,
     QIcon,
@@ -63,6 +64,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QSlider,
     QSplitter,
     QStyle,
     QToolButton,
@@ -181,21 +183,22 @@ def _checker_pixmap(path: str, box: int = 132) -> QPixmap | None:
 
     None — файл не читается как картинка (порчен, нестандартный). Зовётся
     только для локальных файлов: чтение по сети в GUI-потоке запрещено
-    (принцип v0.7.2)."""
+    (принцип v0.7.2). Клетки — те же, что в просмотре (v0.7.16): белые и
+    серые квадраты, размер клетки — из настроек ползунка."""
     try:
         img = QImage(path)
     except Exception:   # noqa: BLE001 — любой сбой читателя — без превью
         return None
     if img is None or img.isNull():
         return None
-    cell = 10
+    cell = _checker_cell_setting()
     pm = QPixmap(box, box)
     p = QPainter(pm)
     for y in range(0, box, cell):
         for x in range(0, box, cell):
             p.fillRect(x, y, cell, cell,
-                       QColor("#e2e2e2") if (x // cell + y // cell) % 2 == 0
-                       else QColor("#b4b4b4"))
+                       QColor(_CHECKER_WHITE) if (x // cell + y // cell) % 2 == 0
+                       else QColor(_CHECKER_GRAY))
     scaled = img.scaled(box - 12, box - 12,
                         Qt.AspectRatioMode.KeepAspectRatio,
                         Qt.TransformationMode.SmoothTransformation)
@@ -203,6 +206,85 @@ def _checker_pixmap(path: str, box: int = 132) -> QPixmap | None:
                 scaled)
     p.end()
     return pm
+
+
+# --- фон-«шахматка» под прозрачными картинками (v0.7.16) -------------------
+# Белые и серые квадраты вместо ровной тёмной заливки — так видно, где
+# картинка прозрачна (как «прозрачный холст» в графических редакторах).
+# Размер клетки задаётся ползунком на панели и живёт в QSettings.
+_CHECKER_WHITE = "#ffffff"
+_CHECKER_GRAY = "#c0c0c0"
+CHECKER_MIN = 4          # самая мелкая клетка, логических пикселей
+CHECKER_MAX = 32         # самая крупная
+CHECKER_DEFAULT = 10     # как в превью выбора после удаления фона (v0.7.15)
+
+
+def _checker_cell_setting() -> int:
+    """Размер клетки «шахматки» из настроек; мусор — к дефолту, числа —
+    зажимаются в разрешённый диапазон."""
+    try:
+        v = QSettings("ImageHunter", "ImageHunter").value(
+            "viewer/checker_cell", CHECKER_DEFAULT)
+        v = int(v)   # нечисловой мусор (PySide6 с type=int тихо даёт 0) — честный ValueError
+    except (TypeError, ValueError):
+        return CHECKER_DEFAULT
+    return max(CHECKER_MIN, min(CHECKER_MAX, v))
+
+
+def _checker_tile(cell: int, dpr: float = 1.0) -> QPixmap:
+    """Плитка «шахматки» 2×2 клетки — растянется кистью на весь просмотр.
+
+    Левый верхний квадрат белый, по диагонали — серый (как в превью
+    выбора v0.7.15). Рисуется в физических пикселях (cell × dpr) и
+    помечается devicePixelRatio: на HiDPI-экранах квадраты остаются
+    резкими и логического размера."""
+    dpr = max(1.0, float(dpr) or 1.0)
+    s = max(2, int(round(cell * dpr)))
+    pm = QPixmap(s * 2, s * 2)
+    pm.fill(QColor(_CHECKER_GRAY))
+    p = QPainter(pm)
+    p.fillRect(0, 0, s, s, QColor(_CHECKER_WHITE))
+    p.fillRect(s, s, s, s, QColor(_CHECKER_WHITE))
+    p.end()
+    pm.setDevicePixelRatio(dpr)
+    return pm
+
+
+def _mini_checker_icon(size: int = 16, cell: int = 4) -> QPixmap:
+    """Маленькая шахматка — иконка у ползунка размера клеток."""
+    pm = QPixmap(size, size)
+    pm.fill(QColor(_CHECKER_WHITE))
+    p = QPainter(pm)
+    for y in range(0, size, cell):
+        for x in range(0, size, cell):
+            if (x // cell + y // cell) % 2:
+                p.fillRect(x, y, cell, cell, QColor(_CHECKER_GRAY))
+    p.end()
+    return pm
+
+
+class _CheckerView(QLabel):
+    """QLabel области просмотра с фоном-«шахматкой» (v0.7.16).
+
+    Плитка рисуется ПЕРЕД обычной отрисовкой QLabel — картинка, кадр
+    анимации (GIF) и текст ошибок ложатся поверх квадратов. Плитка None —
+    обычный QLabel: непрозрачным картинкам (JPEG и т.п.) шахматка не
+    показывается вовсе. Узоры отсчитываются от начала виджета-картинки,
+    поэтому при прокрутке квадраты едут вместе с ней, как холст."""
+
+    def __init__(self, text: str = "") -> None:
+        super().__init__(text)
+        self._tile: QPixmap | None = None
+
+    def set_checker_tile(self, tile: QPixmap | None) -> None:
+        self._tile = tile
+        self.update()
+
+    def paintEvent(self, event) -> None:  # noqa: N802 (Qt API)
+        if self._tile is not None and not self._tile.isNull():
+            p = QPainter(self)
+            p.fillRect(self.rect(), QBrush(self._tile))
+        super().paintEvent(event)
 
 
 def _is_hidden_entry(entry: os.DirEntry) -> bool:
@@ -1040,6 +1122,10 @@ class LocalViewer(QWidget):
         self._thumbs_enabled = QSettings("ImageHunter", "ImageHunter").value(
             "viewer/thumbs", True, type=bool)      # выключатель предпросмотра
         self._fs_applying = False        # фильтр папок применяется прямо сейчас (от повторного входа)
+        # фон-«шахматка» под прозрачными картинками (v0.7.16): включается
+        # только для картинок с альфа-каналом, размер клетки — ползунком
+        self._checker_on = False
+        self._checker_cell = _checker_cell_setting()
 
         # --- верхняя панель ---
         bar = QHBoxLayout()
@@ -1082,6 +1168,20 @@ class LocalViewer(QWidget):
         btn(None, "viewer.actual_tip", lambda: self.set_manual_zoom(1.0), literal="100%")
         btn(None, "viewer.fit_tip", self.fit_to_window, literal="◱")
         btn(None, "viewer.zoom_in_tip", lambda: self.zoom(1.25), literal="+")
+        bar.addSpacing(8)
+        # фон-«шахматка» под прозрачными картинками: размер клетки — ползунком
+        # (v0.7.16). Иконка-шахматка подсказывает, что регулирует ползунок.
+        self.checker_icon = QLabel()
+        self.checker_icon.setPixmap(_mini_checker_icon())
+        self.checker_icon.setToolTip(tr("viewer.checker_tip"))
+        bar.addWidget(self.checker_icon)
+        self.checker_slider = QSlider(Qt.Orientation.Horizontal)
+        self.checker_slider.setRange(CHECKER_MIN, CHECKER_MAX)
+        self.checker_slider.setValue(self._checker_cell)
+        self.checker_slider.setFixedWidth(92)
+        self.checker_slider.setToolTip(tr("viewer.checker_tip"))
+        self.checker_slider.valueChanged.connect(self._on_checker_cell)
+        bar.addWidget(self.checker_slider)
         bar.addSpacing(8)
         # 🪄 удаление фона (rembg): если пакет ещё не стоит — предложит
         # установить его прямо из программы (v0.7.12)
@@ -1203,7 +1303,7 @@ class LocalViewer(QWidget):
         tree_lay.addWidget(self.tree, 1)
 
         # --- область просмотра ---
-        self.view_label = QLabel("…")
+        self.view_label = _CheckerView("…")
         self.view_label.setAlignment(Qt.AlignCenter)
         self.view_label.setBackgroundRole(QPalette.ColorRole.Dark)
         self.view_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
@@ -1364,6 +1464,8 @@ class LocalViewer(QWidget):
         self.search_edit.setToolTip(tr("viewer.search_tip"))
         self.ignore_dash_box.setText(tr("viewer.ignore_dash"))
         self.ignore_dash_box.setToolTip(tr("viewer.ignore_dash_tip"))
+        self.checker_icon.setToolTip(tr("viewer.checker_tip"))
+        self.checker_slider.setToolTip(tr("viewer.checker_tip"))
         self.folder_search.setPlaceholderText(tr("viewer.folders_search_ph"))
         self.folder_search.setToolTip(tr("viewer.folders_search_tip"))
         self.list.setToolTip(tr("viewer.dnd_tip"))
@@ -1545,7 +1647,7 @@ class LocalViewer(QWidget):
             elif not self.list.count():
                 self._pixmap = None
                 self._movie = None
-                self.view_label.setText(tr("viewer.no_images"))
+                self._view_text(tr("viewer.no_images"))
         if failed_n:
             self.status.setText(tr("viewer.del_done_err", n=done, m=failed_n))
         elif perm_n and trash_n:
@@ -1588,7 +1690,13 @@ class LocalViewer(QWidget):
         acts["del"].setToolTip(tr("viewer.ctx_delete_tip"))
         menu.addSeparator()
         # модель rembg: выбор запоминается, размер/качество на любой вкус (v0.7.12)
-        m_model = menu.addMenu(tr("viewer.rembg_model_menu"))
+        # Подменю создаётся с явным C++-родителем: обёртка от menu.addMenu(строка)
+        # в части версий PySide6 помечена «владеет Python», и сборщик мусора
+        # удаляет C++-объект вместе с ней — подменю исчезает из меню, а
+        # a.menu() падает с RuntimeError (воспроизведено на 6.8–6.11; v0.7.16).
+        m_model = QMenu(menu)
+        m_model.setTitle(tr("viewer.rembg_model_menu"))
+        menu.addMenu(m_model)
         for model_id, key in rembg_manager.REMBG_MODELS:
             a = m_model.addAction(tr(key))
             a.setCheckable(True)
@@ -1771,7 +1879,7 @@ class LocalViewer(QWidget):
             elif not self.list.count():
                 self._pixmap = None
                 self._movie = None
-                self.view_label.setText(tr("viewer.no_images"))
+                self._view_text(tr("viewer.no_images"))
         for p, err in errors:
             applog.error(tr("log.event.rembg_revert_err",
                             name=os.path.basename(p), err=err))
@@ -1944,7 +2052,7 @@ class LocalViewer(QWidget):
             if self._paths:
                 self.list.setCurrentRow(0)
             else:
-                self.view_label.setText(tr("viewer.no_images"))
+                self._view_text(tr("viewer.no_images"))
                 self.status.setText(folder or "—")
             self._schedule_visible_thumbs()
 
@@ -2381,10 +2489,12 @@ class LocalViewer(QWidget):
             return
         if not img.isNull():
             self._pixmap = QPixmap.fromImage(img)
+            # прозрачный формат (PNG/GIF/WebP…) — под ним рисуем «шахматку» (v0.7.16)
+            self._set_view_checker(img.hasAlphaChannel())
             self._apply_mode()
             self._set_view_status(path, row, self._pixmap.size())
         elif err:
-            self.view_label.setText(tr("viewer.cant_open", err=err))
+            self._view_text(tr("viewer.cant_open", err=err))
 
     def _on_gif_ready(self, row: int, path: str, data: bytes, err: str) -> None:
         """GIF прочитан в фоне — построить анимацию из памяти (QBuffer).
@@ -2399,19 +2509,22 @@ class LocalViewer(QWidget):
         if not (0 <= row < len(self._paths)) or self._paths[row] != path:
             return
         if err:
-            self.view_label.setText(tr("viewer.cant_open", err=err))
+            self._view_text(tr("viewer.cant_open", err=err))
             return
         buf = QBuffer()
         buf.setData(QByteArray(data))
         buf.open(QBuffer.OpenModeFlag.ReadOnly)
         movie = QMovie(buf)
         if not movie.isValid():
-            self.view_label.setText(tr("viewer.cant_open", err="GIF"))
+            self._view_text(tr("viewer.cant_open", err="GIF"))
             return
         buf.setParent(movie)   # устройство живёт, пока жива анимация (v0.7.11)
         self._movie = movie
         self.view_label.setMovie(movie)
         movie.start()
+        # GIF с прозрачностью — тоже на «шахматке» (v0.7.16): первый кадр
+        # знает, есть ли в файле прозрачные пиксели
+        self._set_view_checker(movie.currentPixmap().hasAlphaChannel())
         self._set_view_status(path, row, movie.currentPixmap().size())
 
     def _set_view_status(self, path: str, row: int, size: QSize) -> None:
@@ -2420,8 +2533,36 @@ class LocalViewer(QWidget):
             f"  •  {size.width()}×{size.height()}"
         )
 
-    # ---------- зум ----------
+    # ---------- фон-«шахматка» (v0.7.16) ----------
 
+    def _set_view_checker(self, on: bool) -> None:
+        """Включить/выключить «шахматку» под картинкой (и перестроить плитку).
+
+        Вызывается, когда стало ясно, есть ли у показанной картинки
+        альфа-канал, и при смене размера клетки ползунком."""
+        self._checker_on = bool(on)
+        if self._checker_on:
+            self.view_label.set_checker_tile(
+                _checker_tile(self._checker_cell,
+                              self.view_label.devicePixelRatioF()))
+        else:
+            self.view_label.set_checker_tile(None)
+
+    def _view_text(self, msg: str) -> None:
+        """Текст вместо картинки («Откройте папку…», ошибки чтения) —
+        всегда без «шахматки»: квадраты под сообщением только мешают."""
+        self._set_view_checker(False)
+        self.view_label.setText(msg)
+
+    def _on_checker_cell(self, value: int) -> None:
+        """Ползунок размера клеток: запомнить и перерисовать, если видна."""
+        self._checker_cell = max(CHECKER_MIN, min(CHECKER_MAX, int(value)))
+        QSettings("ImageHunter", "ImageHunter").setValue(
+            "viewer/checker_cell", self._checker_cell)
+        if self._checker_on:
+            self._set_view_checker(True)   # перестроить плитку с новой клеткой
+
+    # ---------- зум ----------
     def _apply_mode(self) -> None:
         if self._movie is not None or self._pixmap is None:
             return
