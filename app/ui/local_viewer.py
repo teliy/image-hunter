@@ -76,6 +76,8 @@ TREE_WIDTH = 230
 THUMB_CACHE_MAX = 256 * 1024 * 1024   # предел кэша миниатюр на диске
 _RESTORE_MAX_FILES = 2000   # автопоказ последней папки: больше — только вручную
 _TREE_TOKEN_ROLE = Qt.ItemDataRole.UserRole + 2   # жетон фоновой догрузки узла
+_TREE_SYNC_ROLE = Qt.ItemDataRole.UserRole + 3    # путь-цель асинхронной прогулки к папке
+_TREE_SYNC_SEQ_ROLE = Qt.ItemDataRole.UserRole + 4  # поколение прогулки (для отмены)
 
 # сетевость дисков уже выясненное (кэш): буква диска -> DRIVE_REMOTE
 _REMOTE_DRIVE_CACHE: dict[str, bool] = {}
@@ -1082,6 +1084,7 @@ class LocalViewer(QWidget):
         self._net_pool = QThreadPool(self)
         self._net_pool.setMaxThreadCount(2)
         self._tree_token = 0
+        self._sync_seq = 0   # поколение асинхронной прогулки — для отмены
         self._scan_sync_tree = False
         self._scan_restore = False
         self._delete_perm = False
@@ -1902,6 +1905,8 @@ class LocalViewer(QWidget):
             child.setToolTip(0, sub)
             child.addChild(self._dummy_item())
             item.addChild(child)
+        if item.data(0, _TREE_SYNC_ROLE):
+            self._sync_continue(item)         # асинхронная прогулка к папке
         if self.folder_search.text().strip() and not self._fs_applying:
             self._apply_folder_filter()       # новые подпапки — тоже под фильтр
 
@@ -1962,6 +1967,7 @@ class LocalViewer(QWidget):
         path = item.data(0, Qt.ItemDataRole.UserRole)
         if not path:
             return
+        self._sync_seq += 1   # ручной выбор — запоздалые шаги прогулки не перебьют
         self._populate_children(item)
         item.setExpanded(True)
         self._folder = path
@@ -1973,14 +1979,21 @@ class LocalViewer(QWidget):
     def _restore_last_folder(self) -> None:
         """Автопоказ последней открытой папки: скан в рабочем потоке, чтобы
         запуск оставался мгновенным даже на сетевом диске (v0.7.2). Пустая
-        или гигантская (> _RESTORE_MAX_FILES) папка молча пропускается."""
+        или гигантская (> _RESTORE_MAX_FILES) папка молча пропускается.
+
+        Дерево тут же раскрывается к этой папке (асинхронно, уровень за
+        уровнем — v0.7.6): раньше подсветка была привязана к результату
+        скана (_scan_sync_tree), а восстановленный поиск по имени обгонял
+        скан и сбрасывал его генератор — скан отбрасывался вместе с
+        подсветкой, и после запуска с фильтром было не видно, где лежат
+        картинки (репорт после обновления 0.7.4)."""
         last = QSettings("ImageHunter", "ImageHunter").value("viewer/last_folder", "")
         if not last:
             return
         self._scan_restore = True
-        self._scan_sync_tree = True
         self._folder = last
         self._gen += 1
+        self._sync_tree_async(last)
         QThreadPool.globalInstance().start(
             _ScanTask(last, self._gen, self._scan_signals))
 
@@ -1992,6 +2005,7 @@ class LocalViewer(QWidget):
 
     def _sync_tree(self, folder: str) -> None:
         """Раскрывает в дереве путь к folder и подсвечивает её (для «Открыть папку…»)."""
+        self._sync_seq += 1   # синхронная подсветка отменяет асинхронную прогулку
         folder_n = os.path.normpath(folder)
         target = None
         for i in range(self.tree.topLevelItemCount()):
@@ -2021,6 +2035,85 @@ class LocalViewer(QWidget):
                 if found is not None:
                     return found
         return None
+
+    # ---------- асинхронная прогулка по дереву к текущей папке ----------
+
+    def _sync_tree_async(self, folder: str) -> None:
+        """Раскрывает дерево к folder уровень за уровнем, не заминая интерфейс.
+
+        Синхронный вариант (_sync_tree) на сетевом диске платит одним
+        сетевым тайм-аутом за каждый уровень — здесь каждый уровень читает
+        фоновый scandir (см. _populate_children), а когда подпапки готовы
+        (_on_subdirs_ready), шаг повторяется для следующего уровня.
+        Целевой путь хранится в самом узле (_TREE_SYNC_ROLE), поэтому
+        перестройка дерева (refresh_drives) отменяет прогулку вместе с
+        узлами. Запускается при восстановлении последней папки (в том
+        числе когда активен восстановленный поиск — раньше этот случай
+        оставлял дерево свёрнутым, v0.7.6).
+
+        Новая прогулка (или синхронная подсветка, или клик по дереву)
+        увеличивает _sync_seq: запоздалые шаги старой прогулки, видя
+        чужое поколение, не трогают выделение."""
+        self._sync_seq += 1
+        seq = self._sync_seq
+        folder_n = os.path.normpath(folder)
+        for i in range(self.tree.topLevelItemCount()):
+            top = self.tree.topLevelItem(i)
+            top_n = os.path.normpath(top.data(0, Qt.ItemDataRole.UserRole) or "")
+            if top_n == folder_n:
+                self._sync_finish(top, seq)
+                return
+            if self._is_under(folder_n, top_n):
+                self._sync_step(top, folder_n, seq)
+                return
+
+    def _sync_step(self, item: QTreeWidgetItem, folder_n: str, seq: int) -> None:
+        """Один шаг прогулки: пометить узел целью, раскрыть и начать догрузку
+        подпапок (если они ещё не читаются/не прочитаны)."""
+        item.setData(0, _TREE_SYNC_ROLE, folder_n)
+        item.setData(0, _TREE_SYNC_SEQ_ROLE, seq)
+        if not item.data(0, Qt.ItemDataRole.UserRole + 1):
+            self._populate_children(item)   # фоновый скан → продолжение в _on_subdirs_ready
+        item.setExpanded(True)
+        for i in range(item.childCount()):
+            if item.child(i).data(0, Qt.ItemDataRole.UserRole):
+                self._sync_continue(item)   # подпапки уже были прочитаны ранее
+                return
+        if item.childCount() == 0:
+            self._sync_continue(item)       # папка уже прочитана и пуста
+        # иначе — заглушка: скан в полёте, продолжим в _on_subdirs_ready
+
+    def _sync_continue(self, item: QTreeWidgetItem) -> None:
+        """Подпапки узла известны — найти следующее звено пути и спуститься."""
+        folder_n = item.data(0, _TREE_SYNC_ROLE)
+        seq = item.data(0, _TREE_SYNC_SEQ_ROLE)
+        item.setData(0, _TREE_SYNC_ROLE, None)
+        item.setData(0, _TREE_SYNC_SEQ_ROLE, 0)
+        if not folder_n or seq != self._sync_seq:
+            return   # прогулка отменена или узел без цели — выделение не трогаем
+        for i in range(item.childCount()):
+            child = item.child(i)
+            child_n = os.path.normpath(child.data(0, Qt.ItemDataRole.UserRole) or "")
+            if not child_n:
+                continue                    # заглушка — не путь
+            if child_n == folder_n:
+                self._sync_finish(child, seq)
+                return
+            if self._is_under(folder_n, child_n):
+                self._sync_step(child, folder_n, seq)
+                return
+        # дальше пути нет (папка удалена/недоступна) — подсветим ближайший узел
+        self.tree.setCurrentItem(item)
+        self.tree.scrollToItem(item)
+
+    def _sync_finish(self, item: QTreeWidgetItem, seq: int) -> None:
+        """Цель достигнута: подсветить и показать найденную папку."""
+        item.setData(0, _TREE_SYNC_ROLE, None)
+        item.setData(0, _TREE_SYNC_SEQ_ROLE, 0)
+        if seq != self._sync_seq:
+            return   # пока шли, цель сменилась — выделение не трогаем
+        self.tree.setCurrentItem(item)
+        self.tree.scrollToItem(item)
 
     # ---------- служебное ----------
 

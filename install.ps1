@@ -273,10 +273,12 @@ start "" "%DIR%.venv\Scripts\pythonw.exe" "%DIR%main.py" %*
     Set-Content -Path $batPath -Value $bat -Encoding ASCII
   } else {
     # установщик запущен из этой же папки (ImageHunter.bat update) — меняем файл
-    # отложенно, чтобы не ломать текущий cmd-сеанс
+    # отложенно, чтобы не ломать текущий cmd-сеанс; NoNewWindow — никогда не
+    # создаём новое окно (в скрытом авто-обновлении консоль не видна вообще,
+    # при ручном запуске — окно не плодится)
     $batNew = Join-Path $dir 'ImageHunter.bat.new'
     Set-Content -Path $batNew -Value $bat -Encoding ASCII
-    Start-Process cmd -ArgumentList '/c', "ping -n 3 127.0.0.1 >nul & move /y `"$batNew`" `"$batPath`"" -WindowStyle Hidden
+    Start-Process cmd -ArgumentList '/c', "ping -n 3 127.0.0.1 >nul & move /y `"$batNew`" `"$batPath`"" -NoNewWindow
     Write-Warn2 'Лаунчер ImageHunter.bat заменится через 2–3 секунды (сейчас файл используется этим окном).'
   }
 

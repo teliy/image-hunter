@@ -74,6 +74,12 @@ Additionally, `udm=2` counts as a results page on any national Google domain (go
 
 Scenario: a name search is active in My Pictures, a batch of images is saved into the same folder from the Image Search tab — and back in the tab the strip was shown unfiltered while the query was still in the field; Enter had to be pressed again. The cause: saving calls `refresh()` on the current folder, and it re-read the folder with a plain scan, ignoring the active query. Now `refresh()` behaves like a tree click: with an active search it re-runs the search from the same folder — the new files join the same result set, nothing to retype. Without a query the behavior is unchanged — the folder is re-read as before.
 
+## Windowless updates and a tree that shows where you are (v0.7.6)
+
+**1. In-app update — zero terminal windows.** The installer used to run in a visible console window (before v0.7.4 — two or three of them), and the windows stayed on screen after the update. Now cmd is launched with the CREATE_NO_WINDOW flag: no terminals during the update or after it. The installer output goes to the `%TEMP%\ImageHunter_update.log` journal; on failure a normal dialog shows the error and the log path instead of a console. Also, install paths are no longer written into the batch file — they are passed via environment variables, so the update no longer breaks when the install folder or the user name contains non-ASCII characters. The app tells you what to expect: after confirming the update a dialog explains that the update runs in the background and the app will close and relaunch itself in 1–2 minutes.
+
+**2. The folder tree expands to the current folder.** If the last folder and the name filter were restored at startup, it used to be unclear where the shown pictures lived — the tree stayed collapsed. The cause: the tree highlight was tied to the result of the background folder scan, and the restored search outran the scan and dropped it together with the highlight. Now the tree expands to the current folder right away, level by level, in the background (on a network drive — without freezing the UI); if the folder is unreachable, the nearest existing node gets highlighted; manual selection and dialog-open override the walk, not the other way around.
+
 ## Features
 
 **📁 My Pictures** — local viewer:

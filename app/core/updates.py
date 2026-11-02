@@ -80,45 +80,56 @@ def _app_dir_of(inst: str) -> str:
     return d
 
 
-def _restart_line(app_dir: str) -> str:
-    """Строка перезапуска приложения — без лишнего консольного окна.
+def _restart_block() -> list[str]:
+    """Строки перезапуска приложения — без лишнего консольного окна.
 
     pythonw.exe относится к оконной подсистеме, консоль ему не нужна.
+    Пути подставляет сам батник из переменных окружения (IH_APP_DIR),
+    поэтому в файле нет ни одного символа вне ASCII — cmd читает батник
+    в OEM-кодировке, и путь с кириллицей в нём просто нельзя записать.
     Раньше перезапуск шёл через ImageHunter.bat, и cmd открывал для него
-    отдельное окно, остававшееся висеть после обновления.
-    """
-    pyw = os.path.join(app_dir, ".venv", "Scripts", "pythonw.exe")
-    if os.path.exists(pyw):
-        return f'start "" "{pyw}" "{os.path.join(app_dir, "main.py")}"'
-    bat = os.path.join(app_dir, "ImageHunter.bat")
-    if os.path.exists(bat):
-        return f'start "" "{bat}"'
-    return ""
+    отдельное окно, остававшееся висеть после обновления."""
+    return [
+        'if exist "%IH_APP_DIR%\\.venv\\Scripts\\pythonw.exe" (',
+        '  start "" "%IH_APP_DIR%\\.venv\\Scripts\\pythonw.exe" "%IH_APP_DIR%\\main.py"',
+        ') else if exist "%IH_APP_DIR%\\ImageHunter.bat" (',
+        '  start "" "%IH_APP_DIR%\\ImageHunter.bat"',
+        ")",
+    ]
 
 
-def _update_script(inst: str, app_dir: str) -> str:
-    """Содержимое временного батника обновления (CRLF, только ASCII)."""
+def win_log_path() -> str:
+    """Журнал обновления на Windows (рядом с батником — во временной папке)."""
+    return os.path.join(tempfile.gettempdir(), "ImageHunter_update.log")
+
+
+def _update_script() -> str:
+    """Содержимое временного батника обновления (CRLF, только ASCII).
+
+    Батник выполняется в СКРЫТОМ консольном сеансе (cmd запускается с
+    CREATE_NO_WINDOW) — терминальных окон на экране нет ни во время
+    обновления, ни после него. Поэтому:
+    - вывод установщика пишется в журнал (win_log_path), а не на экран;
+    - при сбое вместо консоли показывается обычный диалог с ошибкой и
+      путём к журналу (powershell работает в том же скрытом сеансе и
+      окна терминала не создаёт; диалог держит сеанс до нажатия OK).
+    Все пути батник берёт из переменных окружения (IH_APP_DIR, IH_INST,
+    IH_LOG) — см. _restart_block."""
     lines = [
         "@echo off",
-        "title Image Hunter update",
-        f'cd /d "{app_dir}"',
-        f'powershell -NoProfile -ExecutionPolicy Bypass -File "{inst}" -Update -AssumeYes',
+        'cd /d "%IH_APP_DIR%"',
+        'powershell -NoProfile -ExecutionPolicy Bypass -File "%IH_INST%" '
+        '-Update -AssumeYes > "%IH_LOG%" 2>&1',
         "set IH_RC=%errorlevel%",
     ]
-    restart = _restart_line(app_dir)
-    if restart:
-        lines.append(restart)
-    # при сбое окно остаётся с текстом ошибки до нажатия клавиши (иначе conhost
-    # мгновенно закрывает его вместе с причиной сбоя); при успехе ветка не
-    # выполняется и окно закрывается само
+    lines += _restart_block()
     lines += [
-        'if not "%IH_RC%"=="0" (',
-        "  echo.",
-        "  echo Update FAILED - see messages above.",
-        "  echo To retry: run ImageHunter.bat update from the app folder.",
-        "  echo.",
-        "  pause",
-        ")",
+        'if "%IH_RC%"=="0" goto :ok',
+        "powershell -NoProfile -ExecutionPolicy Bypass -Command \"Add-Type "
+        "-AssemblyName System.Windows.Forms; [void][System.Windows.Forms."
+        "MessageBox]::Show('Image Hunter update FAILED. Details: %IH_LOG%',"
+        "'Image Hunter update',0,16)\"",
+        ":ok",
     ]
     return "\r\n".join(lines) + "\r\n"
 
@@ -126,11 +137,13 @@ def _update_script(inst: str, app_dir: str) -> str:
 def run_update_and_restart() -> bool:
     """Запускает установщик в режиме обновления отдельным (переживающим) процессом.
 
-    Windows: ровно ОДНО окно консоли с прогрессом установки — закрывается само,
-    когда установка закончилась (при сбое остаётся с текстом ошибки до нажатия
-    клавиши). Приложение перезапускается напрямую через pythonw.exe. Раньше
-    и запуск (`cmd /c start`), и перезапуск (через ImageHunter.bat) открывали
-    по лишнему консольному окну — после обновления они оставались на экране.
+    Windows: обновление идёт ПОЛНОСТЬЮ БЕЗ окон — cmd запускается с
+    CREATE_NO_WINDOW, вывод установщика пишется в журнал (win_log_path),
+    при сбое показывается обычный диалог, а не терминал. Раньше установка
+    шла в видимом окне консоли (до v0.7.4 — и вовсе в двух-трёх: служебный
+    cmd, окно установки и перезапуск через ImageHunter.bat), и окна
+    оставались на экране после обновления. Приложение перезапускается
+    напрямую через pythonw.exe (оконная подсистема, консоль не нужна).
     Linux/macOS: фоновый процесс, лог — в update.log рядом с программой,
     затем автозапуск.
     """
@@ -142,13 +155,16 @@ def run_update_and_restart() -> bool:
         if os.name == "nt":
             script = os.path.join(tempfile.gettempdir(), "ImageHunter_update.bat")
             with open(script, "w", encoding="ascii") as f:
-                f.write(_update_script(inst, app_dir))
-            # Одно окно консоли на всю установку. Прежний запуск
-            # `cmd /c start "" script` открывал сразу две консоли: служебную
-            # (гасла через мгновение) и само окно установки.
+                f.write(_update_script())
+            # Пути — через окружение: в батнике не может быть символов вне
+            # ASCII, а папка установки/имя пользователя бывают с кириллицей.
+            env = dict(os.environ)
+            env["IH_APP_DIR"] = app_dir
+            env["IH_INST"] = inst
+            env["IH_LOG"] = win_log_path()
             subprocess.Popen(["cmd", "/c", script],
-                             creationflags=subprocess.CREATE_NEW_CONSOLE,
-                             close_fds=True)
+                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                             close_fds=True, env=env)
         else:
             log = os.path.join(app_dir, "update.log")
             restart = ""

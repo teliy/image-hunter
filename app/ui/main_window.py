@@ -157,8 +157,12 @@ class MainWindow(QMainWindow):
         if ans != QMessageBox.StandardButton.Yes:
             return
         if updates.run_update_and_restart():
-            self._status.showMessage(tr("main.upd_running"))
-            QTimer.singleShot(400, QApplication.quit)
+            applog.event("log.event.upd_started")
+            # без единого окна терминала: обновление идёт в скрытом сеансе,
+            # пользователь должен знать, чего ждать, пока приложение закрыто
+            QMessageBox.information(self, tr("main.upd_title"),
+                                    tr("main.upd_running"))
+            QTimer.singleShot(200, QApplication.quit)
         else:
             self._status.clearMessage()
             QMessageBox.warning(self, tr("main.upd_title"), tr("main.upd_no_installer"))

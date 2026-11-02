@@ -53,13 +53,13 @@ _STRINGS: dict[str, dict[str, str]] = {
         "en": "You have the latest version — {version}",
         "zh": "已是最新版本 — {version}"},
     "main.upd_available": {
-        "ru": "Доступна новая версия: {remote} (у вас {current}).\n\nОбновить сейчас? Приложение закроется, в отдельном окне запустится установщик,\nпосле завершения Image Hunter откроется сам.",
-        "en": "New version available: {remote} (you have {current}).\n\nUpdate now? The app will close, the installer will run in a separate window,\nand Image Hunter will reopen when it finishes.",
-        "zh": "发现新版本：{remote}（当前 {current}）。\n\n现在更新吗？应用程序将关闭，安装程序将在单独的窗口中运行，\n完成后 Image Hunter 会自动重新打开。"},
+        "ru": "Доступна новая версия: {remote} (у вас {current}).\n\nОбновить сейчас? Приложение закроется, обновление пройдёт в фоне без единого окна,\nпосле завершения Image Hunter откроется сам.",
+        "en": "New version available: {remote} (you have {current}).\n\nUpdate now? The app will close, the update runs in the background with no windows at all,\nand Image Hunter reopens when it finishes.",
+        "zh": "发现新版本：{remote}（当前 {current}）。\n\n现在更新吗？应用程序将关闭，更新将在后台完全无窗口地运行，\n完成后 Image Hunter 会自动重新打开。"},
     "main.upd_running": {
-        "ru": "Обновление запущено — приложение закрывается…",
-        "en": "Update started — the app is closing…",
-        "zh": "更新已启动 — 应用程序正在关闭…"},
+        "ru": "Обновление выполняется в фоне — без единого окна терминала.\n\nПриложение сейчас закроется и запустится само через 1–2 минуты.\nЕсли обновление не удастся, появится обычный диалог с ошибкой и путём к журналу (%TEMP%\\ImageHunter_update.log).",
+        "en": "The update runs in the background — with no terminal windows at all.\n\nThe app will close now and relaunch by itself in 1–2 minutes.\nIf the update fails, a normal dialog with the error and the log path (%TEMP%\\ImageHunter_update.log) will appear.",
+        "zh": "更新将在后台运行 — 全程不显示任何终端窗口。\n\n应用程序现在将关闭，并在 1–2 分钟后自动重新启动。\n如果更新失败，将弹出普通对话框，显示错误信息和日志路径（%TEMP%\\ImageHunter_update.log）。"},
     "main.upd_no_installer": {
         "ru": "Рядом с программой не найден установщик (папка installer).\nОбновитесь командой: ImageHunter.bat update",
         "en": "Installer not found next to the app (installer folder).\nUpdate with the command: ImageHunter.bat update",
