@@ -70,6 +70,10 @@ Neither case is "broken outright" — both search engines changed their markup, 
 
 Additionally, `udm=2` counts as a results page on any national Google domain (google.de, google.co.uk, …) — Google moves between them on its own; the checkbox scan is isolated per tile (one broken tile no longer wrecks the whole scan).
 
+## The name filter survives downloads (v0.7.5)
+
+Scenario: a name search is active in My Pictures, a batch of images is saved into the same folder from the Image Search tab — and back in the tab the strip was shown unfiltered while the query was still in the field; Enter had to be pressed again. The cause: saving calls `refresh()` on the current folder, and it re-read the folder with a plain scan, ignoring the active query. Now `refresh()` behaves like a tree click: with an active search it re-runs the search from the same folder — the new files join the same result set, nothing to retype. Without a query the behavior is unchanged — the folder is re-read as before.
+
 ## Features
 
 **📁 My Pictures** — local viewer:

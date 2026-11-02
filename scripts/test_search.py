@@ -99,6 +99,30 @@ def main() -> int:
         check("очистка поиска вернула текущую папку (2 файла)", ok,
               f"count={viewer.list.count()}")
 
+        # 4b. «скачивание» в папку (refresh) не сбрасывает активный поиск:
+        # раньше лента перечитывалась простым сканом без фильтра, и Enter
+        # приходилось нажимать заново (v0.7.5)
+        viewer.search_edit.setText("img_")
+        viewer._start_search_now()
+        ok = wait_until(lambda: viewer.list.count() == 4)
+        check("поиск перед «скачиванием» — 4 файла", ok, f"count={viewer.list.count()}")
+        make_image(os.path.join(tmp, "img_a3.png"))   # в папку «скачали» новую картинку
+        viewer.refresh()   # то же, что делает _on_save_finished после сохранения
+        ok = wait_until(lambda: viewer.list.count() == 5)
+        check("refresh() не сбросил фильтр — в выдаче 5 файлов", ok,
+              f"count={viewer.list.count()}")
+        check("запрос остался в поле", viewer.search_edit.text() == "img_")
+        names = {viewer.list.item(i).text() for i in range(viewer.list.count())} \
+            if viewer.list.count() else set()
+        check("новый img_a3.png попал в выдачу", "img_a3.png" in names,
+              str(sorted(names)))
+
+        # 4c. без запроса refresh() по-прежнему просто перечитывает текущую папку
+        viewer.search_edit.clear()
+        ok = wait_until(lambda: viewer.list.count() == 3)
+        check("refresh() без запроса — обычная лента (3 файла)", ok,
+              f"count={viewer.list.count()}")
+
         # 5. модуль обновлений
         check("is_newer: заведомо новая версия распознаётся", updates.is_newer("99.0.0", __version__))
         check("is_newer: та же версия не новее", not updates.is_newer(__version__, __version__))
