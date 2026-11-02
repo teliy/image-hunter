@@ -74,6 +74,18 @@ Additionally, `udm=2` counts as a results page on any national Google domain (go
 
 Scenario: a name search is active in My Pictures, a batch of images is saved into the same folder from the Image Search tab — and back in the tab the strip was shown unfiltered while the query was still in the field; Enter had to be pressed again. The cause: saving calls `refresh()` on the current folder, and it re-read the folder with a plain scan, ignoring the active query. Now `refresh()` behaves like a tree click: with an active search it re-runs the search from the same folder — the new files join the same result set, nothing to retype. Without a query the behavior is unchanged — the folder is re-read as before.
 
+## Background removal right in the app: rembg as a module (v0.7.12)
+
+Marketplace and search images often need their background removed. Image Hunter now integrates **rembg** (github.com/danielgatis/rembg) — the most alive open-source background removal project: MIT code, everything runs locally via ONNX Runtime, no cloud, no keys.
+
+**Install without a terminal.** The “🪄 Remove Background” button on the My Pictures toolbar and the same item in the strip’s right-click menu: if the module is not installed yet, the app offers to install `rembg[cpu]` via pip (hidden window, same trick as the v0.7.6 updater) and then **immediately continues removing the background** for the image you clicked. An “Install the background removal module…” item also lives in the right-click menu itself.
+
+**Uninstalling the module — also from the app.** In the same menu: “Uninstall the rembg module and models…” — pip removes the package and ONNX Runtime, then the downloaded-model cache is wiped (`~/.rembg`, or `~/.u2net` for older versions); before removal the app shows how much space will be freed. Nothing is left on disk.
+
+**How it works.** The result is saved next to the original as `name_nobg.png` and appears in the strip right away; re-processing a result is blocked (“this is already a no-background image”). Works on the selection too — several tiles at once. Processing runs in a worker thread (one rembg session for the whole batch — the model is loaded into memory once); on network drives the files are read by the narrow pool, so the UI never freezes. Progress goes to the status bar, per-file results and errors to the log. Model choice is in the “Model” submenu: `u2netp` (~5 MB, fast, the default), `u2net` (~176 MB), `isnet-general-use` (~170 MB, cleanest edges); the model downloads automatically on first use and is remembered between sessions.
+
+Tests: `scripts/test_rembg.py` — 60 checks, including a full run with real rembg (pip install → model download → result file → cache cleanup).
+
 ## Stability and speed: results of a full code audit (v0.7.11)
 
 The whole codebase was re-reviewed for freezes, races and slow spots. Eight narrow places were found and fixed:

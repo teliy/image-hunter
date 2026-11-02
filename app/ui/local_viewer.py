@@ -72,6 +72,7 @@ from PySide6.QtWidgets import (
 
 from app.core import applog, i18n, imgload
 from app.core.i18n import tr
+from app.ui import rembg_manager
 
 # .avif добавлен явно: PySide6 не умеет AVIF без Pillow-кодека (см. imgload),
 # но сами файлы в ленте показывать надо — декодирует imgload
@@ -956,6 +957,10 @@ class LocalViewer(QWidget):
         btn(None, "viewer.fit_tip", self.fit_to_window, literal="◱")
         btn(None, "viewer.zoom_in_tip", lambda: self.zoom(1.25), literal="+")
         bar.addSpacing(8)
+        # 🪄 удаление фона (rembg): если пакет ещё не стоит — предложит
+        # установить его прямо из программы (v0.7.12)
+        btn("viewer.rembg", "viewer.rembg_tip", self._on_rembg_button)
+        bar.addSpacing(8)
         btn("viewer.reveal", "viewer.reveal_tip", self.reveal_folder)
         bar.addSpacing(8)
         self.search_edit = _GripEdit("viewer/search_width", default_w=220)
@@ -1174,6 +1179,25 @@ class LocalViewer(QWidget):
         self._delete_perm = False
         self._delete_phase = 0
         self._delete_t0 = 0.0
+
+        # удаление фона (rembg): сигналы фоновых задач + состояние (v0.7.12)
+        self._rembg_signals = rembg_manager.RembgSignals()
+        self._rembg_signals.install_done.connect(self._on_rembg_install_done)
+        self._rembg_signals.uninstall_done.connect(self._on_rembg_uninstall_done)
+        self._rembg_signals.file_done.connect(self._on_rembg_file_done)
+        self._rembg_signals.batch_done.connect(self._on_rembg_batch_done)
+        self._rembg_busy = False       # pip/обработка уже идут — второй запуск не нужен
+        self._rembg_pending: list[str] | None = None   # очередь после установки
+        self._rembg_ok = 0
+        self._rembg_fail = 0
+        self._rembg_total = 0
+        self._rembg_t0 = 0.0
+        saved_model = QSettings("ImageHunter", "ImageHunter").value(
+            rembg_manager.MODEL_KEY, rembg_manager.DEFAULT_MODEL, type=str)
+        # в настройках могла остаться модель, которой больше нет в списке
+        self._rembg_model = (saved_model if saved_model in
+                             {m for m, _k in rembg_manager.REMBG_MODELS}
+                             else rembg_manager.DEFAULT_MODEL)
 
         # избранные папки читаются до построения дерева (v0.7.9)
         self._favorites = self._load_favorites()
@@ -1409,23 +1433,206 @@ class LocalViewer(QWidget):
         self._paths = [self._paths[i] for i in keep]
         self._meta = [self._meta[i] for i in keep]
 
-    def _list_context_menu(self, pos) -> None:
-        """Правый клик на ленте: открыть / копировать выделенные файлы."""
+    def _build_list_menu(self) -> tuple[QMenu, dict[str, object]]:
+        """Собрать меню ленты (без exec — тест проверяет состав напрямую)."""
         menu = QMenu(self)
-        act_open = menu.addAction(tr("viewer.ctx_open"))
-        act_copy = menu.addAction(tr("viewer.ctx_copy"))
-        act_copy.setToolTip(tr("viewer.ctx_copy_tip"))
-        act_del = menu.addAction(tr("viewer.ctx_delete"))
-        act_del.setToolTip(tr("viewer.ctx_delete_tip"))
+        acts: dict[str, object] = {}
+        acts["open"] = menu.addAction(tr("viewer.ctx_open"))
+        acts["copy"] = menu.addAction(tr("viewer.ctx_copy"))
+        acts["copy"].setToolTip(tr("viewer.ctx_copy_tip"))
+        acts["bg"] = menu.addAction(tr("viewer.rembg"))
+        acts["bg"].setToolTip(tr("viewer.rembg_tip"))
+        acts["del"] = menu.addAction(tr("viewer.ctx_delete"))
+        acts["del"].setToolTip(tr("viewer.ctx_delete_tip"))
+        menu.addSeparator()
+        # модель rembg: выбор запоминается, размер/качество на любой вкус (v0.7.12)
+        m_model = menu.addMenu(tr("viewer.rembg_model_menu"))
+        for model_id, key in rembg_manager.REMBG_MODELS:
+            a = m_model.addAction(tr(key))
+            a.setCheckable(True)
+            a.setChecked(model_id == self._rembg_model)
+            a.triggered.connect(lambda _=False, mid=model_id:
+                                self._on_rembg_model(mid))
+        # установка/удаление модуля — прямо из программы, без терминала
+        if rembg_manager.is_installed():
+            acts["uninst"] = menu.addAction(tr("viewer.rembg_menu_uninstall"))
+        else:
+            acts["inst"] = menu.addAction(tr("viewer.rembg_menu_install"))
+        return menu, acts
+
+    def _list_context_menu(self, pos) -> None:
+        """Правый клик на ленте: открыть / копировать / удалить фон / удалить."""
+        menu, acts = self._build_list_menu()
         chosen = menu.exec(self.list.mapToGlobal(pos))
-        if chosen is act_open:
+        if chosen is acts.get("open"):
             item = self.list.currentItem()
             if item is not None and item.data(Qt.UserRole):
                 QDesktopServices.openUrl(QUrl.fromLocalFile(item.data(Qt.UserRole)))
-        elif chosen is act_copy:
+        elif chosen is acts.get("copy"):
             self.copy_selected_files()
-        elif chosen is act_del:
+        elif chosen is acts.get("bg"):
+            self._on_rembg_button()
+        elif chosen is acts.get("del"):
             self.delete_selected_files()
+        elif chosen is acts.get("inst"):
+            self._rembg_start_install(pending=self._rembg_targets())
+        elif chosen is acts.get("uninst"):
+            self._rembg_start_uninstall()
+
+    # ---------- удаление фона (rembg, v0.7.12) ----------
+
+    def _rembg_targets(self) -> list[str]:
+        """Файлы для «Удалить фон»: выделенные плитки, иначе открытая."""
+        paths = self.list.selected_paths()
+        if not paths:
+            row = self.list.currentRow()
+            if 0 <= row < len(self._paths):
+                paths = [self._paths[row]]
+        return paths
+
+    def _on_rembg_button(self) -> None:
+        """Кнопка/пункт меню «Удалить фон»: пачка уходит в фоновую задачу."""
+        if self._rembg_busy:
+            self.status.setText(tr("viewer.rembg_busy"))
+            return
+        targets = self._rembg_targets()
+        if not targets:
+            self.status.setText(tr("viewer.rembg_none"))
+            return
+        if not rembg_manager.is_installed():
+            # модуля нет — предложить установить, не отпуская в терминал
+            ans = QMessageBox.question(self, tr("viewer.rembg"),
+                                       tr("viewer.rembg_inst_q"))
+            if ans == QMessageBox.StandardButton.Yes:
+                self._rembg_start_install(pending=targets)
+            return
+        self._rembg_start(targets)
+
+    def _rembg_start(self, paths: list[str]) -> None:
+        """Запустить фоновую обработку пачки (одна сессия на пачку)."""
+        jobs: list[tuple[str, str]] = []
+        skipped = 0
+        for p in paths:
+            out = rembg_manager.nobg_path(p)
+            if out:
+                jobs.append((p, out))
+            else:
+                skipped += 1   # это уже результат — повторять бессмысленно
+        if skipped:
+            applog.event("log.event.rembg_skip", n=skipped)
+        if not jobs:
+            self.status.setText(tr("viewer.rembg_already"))
+            return
+        self._rembg_busy = True
+        self._rembg_total = len(jobs)
+        self._rembg_ok = 0
+        self._rembg_fail = 0
+        self._rembg_t0 = time.perf_counter()
+        self.status.setText(tr("viewer.rembg_progress", done=0, n=len(jobs),
+                               name=os.path.basename(jobs[0][0])))
+        applog.event("log.event.rembg_start", n=len(jobs),
+                     model=self._rembg_model)
+        # чтение файлов — в самой задаче, GUI не ждёт; на сетевом диске —
+        # узкий отдельный пул, чтобы подвисший сервер не занял всех
+        # потоков миниатюр (принцип v0.7.2)
+        pool = (self._net_pool
+                if any(_is_remote_path(p) for p, _out in jobs)
+                else QThreadPool.globalInstance())
+        pool.start(rembg_manager.RemoveBgTask(jobs, self._rembg_model,
+                                              self._rembg_signals))
+
+    def _on_rembg_file_done(self, path: str, out: str, ok: bool, err: str) -> None:
+        """Промежуточный итог по файлу: прогресс в статусе, ошибки в журнал."""
+        if ok:
+            self._rembg_ok += 1
+        else:
+            self._rembg_fail += 1
+            applog.error(tr("log.event.rembg_file_err",
+                            name=os.path.basename(path), err=err))
+        done = self._rembg_ok + self._rembg_fail
+        self.status.setText(tr("viewer.rembg_progress", done=done,
+                               n=self._rembg_total,
+                               name=os.path.basename(path)))
+
+    def _on_rembg_batch_done(self, ok: int, fail: int) -> None:
+        self._rembg_busy = False
+        ms = round((time.perf_counter() - self._rembg_t0) * 1000)
+        tail = tr("viewer.rembg_done_fail", fail=fail) if fail else ""
+        self.status.setText(tr("viewer.rembg_done", ok=ok) + tail)
+        applog.event("log.event.rembg_done", ok=ok, fail=fail,
+                     ms=ms, extra=applog.extra(model=self._rembg_model))
+        if ok:
+            self.refresh()   # файлы «_nobg.png» появляются в ленте
+
+    def _rembg_start_install(self, pending: list[str] | None = None) -> None:
+        """Установить rembg в фоне; ``pending`` — что обработать после."""
+        if self._rembg_busy:
+            self.status.setText(tr("viewer.rembg_busy"))
+            return
+        self._rembg_busy = True
+        self._rembg_pending = list(pending or [])
+        self.status.setText(tr("viewer.rembg_installing"))
+        applog.event("log.event.rembg_install_start")
+        QThreadPool.globalInstance().start(
+            rembg_manager.InstallTask(self._rembg_signals))
+
+    def _on_rembg_install_done(self, ok: bool, info: str) -> None:
+        self._rembg_busy = False
+        pending, self._rembg_pending = self._rembg_pending, None
+        if ok:
+            applog.event("log.event.rembg_install_done")
+            if pending:
+                # установка была по клику «Удалить фон» — сразу продолжаем
+                self._rembg_start(pending)
+            else:
+                self.status.setText(tr("viewer.rembg_install_ok"))
+                QMessageBox.information(self, tr("viewer.rembg"),
+                                        tr("viewer.rembg_install_ok"))
+        else:
+            self.status.setText(tr("viewer.rembg_install_fail", info=info))
+            applog.error(tr("log.event.rembg_install_fail", info=info))
+            QMessageBox.warning(self, tr("viewer.rembg"),
+                                tr("viewer.rembg_install_fail", info=info))
+
+    def _rembg_start_uninstall(self) -> None:
+        """Удалить rembg и скачанные модели целиком (после подтверждения)."""
+        if self._rembg_busy:
+            self.status.setText(tr("viewer.rembg_busy"))
+            return
+        mb = _fmt_bytes(rembg_manager.models_size())
+        ans = QMessageBox.question(self, tr("viewer.rembg"),
+                                   tr("viewer.rembg_uninst_q", mb=mb))
+        if ans != QMessageBox.StandardButton.Yes:
+            return
+        self._rembg_busy = True
+        self.status.setText(tr("viewer.rembg_uninstalling"))
+        applog.event("log.event.rembg_uninstall_start")
+        QThreadPool.globalInstance().start(
+            rembg_manager.UninstallTask(self._rembg_signals))
+
+    def _on_rembg_uninstall_done(self, ok: bool, info: str,
+                                 freed_mb: int) -> None:
+        self._rembg_busy = False
+        if ok:
+            freed = _fmt_bytes(freed_mb * 1024 * 1024)
+            self.status.setText(tr("viewer.rembg_uninst_ok", mb=freed))
+            applog.event("log.event.rembg_uninstall_done", mb=freed_mb)
+            QMessageBox.information(self, tr("viewer.rembg"),
+                                    tr("viewer.rembg_uninst_ok", mb=freed))
+        else:
+            self.status.setText(tr("viewer.rembg_uninst_fail", info=info))
+            applog.error(tr("log.event.rembg_uninstall_fail", info=info))
+            QMessageBox.warning(self, tr("viewer.rembg"),
+                                tr("viewer.rembg_uninst_fail", info=info))
+
+    def _on_rembg_model(self, model_id: str) -> None:
+        """Выбор модели в подменю: запоминается между запусками."""
+        if model_id == self._rembg_model:
+            return
+        self._rembg_model = model_id
+        QSettings("ImageHunter", "ImageHunter").setValue(
+            rembg_manager.MODEL_KEY, model_id)
+        applog.event("log.event.rembg_model", model=model_id)
 
     def load_folder(self, folder: str, entries: list[tuple[str, int, float]] | None = None,
                     sync_tree: bool = False) -> None:

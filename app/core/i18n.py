@@ -294,6 +294,147 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ru": "Убрать текущую папку из избранного",
         "en": "Remove the current folder from favorites",
         "zh": "从收藏夹移除当前文件夹"},
+    # ---------- удаление фона (rembg, v0.7.12) ----------
+    "viewer.rembg": {
+        "ru": "🪄 Удалить фон", "en": "🪄 Remove Background", "zh": "🪄 删除背景"},
+    "viewer.rembg_tip": {
+        "ru": "Удалить фон у картинки (модуль rembg, всё считается локально).\n"
+              "Результат — «имя_nobg.png» рядом с оригиналом; при первом\n"
+              "запуске скачается выбранная модель.",
+        "en": "Remove the image background (rembg module, fully local).\n"
+              "The result is “name_nobg.png” next to the original; the first\n"
+              "run downloads the selected model.",
+        "zh": "删除图片背景（rembg 模块，完全本地）。\n"
+              "结果为原图旁的“名称_nobg.png”；首次运行会下载所选模型。"},
+    "viewer.rembg_none": {
+        "ru": "Сначала выберите картинку в ленте",
+        "en": "Select an image in the strip first",
+        "zh": "请先在缩略图栏中选择图片"},
+    "viewer.rembg_busy": {
+        "ru": "Идёт удаление фона — подождите",
+        "en": "Background removal is already running — please wait",
+        "zh": "正在删除背景，请稍候"},
+    "viewer.rembg_already": {
+        "ru": "Это уже картинка без фона",
+        "en": "This is already a no-background image",
+        "zh": "这已经是无背景图片"},
+    "viewer.rembg_progress": {
+        "ru": "Удаление фона: {done}/{n} — {name}…",
+        "en": "Removing background: {done}/{n} — {name}…",
+        "zh": "删除背景：{done}/{n} — {name}…"},
+    "viewer.rembg_done": {
+        "ru": "Фон удалён: {ok}", "en": "Background removed: {ok}", "zh": "背景已删除：{ok}"},
+    "viewer.rembg_done_fail": {
+        "ru": ", с ошибками: {fail}", "en": ", {fail} failed", "zh": "，失败：{fail}"},
+    "viewer.rembg_inst_q": {
+        "ru": "Модуль удаления фона (rembg) не установлен.\n\n"
+              "Установить сейчас? Пакет с ONNX Runtime — порядка 100–200 МБ,\n"
+              "всё работает локально, без облака. Модель (~5–170 МБ в зависимости\n"
+              "от выбранной) скачается при первом удалении фона.",
+        "en": "The background removal module (rembg) is not installed.\n\n"
+              "Install it now? The package with ONNX Runtime is about 100–200 MB;\n"
+              "everything runs locally, no cloud. The model (~5–170 MB depending\n"
+              "on the chosen one) is downloaded on first use.",
+        "zh": "删除背景模块（rembg）尚未安装。\n\n"
+              "现在安装吗？含 ONNX Runtime 的包约 100–200 MB，\n"
+              "完全本地运行，无需云端。模型（视所选约 5–170 MB）\n"
+              "会在首次删除背景时下载。"},
+    "viewer.rembg_installing": {
+        "ru": "Устанавливаю модуль удаления фона (rembg)…",
+        "en": "Installing the background removal module (rembg)…",
+        "zh": "正在安装删除背景模块（rembg）…"},
+    "viewer.rembg_install_ok": {
+        "ru": "Модуль установлен — нажмите «Удалить фон» ещё раз",
+        "en": "Module installed — click “Remove Background” again",
+        "zh": "模块已安装——请再次点击“删除背景”"},
+    "viewer.rembg_install_fail": {
+        "ru": "Не удалось установить rembg: {info}",
+        "en": "Failed to install rembg: {info}",
+        "zh": "安装 rembg 失败：{info}"},
+    "viewer.rembg_uninst_q": {
+        "ru": "Удалить модуль rembg и скачанные модели ({mb})?\n"
+              "Из программы и с диска будет вычищено всё целиком.",
+        "en": "Remove the rembg module and the downloaded models ({mb})?\n"
+              "Everything will be cleaned from the program and disk.",
+        "zh": "删除 rembg 模块及已下载的模型（{mb}）？\n程序和磁盘上的内容将被完全清除。"},
+    "viewer.rembg_uninstalling": {
+        "ru": "Удаляю модуль rembg и модели…",
+        "en": "Removing the rembg module and models…",
+        "zh": "正在删除 rembg 模块和模型…"},
+    "viewer.rembg_uninst_ok": {
+        "ru": "Модуль rembg и модели удалены (освобождено {mb})",
+        "en": "rembg module and models removed ({mb} freed)",
+        "zh": "rembg 模块和模型已删除（释放 {mb}）"},
+    "viewer.rembg_uninst_fail": {
+        "ru": "Не удалось удалить модуль: {info}",
+        "en": "Failed to remove the module: {info}",
+        "zh": "删除模块失败：{info}"},
+    "viewer.rembg_menu_install": {
+        "ru": "Установить модуль удаления фона (rembg)…",
+        "en": "Install the background removal module (rembg)…",
+        "zh": "安装删除背景模块（rembg）…"},
+    "viewer.rembg_menu_uninstall": {
+        "ru": "Удалить модуль rembg и модели…",
+        "en": "Uninstall the rembg module and models…",
+        "zh": "卸载 rembg 模块和模型…"},
+    "viewer.rembg_model_menu": {
+        "ru": "Модель", "en": "Model", "zh": "模型"},
+    "viewer.rembg_model_u2netp": {
+        "ru": "u2netp — быстрая (~5 МБ)",
+        "en": "u2netp — fast (~5 MB)",
+        "zh": "u2netp — 快速（约 5 MB）"},
+    "viewer.rembg_model_u2net": {
+        "ru": "u2net — качественнее (~176 МБ)",
+        "en": "u2net — better quality (~176 MB)",
+        "zh": "u2net — 更高质量（约 176 MB）"},
+    "viewer.rembg_model_isnet": {
+        "ru": "isnet-general-use — самые чистые края (~170 МБ)",
+        "en": "isnet-general-use — cleanest edges (~170 MB)",
+        "zh": "isnet-general-use — 边缘最干净（约 170 MB）"},
+    "log.event.rembg_start": {
+        "ru": "🪄 Удаление фона: файлов {n}, модель {model}",
+        "en": "🪄 Background removal: {n} file(s), model {model}",
+        "zh": "🪄 删除背景：{n} 个文件，模型 {model}"},
+    "log.event.rembg_file_err": {
+        "ru": "🪄 Не удалось убрать фон: {name} — {err}",
+        "en": "🪄 Failed to remove background: {name} — {err}",
+        "zh": "🪄 删除背景失败：{name} — {err}"},
+    "log.event.rembg_done": {
+        "ru": "🪄 Удаление фона завершено: {ok}, ошибок {fail} — {ms} мс{extra}",
+        "en": "🪄 Background removal finished: {ok} done, {fail} failed — {ms} ms{extra}",
+        "zh": "🪄 删除背景完成：{ok} 个成功，{fail} 个失败 — {ms} 毫秒{extra}"},
+    "log.event.rembg_skip": {
+        "ru": "🪄 Пропущено файлов: {n} — это уже результаты без фона",
+        "en": "🪄 Skipped {n} file(s) — already no-background results",
+        "zh": "🪄 已跳过 {n} 个文件——它们已经是无背景结果"},
+    "log.event.rembg_model": {
+        "ru": "🪄 Выбрана модель: {model}",
+        "en": "🪄 Model selected: {model}",
+        "zh": "🪄 已选择模型：{model}"},
+    "log.event.rembg_install_start": {
+        "ru": "🪄 Устанавливаю модуль rembg (pip install rembg[cpu])…",
+        "en": "🪄 Installing the rembg module (pip install rembg[cpu])…",
+        "zh": "🪄 正在安装 rembg 模块（pip install rembg[cpu]）…"},
+    "log.event.rembg_install_done": {
+        "ru": "🪄 Модуль rembg установлен",
+        "en": "🪄 rembg module installed",
+        "zh": "🪄 rembg 模块已安装"},
+    "log.event.rembg_install_fail": {
+        "ru": "🪄 Ошибка установки rembg: {info}",
+        "en": "🪄 rembg installation error: {info}",
+        "zh": "🪄 rembg 安装错误：{info}"},
+    "log.event.rembg_uninstall_start": {
+        "ru": "🪄 Удаляю модуль rembg и модели…",
+        "en": "🪄 Removing the rembg module and models…",
+        "zh": "🪄 正在删除 rembg 模块和模型…"},
+    "log.event.rembg_uninstall_done": {
+        "ru": "🪄 Модуль rembg удалён, освобождено {mb} МБ",
+        "en": "🪄 rembg module removed, {mb} MB freed",
+        "zh": "🪄 rembg 模块已删除，释放 {mb} MB"},
+    "log.event.rembg_uninstall_fail": {
+        "ru": "🪄 Ошибка удаления модуля: {info}",
+        "en": "🪄 Module removal error: {info}",
+        "zh": "🪄 模块删除错误：{info}"},
     "viewer.no_images": {
         "ru": "В этой папке нет изображений", "en": "No images in this folder", "zh": "此文件夹中没有图片"},
     "viewer.pick_first": {
