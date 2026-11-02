@@ -148,27 +148,33 @@ def apply_env_fixes() -> dict:
 
 # ---------------- watchdog «вечной» загрузки ----------------
 
-def _watchdog_fire(view) -> None:
+def _watchdog_fire(view, engine_fn=None) -> None:
     """Страница не открылась за отведённое время — остановить загрузку.
 
     Без остановки вкладка остаётся в состоянии «грузится» до перезапуска
     программы (типично для мёртвой сети или зависшего редиректа), а
-    пользователь считает, что программа зависла.
+    пользователь считает, что программа зависла. ``engine_fn`` — как узнать
+    имя поисковика вкладки: оно попадает в журнал, чтобы в отчёте было
+    видно, у какого именно поисковика страница не открылась.
     """
     try:
         url = view.url().toString()
         view.stop()
+        engine = engine_fn() if engine_fn else "?"
         from app.core import applog
-        applog.event("log.event.load_watchdog", sec=LOAD_TIMEOUT_MS // 1000, url=url)
+        applog.event("log.event.load_watchdog", sec=LOAD_TIMEOUT_MS // 1000,
+                     url=url, engine=engine)
     except Exception:
         pass    # защита не должна сама становиться источником ошибок
 
 
-def attach_load_watchdog(view):
+def attach_load_watchdog(view, engine_fn=None):
     """Повесить на QWebEngineView сторожевой таймер загрузки.
 
     loadStarted — таймер пошёл; loadFinished — сброшен; если страница не
     завершилась за LOAD_TIMEOUT_MS, ``_watchdog_fire`` останавливает её.
+    ``engine_fn`` — колбэк без аргументов, возвращающий имя поисковика
+    вкладки на момент сбоя (комбоб мог смениться после создания view).
     Возвращает таймер (владелец — сам view, отдельно хранить не нужно).
     """
     from PySide6.QtCore import QTimer
@@ -177,7 +183,7 @@ def attach_load_watchdog(view):
     timer.setObjectName("ih-load-watchdog")
     timer.setSingleShot(True)
     timer.setInterval(LOAD_TIMEOUT_MS)
-    timer.timeout.connect(lambda: _watchdog_fire(view))
+    timer.timeout.connect(lambda: _watchdog_fire(view, engine_fn))
     view.loadStarted.connect(timer.start)
     view.loadFinished.connect(timer.stop)
     return timer

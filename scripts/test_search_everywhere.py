@@ -74,9 +74,9 @@ class _FakeLine:
 class FakeWebSearch(QWidget):
     """Лёгкая замена WebSearch: те же сигналы и счётчики поисков."""
 
-    images_found = Signal(list, str)
+    images_found = Signal(list, str, str)
     checked_count_changed = Signal(int)
-    save_requested = Signal(list, str)
+    save_requested = Signal(list, str, str)
 
     searches: list[tuple[str, str]] = []   # [(поисковик, запрос), …] всех фейков
     instances: list["FakeWebSearch"] = []

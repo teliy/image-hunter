@@ -158,6 +158,18 @@ def test_watchdog() -> None:
     check("watchdog: в событии есть url и секунды",
           bool(events) and "url" in events[0][1] and "sec" in events[0][1])
 
+    # v0.7.8: имя поисковика вкладки попадает в событие сторожа
+    events.clear()
+    real_event = applog.event
+    applog.event = lambda key, **kw: events.append((key, kw))   # type: ignore[assignment]
+    try:
+        webengine._watchdog_fire(view, lambda: "Яндекс")
+    finally:
+        applog.event = real_event   # type: ignore[assignment]
+    check("watchdog: в событии есть имя поисковика",
+          bool(events) and events[0][1].get("engine") == "Яндекс",
+          str(events))
+
 
 # ---------- 3–4. ленивый WebSearch и SearchTabs ----------
 

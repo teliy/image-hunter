@@ -173,8 +173,12 @@ class MainWindow(QMainWindow):
 
     # ---------- сохранение отмеченных в выбранном формате ----------
 
-    def _on_save_images(self, urls: list, referer: str) -> None:
-        """Отмеченные плитки → выбранный формат → папка из «Моих картинок»."""
+    def _on_save_images(self, urls: list, referer: str, engine: str = "") -> None:
+        """Отмеченные плитки → выбранный формат → папка из «Моих картинок».
+
+        ``engine`` — имя поисковика вкладки, из которой пришли картинки:
+        попадает в журнал вместе с результатом сохранения (v0.7.8)."""
+        self._img_engine = engine
         fmt = self.web.current_format()
         if getattr(self, "_img_saver", None) is not None and self._img_saver.is_busy():
             self._status.showMessage(tr("main.save_busy"), 5000)
@@ -220,7 +224,8 @@ class MainWindow(QMainWindow):
         else:
             # причина ошибки — в журнал (в статус-баре она мелькает лишь 8 секунд)
             url = (self._img_urls[index] if 0 <= index < len(self._img_urls) else "?")
-            applog.error(tr("log.event.save_file_err", url=url, err=info))
+            applog.error(tr("log.event.save_file_err", url=url, err=info,
+                            engine=getattr(self, "_img_engine", "")))
             self._status.showMessage(tr("main.save_err", info=info), 8000)
             return
         self._status.showMessage(
@@ -231,7 +236,8 @@ class MainWindow(QMainWindow):
         tail = tr("main.save_done_tail", fail=fail) if fail else ""
         self._status.showMessage(
             tr("main.save_done", ok=ok, tail=tail, folder=folder), 15000)
-        applog.event("log.event.save_done", ok=ok, fail=fail, folder=folder)
+        applog.event("log.event.save_done", ok=ok, fail=fail, folder=folder,
+                     engine=getattr(self, "_img_engine", ""))
         if fail:
             QMessageBox.warning(
                 self, tr("main.save_title", fmt=self.web.current_format()),
@@ -245,10 +251,11 @@ class MainWindow(QMainWindow):
 
     # ---------- слоты ----------
 
-    def _on_images_found(self, urls: list, referer: str) -> None:
+    def _on_images_found(self, urls: list, referer: str, engine: str = "") -> None:
         added = self.downloads.add_urls(urls, referer=referer or None)
         self.tabs.setCurrentWidget(self.downloads)
-        applog.event("log.event.collect", total=len(urls), added=added)
+        applog.event("log.event.collect", total=len(urls), added=added,
+                     engine=engine)
         if added:
             self._status.showMessage(tr("main.collected", n=added), 8000)
         else:

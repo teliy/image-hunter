@@ -69,9 +69,9 @@ class WebSearch(QWidget):
     главной страницы: страница-обёртка сама выдачей не является.
     """
 
-    images_found = Signal(list, str)  # (ссылки, URL страницы-источника)
+    images_found = Signal(list, str, str)  # (ссылки, URL страницы-источника, поисковик)
     checked_count_changed = Signal(int)  # сколько плиток отмечено
-    save_requested = Signal(list, str)  # (оригиналы отмеченных, referer)
+    save_requested = Signal(list, str, str)  # (оригиналы отмеченных, referer, поисковик)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -180,8 +180,9 @@ class WebSearch(QWidget):
         # упавший процесс отрисовки (OOM, песочница, драйвер) — перезапускаем
         view.page().renderProcessTerminated.connect(self._on_render_gone)
         # watchdog: страница, не открывшаяся за 45 с, останавливается —
-        # вкладка никогда не крутит «вечную загрузку»
-        webengine.attach_load_watchdog(view)
+        # вкладка никогда не крутит «вечную загрузку»; имя поисковика берётся
+        # на момент сбоя — в журнале видно, у кого именно не открылась страница
+        webengine.attach_load_watchdog(view, lambda: self.engine_meta()[2])
         self._view = view
         self.layout().addWidget(view, 1)
         self._poll.start()
@@ -297,21 +298,24 @@ class WebSearch(QWidget):
         if not urls:
             self._info_no_links()
             return
-        self.images_found.emit(urls, self.current_url().toString())
+        self.images_found.emit(urls, self.current_url().toString(),
+                               self.engine_meta()[2])
 
     def _on_checked(self, items: list[dict]) -> None:
         best = [it["best"] for it in items if it.get("best")]
         if not best:
             self._info_no_checked()
             return
-        self.images_found.emit(best, self.current_url().toString())
+        self.images_found.emit(best, self.current_url().toString(),
+                               self.engine_meta()[2])
 
     def _on_checked_save(self, items: list[dict]) -> None:
         best = [it["best"] for it in items if it.get("best")]
         if not best:
             self._info_no_checked()
             return
-        self.save_requested.emit(best, self.current_url().toString())
+        self.save_requested.emit(best, self.current_url().toString(),
+                                 self.engine_meta()[2])
 
     def _info_no_checked(self) -> None:
         QMessageBox.information(self, "Image Hunter", tr("ws.no_checked"))
@@ -420,6 +424,7 @@ class WebSearch(QWidget):
         вовсе» отлаживается без угадывания).
         """
         url = self.current_url().toString()
+        engine = self.engine_meta()[2]   # короткое имя поисковика — в строках журнала
         state = {"n": 0, "left": len(frames)}
         cbs: list = []   # ссылки на колбэки (иначе GC убивает их для фреймов)
 
@@ -438,10 +443,11 @@ class WebSearch(QWidget):
                 self._box_log_key = key
                 if state["n"] > 0:
                     applog.event("log.event.serp_boxes",
-                                 count=state["n"], frames=len(frames))
+                                 count=state["n"], frames=len(frames),
+                                 engine=engine)
                 else:
                     applog.event("log.event.serp_boxes_zero",
-                                 frames=len(frames))
+                                 frames=len(frames), engine=engine)
             cbs.append(cb)
             return cb
 
@@ -489,7 +495,8 @@ class WebSearch(QWidget):
                 or self._view.url().isEmpty():
             return
         self._reload_tries += 1
-        applog.event("log.event.render_gone", code=exit_code)
+        applog.event("log.event.render_gone", code=exit_code,
+                     engine=self.engine_meta()[2])
         QTimer.singleShot(1000, self._view.reload)
 
     def _poll_checked_count(self) -> None:

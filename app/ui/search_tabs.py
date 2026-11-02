@@ -65,9 +65,9 @@ def brand_icon(color: str) -> QIcon:
 class SearchTabs(QWidget):
     """Контейнер вкладок поиска: пересылает сигналы активной жизни наружу."""
 
-    images_found = Signal(list, str)          # (ссылки, URL страницы-источника)
+    images_found = Signal(list, str, str)     # (ссылки, URL страницы-источника, поисковик)
     checked_count_changed = Signal(int)       # сколько плиток отмечено
-    save_requested = Signal(list, str)        # (оригиналы отмеченных, referer)
+    save_requested = Signal(list, str, str)   # (оригиналы отмеченных, referer, поисковик)
 
     def __init__(self, parent=None):
         super().__init__(parent)

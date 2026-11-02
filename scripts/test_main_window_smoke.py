@@ -1,9 +1,9 @@
-"""Оффлайн-смоук главного окна целиком (v0.7.7).
+"""Оффлайн-смоук главного окна целиком (v0.7.8).
 
 Проверяется: MainWindow собирается со всеми вкладками (включая новые
-мультивкладки поиска), заголовок содержит версию 0.7.7, наружные сигналы
-мультивкладок подключены, кнопки сохранения живы, статус «Моих картинок»
-переехал в строку статуса внизу окна (левее языка).
+мультивкладки поиска), заголовок содержит версию 0.7.8, наружные сигналы
+мультивкладок подключены (теперь с именем поисковика), кнопки сохранения
+живы, статус «Моих картинок» — в строке статуса внизу окна.
 
 Запуск: QT_QPA_PLATFORM=offscreen QTWEBENGINE_CHROMIUM_FLAGS="--no-sandbox --disable-gpu" \
         python scripts/test_main_window_smoke.py
@@ -45,8 +45,18 @@ def main() -> int:
     win.show()
     app.processEvents()
 
-    check("версия 0.7.7", __version__ == "0.7.7", __version__)
-    check("в заголовке версия", "0.7.7" in win.windowTitle(), win.windowTitle())
+    check("версия 0.7.8", __version__ == "0.7.8", __version__)
+    check("в заголовке версия", "0.7.8" in win.windowTitle(), win.windowTitle())
+    # сигналы поиска несут имя поисковика (v0.7.8): emit с 3 аргументами
+    # через релей SearchTabs доходит до приёмника MainWindow
+    got_engines: list[str] = []
+    win.web.images_found.connect(lambda urls, ref, eng: got_engines.append(eng))
+    inner_ws = win.web.tabs.widget(0)
+    inner_ws.images_found.emit(["http://x/1.jpg"], "http://referer",
+                               inner_ws.engine_meta()[2])
+    app.processEvents()
+    check("сигналы поиска несут имя поисковика",
+          got_engines == [inner_ws.engine_meta()[2]], str(got_engines))
     check("у поиска есть общее поле запроса",
           hasattr(win.web, "global_query") and hasattr(win.web, "btn_all"))
     check("вкладок в главном окне четыре", win.tabs.count() == 4,

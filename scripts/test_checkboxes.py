@@ -724,8 +724,9 @@ def run_frame_mock_test() -> None:
         ws = WebSearch()
         got: dict = {}
 
-        def on_found(urls, referer):
+        def on_found(urls, referer, engine=""):
             got["urls"] = urls
+            got["engine"] = engine
 
         ws.images_found.connect(on_found)
         check("мок Mail.ru (обёртка + фрейм) загрузился",
@@ -760,6 +761,8 @@ def run_frame_mock_test() -> None:
         }
         check("«Скачать отмеченные» забрал плитки из фрейма", bests == expected,
               f"лишние: {bests - expected}; не хватает: {expected - bests}")
+        check("вместе со ссылками пришло имя поисковика",
+              got.get("engine") == ws.engine_meta()[2], str(got.get("engine")))
 
         ws.deleteLater()
         wait_ms(100)

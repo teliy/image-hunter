@@ -135,13 +135,16 @@ def main() -> int:
     finally:
         st.MAX_TABS = 16
 
-    # 10. сигналы внутренней вкладки пересылаются наружу
-    got: list[str] = []
-    c2.save_requested.connect(lambda urls, ref: got.append(ref))
+    # 10. сигналы внутренней вкладки пересылаются наружу (вместе с поисковиком)
+    got: list[tuple] = []
+    c2.save_requested.connect(
+        lambda urls, ref, eng: got.append((ref, eng)))
     inner = c2.tabs.widget(0)
-    inner.save_requested.emit(["http://x/1.jpg"], "http://referer")
+    inner.save_requested.emit(["http://x/1.jpg"], "http://referer",
+                              inner.engine_meta()[2])
     app.processEvents()
-    check("save_requested доходит наружу", got == ["http://referer"], str(got))
+    check("save_requested доходит наружу",
+          got == [("http://referer", inner.engine_meta()[2])], str(got))
 
     # 11. наружный интерфейс совместим со старым кодом MainWindow
     check("current_format() отдаёт формат активной вкладки",

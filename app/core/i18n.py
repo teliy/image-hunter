@@ -535,25 +535,25 @@ _STRINGS: dict[str, dict[str, str]] = {
         "zh": "Wayland 会话中 wayland 平台插件加载失败——内置浏览器改用软件渲染"
               "（防止卡死）。\n设置环境变量 IH_GPU=1 可恢复 GPU 加速。"},
     "log.event.render_gone": {
-        "ru": "Процесс отрисовки вкладки упал (код {code}) — перезапускаю…",
-        "en": "Tab render process crashed (code {code}) — restarting…",
-        "zh": "标签页渲染进程崩溃（代码 {code}）——正在重启……"},
+        "ru": "[{engine}] Процесс отрисовки вкладки упал (код {code}) — перезапускаю…",
+        "en": "[{engine}] Tab render process crashed (code {code}) — restarting…",
+        "zh": "[{engine}] 标签页渲染进程崩溃（代码 {code}）——正在重启……"},
     "log.event.load_watchdog": {
-        "ru": "Страница не открылась за {sec} с — загрузка остановлена: {url}",
-        "en": "Page did not load within {sec} s — load stopped: {url}",
-        "zh": "页面在 {sec} 秒内未加载完成——已停止加载:{url}"},
+        "ru": "[{engine}] Страница не открылась за {sec} с — загрузка остановлена: {url}",
+        "en": "[{engine}] Page did not load within {sec} s — load stopped: {url}",
+        "zh": "[{engine}] 页面在 {sec} 秒内未加载完成——已停止加载:{url}"},
     "log.event.serp_boxes": {
-        "ru": "Выдача: плиток с чекбоксами: {count} (фреймов: {frames})",
-        "en": "Image SERP: tiles with checkboxes: {count} (frames: {frames})",
-        "zh": "图片搜索结果:带复选框的图块:{count}(框架:{frames})"},
+        "ru": "[{engine}] Выдача: плиток с чекбоксами: {count} (фреймов: {frames})",
+        "en": "[{engine}] Image SERP: tiles with checkboxes: {count} (frames: {frames})",
+        "zh": "[{engine}] 图片搜索结果:带复选框的图块:{count}(框架:{frames})"},
     "log.event.serp_boxes_zero": {
-        "ru": "Выдача найдена, но плиток для чекбоксов не распознано (фреймов: "
+        "ru": "[{engine}] Выдача найдена, но плиток для чекбоксов не распознано (фреймов: "
               "{frames}) — поисковик сменил разметку. Пришлите этот журнал "
               "разработчику.",
-        "en": "Image SERP found, but no checkbox tiles were recognized (frames: "
+        "en": "[{engine}] Image SERP found, but no checkbox tiles were recognized (frames: "
               "{frames}) — the search engine changed its markup. Please send "
               "this log to the developer.",
-        "zh": "已找到搜索结果页,但未识别出可加复选框的图块(框架:{frames})"
+        "zh": "[{engine}] 已找到搜索结果页,但未识别出可加复选框的图块(框架:{frames})"
               "——搜索引擎更改了页面结构。请将此日志发送给开发者。"},
     "log.event.sandbox_off": {
         "ru": "Ядро Linux запрещает пользовательские пространства имён — встроенный "
@@ -565,9 +565,9 @@ _STRINGS: dict[str, dict[str, str]] = {
         "zh": "此 Linux 内核禁止用户命名空间——内置浏览器在无 Chromium 沙箱的情况下运行"
               "（否则标签页会反复崩溃并看似卡死）。恢复沙箱请设置:IH_NO_SANDBOX=0。"},
     "log.event.save_file_err": {
-        "ru": "ОШИБКА сохранения: {url} — {err}",
-        "en": "SAVE ERROR: {url} — {err}",
-        "zh": "保存错误：{url} — {err}"},
+        "ru": "[{engine}] ОШИБКА сохранения: {url} — {err}",
+        "en": "[{engine}] SAVE ERROR: {url} — {err}",
+        "zh": "[{engine}] 保存错误：{url} — {err}"},
     "log.event.dl_file_err": {
         "ru": "ОШИБКА скачивания: {url} — {err}",
         "en": "DOWNLOAD ERROR: {url} — {err}",
@@ -630,17 +630,17 @@ _STRINGS: dict[str, dict[str, str]] = {
         "en": "Deleted permanently (no Recycle Bin): {n} — {folder}",
         "zh": "已永久删除（磁盘无回收站）：{n} — {folder}"},
     "log.event.collect": {
-        "ru": "Собрано ссылок с выдачи: {total}, добавлено в загрузки: {added}",
-        "en": "Links collected: {total}, added to downloads: {added}",
-        "zh": "已收集链接：{total}，加入下载：{added}"},
+        "ru": "[{engine}] Собрано ссылок с выдачи: {total}, добавлено в загрузки: {added}",
+        "en": "[{engine}] Links collected: {total}, added to downloads: {added}",
+        "zh": "[{engine}] 已收集链接：{total}，加入下载：{added}"},
     "log.event.dl_done": {
         "ru": "Загрузка завершена: скачано {ok}, ошибок {fail}",
         "en": "Download batch finished: {ok} downloaded, {fail} errors",
         "zh": "下载批次完成：已下载 {ok} 个，失败 {fail} 个"},
     "log.event.save_done": {
-        "ru": "Сохранение завершено: {ok} успешно, ошибок {fail} → {folder}",
-        "en": "Saving finished: {ok} saved, {fail} errors → {folder}",
-        "zh": "保存完成：成功 {ok} 个，失败 {fail} 个 → {folder}"},
+        "ru": "[{engine}] Сохранение завершено: {ok} успешно, ошибок {fail} → {folder}",
+        "en": "[{engine}] Saving finished: {ok} saved, {fail} errors → {folder}",
+        "zh": "[{engine}] 保存完成：成功 {ok} 个，失败 {fail} 个 → {folder}"},
     "log.event.upd_latest": {
         "ru": "Обновления: последняя версия {version} уже установлена",
         "en": "Updates: the latest version {version} is already installed",
