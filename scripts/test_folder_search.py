@@ -5,6 +5,10 @@
 над деревом. Дерево ленивое — фильтр сам догружает уровни (с бюджетом папок
 и секунд), чтобы буквы находили и вложенные папки.
 
+С v0.7.10 у фильтра есть область: ищется вглубь ВЫДЕЛЕННОЙ папки или диска
+(что подсвечено в дереве), чужие верхние ветки прячутся целиком; ничего
+не выделено — поиск по всему дереву, как раньше.
+
 Запуск: QT_QPA_PLATFORM=offscreen python scripts/test_folder_search.py
 """
 
@@ -66,10 +70,22 @@ def real_paths(viewer) -> set:
 
 
 def visible_paths(viewer) -> set:
-    """Пути видимых (не скрытых фильтром) папок."""
-    return {np(item.data(0, Qt.ItemDataRole.UserRole))
-            for item in walk_items(viewer.tree.invisibleRootItem())
-            if item.data(0, Qt.ItemDataRole.UserRole) and not item.isHidden()}
+    """Пути папок, РЕАЛЬНО видимых в дереве: узел скрыт, если скрыт он сам
+    или любой его предок (сырого флага isHidden() мало — фильтр с областью
+    прячет чужие ветки целиком, не трогая флаги их потомков)."""
+    out: set = set()
+
+    def walk(item, parent_visible: bool) -> None:
+        for j in range(item.childCount()):
+            child = item.child(j)
+            vis = parent_visible and not child.isHidden()
+            p = child.data(0, Qt.ItemDataRole.UserRole)
+            if p and vis:
+                out.add(np(p))
+            walk(child, vis)
+
+    walk(viewer.tree.invisibleRootItem(), True)
+    return out
 
 
 def item_by_path(viewer, path: str):
@@ -80,6 +96,26 @@ def item_by_path(viewer, path: str):
         if p and np(p) == want:
             return item
     return None
+
+
+def effectively_visible(item) -> bool:
+    """Виден ли узел реально: без hidden у себя и у всех предков."""
+    it = item
+    while it is not None:
+        if it.isHidden():
+            return False
+        it = it.parent()
+    return True
+
+
+def focus_folder(viewer, path: str):
+    """Эмуляция клика мышью по папке: мышинный клик в Qt меняет и currentItem
+    (фокус/область фильтра), и открывает папку. Программный emit сигнала
+    itemClicked меняет только второе — выделение ставим явно."""
+    it = item_by_path(viewer, path)
+    viewer.tree.setCurrentItem(it)
+    viewer.tree.itemClicked.emit(it, 0)
+    return it
 
 
 class FakeSI:
@@ -162,6 +198,7 @@ def main() -> int:
     QSettings("ImageHunter", "ImageHunter").setValue("viewer/thumbs", True)
     QSettings("ImageHunter", "ImageHunter").setValue("viewer/last_folder", "")
     QSettings("ImageHunter", "ImageHunter").setValue("viewer/last_query", "")
+    QSettings("ImageHunter", "ImageHunter").setValue("viewer/favorites", [])
     i18n.set_lang("ru", persist=False)
 
     # журнал — подменяем, чтобы проверять события
@@ -221,11 +258,14 @@ def main() -> int:
     viewer.tree.itemClicked.emit(item_one, 0)
     check("клик по результату открыл папку", viewer.current_folder() == target_one,
           viewer.current_folder())
+    wait_until(app, lambda: viewer.list.count() == 1)
     check("картинки папки загрузились (1 png)", viewer.list.count() == 1)
     check("фильтр не сброшен кликом", viewer.tree_info.isVisible())
 
     # 6. Enter открывает первую совпавшую папку (фильтр применяется сразу,
-    #    не дожидаясь дебаунса)
+    #    не дожидаясь дебаунса). Область фильтра задаёт фокус (v0.7.10):
+    #    выделяем docs — ищем внутри неё
+    focus_folder(viewer, docs)
     viewer.folder_search.setText("deeper")
     viewer.folder_search.returnPressed.emit()
     check("Enter открыл единственную совпавшую папку",
@@ -275,11 +315,15 @@ def main() -> int:
     viewer._escape_search()
     check("Esc вне поля чистит поиск по имени", viewer.search_edit.text() == "")
 
-    # 11. запрос без совпадений: все папки скрыты, сообщение «не найдено»
+    # 11. запрос без совпадений: скрыто всё, кроме пути к фокусу,
+    #     сообщение «не найдено» называет место поиска
     viewer.folder_search.setText("нет_такой_папки")
     wait_until(app, lambda: viewer.tree_info.isVisible()
                and "не найдено" in viewer.tree_info.text())
-    check("без совпадений все папки скрыты", not visible_paths(viewer))
+    vis = visible_paths(viewer)
+    check("без совпадений скрыто всё, кроме пути к фокусу",
+          vis == {np(base), np(docs), np(os.path.join(base, "docs", "deep"))},
+          str(sorted(vis)))
     check("сообщение «не найдено»", "не найдено" in viewer.tree_info.text(),
           viewer.tree_info.text())
     viewer.folder_search.clear()
@@ -296,14 +340,13 @@ def main() -> int:
           np(tmp_root) in visible_paths(viewer) and np(base) in visible_paths(viewer))
 
     # 13. ручное раскрытие при активном фильтре — новые подпапки тоже фильтруются
-    #     (после ⟳ диск уже загружен через _sync_tree, поэтому раскрываем photos)
+    #     (после ⟳ диск уже загружен через _sync_tree; область — фокус на photos)
+    focus_folder(viewer, photos)
     viewer.folder_search.setText("sub")       # дебаунс ещё не истёк
     viewer._populate_children(item_by_path(viewer, photos))   # «раскрыли» папку вручную
-    app.processEvents()
-    check("раскрытие при фильтре сразу применило фильтр",
-          np(sub_of_target) in visible_paths(viewer)
-          and np(target_photos) in visible_paths(viewer)
-          and np(usual) not in visible_paths(viewer),
+    ok = wait_until(app, lambda: np(sub_of_target) in visible_paths(viewer)
+                    and np(usual) not in visible_paths(viewer))
+    check("раскрытие при фильтре сразу применило фильтр", ok,
           str(sorted(visible_paths(viewer))))
     viewer.folder_search.clear()
     app.processEvents()
@@ -347,18 +390,93 @@ def main() -> int:
     viewer.folder_search.clear()
     app.processEvents()
 
+    # 15а. область фильтра (v0.7.10): появляется второй «диск» с папками;
+    #      фокус на диске — буквы ищутся вглубь только его, чужой диск скрыт
+    base2 = tempfile.mkdtemp(prefix="ih_fs_disk2_")
+    daewoo = os.path.join(base2, "DaewooStuff")
+    inside_box = os.path.join(daewoo, "InsideBox")
+    alpha_stuff = os.path.join(base2, "AlphaStuff")
+    beta_stuff = os.path.join(base2, "BetaStuff")
+    for d in (daewoo, inside_box, alpha_stuff, beta_stuff):
+        os.makedirs(d, exist_ok=True)
+    lv.QStorageInfo = types.SimpleNamespace(
+        mountedVolumes=lambda: [FakeSI(base), FakeSI(base2)])
+    viewer.refresh_drives()
+    app.processEvents()
+    disk2_item = item_by_path(viewer, base2)
+    check("второй диск появился в дереве", disk2_item is not None)
+
+    focus_folder(viewer, base2)   # фокус — второй диск
+    viewer.folder_search.setText("inside")
+    ok = wait_until(app, lambda: {p for p in visible_paths(viewer)
+                                  if "inside" in os.path.basename(p).lower()}
+                    == {np(inside_box)})
+    check("фокус на диске: совпадение найдено внутри него", ok,
+          viewer.tree_info.text())
+    got = {p for p in visible_paths(viewer)
+           if "inside" in os.path.basename(p).lower()}
+    check("фокус на диске: ищутся только его папки", got == {np(inside_box)},
+          str(sorted(got)))
+    check("чужой диск скрыт целиком",
+          item_by_path(viewer, base).isHidden()
+          and not item_by_path(viewer, base2).isHidden())
+    check("счётчик показывает область поиска",
+          np(base2) in viewer.tree_info.text(), viewer.tree_info.text())
+    check("событие журнала с областью записано",
+          any(k == "log.event.folder_filter_in"
+              and kw.get("q") == "inside" and kw.get("n") == 1
+              for k, kw in events), str(events[-3:]))
+
+    # 15б. фокус на глубокой папке: совпадения вне её не находятся,
+    #      сообщение «не найдено» называет место поиска
+    focus_folder(viewer, inside_box)
+    app.processEvents()
+    viewer.folder_search.setText("alpha")
+    ok = wait_until(app, lambda: viewer.tree_info.isVisible()
+                    and "не найдено" in viewer.tree_info.text())
+    check("узкий фокус: совпадение вне его не найдено", ok,
+          viewer.tree_info.text())
+    check("в сообщении названо место поиска",
+          "InsideBox" in viewer.tree_info.text(), viewer.tree_info.text())
+    check("чужая ветка скрыта даже с совпадением",
+          not effectively_visible(item_by_path(viewer, alpha_stuff)))
+    viewer.folder_search.returnPressed.emit()   # Enter не уведёт вне области
+    check("Enter не открыл папку вне области поиска",
+          viewer.current_folder() == inside_box, viewer.current_folder())
+
+    # 15в. фокус на диске снова: «alpha» находит папку на своём диске
+    focus_folder(viewer, base2)
+    viewer.folder_search.setText("alpha")
+    ok = wait_until(app, lambda: np(alpha_stuff) in visible_paths(viewer))
+    check("фокус на диске: папка своего диска найдена", ok,
+          str(sorted(visible_paths(viewer))))
+    check("чужой диск по-прежнему скрыт",
+          item_by_path(viewer, base).isHidden()
+          and not effectively_visible(item_by_path(viewer, beta_stuff)))
+
+    # 15г. ничего не выделено — поиск по всему дереву, как раньше
+    viewer.tree.setCurrentItem(None)
+    viewer.folder_search.setText("target")
+    # ждём ТОЧНО нескоупленную строку (не подстроку «5» — hex пути мог её содержать)
+    ok = wait_until(app, lambda: "Найдено папок: 5" in viewer.tree_info.text())
+    check("без фокуса ищется везде (все 5 папок)", ok,
+          viewer.tree_info.text())
+    check("без фокуса чужой диск видим", not item_by_path(viewer, base).isHidden())
+    viewer.folder_search.clear()
+    app.processEvents()
+
     # 16. новые i18n-ключи есть во всех трёх языках
     need = ["viewer.folders_search_ph", "viewer.folders_search_tip",
-            "viewer.folders_found", "viewer.folders_none",
-            "log.event.folder_filter"]
+            "viewer.folders_found", "viewer.folders_found_in",
+            "viewer.folders_none", "viewer.folders_none_in",
+            "log.event.folder_filter", "log.event.folder_filter_in"]
     for key in need:
         langs = i18n._STRINGS.get(key, {})
         check(f"i18n {key}: ru/en/zh",
               all(langs.get(l) for l in ("ru", "en", "zh")), str(sorted(langs)))
     old = [k for k in i18n._STRINGS
            if "folder_search" in k or "folders_searching" in k
-           or "folders_scope" in k or "folders_trunc" in k
-           or "folders_found_in" in k]
+           or "folders_scope" in k or "folders_trunc" in k]
     check("старые ключи скан-поиска удалены", not old, str(old))
     check("tr() подставляет {n}", tr("viewer.folders_found", n=7) != "viewer.folders_found")
     check("tr() подставляет {q}",

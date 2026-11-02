@@ -74,6 +74,12 @@ Additionally, `udm=2` counts as a results page on any national Google domain (go
 
 Scenario: a name search is active in My Pictures, a batch of images is saved into the same folder from the Image Search tab — and back in the tab the strip was shown unfiltered while the query was still in the field; Enter had to be pressed again. The cause: saving calls `refresh()` on the current folder, and it re-read the folder with a plain scan, ignoring the active query. Now `refresh()` behaves like a tree click: with an active search it re-runs the search from the same folder — the new files join the same result set, nothing to retype. Without a query the behavior is unchanged — the folder is re-read as before.
 
+## The folder filter searches inside the highlighted folder or drive (v0.7.10)
+
+**1. The scope is the focus.** Typing in the “🔍 Filter folders…” box used to crawl every branch of the tree at once — Home, favorites and all drives, including network ones: on WebDAV/SMB the search dragged on for long seconds, and the results flashed “foreign” folders from other drives. Now the search goes deep into whatever is highlighted in the tree: select drive Z: — the filter searches that whole drive; select the “Автозапчасти” folder — only its subfolders. Foreign branches are hidden entirely and never traversed — that is the whole saving on a network drive. With nothing selected, all drives are searched, as before. The counter above the tree shows where the search ran: “Folders found: 2 — in “Z:/Автозапчасти””.
+
+**2. Changing the focus re-scopes the filter.** Clicking another folder or drive with an active filter immediately re-applies it to the new scope (before, with the same text the filter simply did not re-run). Enter opens only matches inside the scope — it will not drag you into a foreign drive.
+
 ## Favorite folders — always at the top of the tree (v0.7.9)
 
 **1. Two ways to add a folder to favorites.** The “☆” button in the tree header adds (and “★” removes) the folder currently open in the tab; right-clicking any folder in the “Drives and folders” tree offers “⭐ Add to favorites” / “Remove from favorites” — handy for nested folders the currently open path does not reach. Adding and removing is written to the Log.
@@ -103,8 +109,10 @@ Scenario: a name search is active in My Pictures, a batch of images is saved int
   list (after plugging in a USB stick);
 - **folder filter**: the “🔍 Filter folders…” box above the tree — as you type, the tree keeps only folders whose
   names contain those letters: the rest are hidden, branches to the matches expand, and a counter above the tree
-  shows how many folders matched; it is instant and does not rescan the disk — the tree just loads more levels
-  within a budget (300 folders or 1.5 s at a time), so even a huge or network disk cannot freeze the window;
+  shows how many folders matched and where the search ran; it searches deep inside the highlighted folder or drive
+  (whatever is selected in the tree is what gets searched; with nothing selected — all drives);
+  it is instant and does not rescan the disk — the tree just loads more levels within a budget
+  (300 folders or 1.5 s at a time), so even a huge or network disk cannot freeze the window;
   case-insensitive, a click opens the folder, Enter opens the first match, Esc resets; hidden folders are not shown;
 - **lazy thumbnails** (see the network section above) and the “🖼 Thumbnails” on/off toggle;
 - **multi-select and drag'n'drop**: select images in the strip (Ctrl/Shift, like in Explorer) and drag them into Explorer, e-mail or any other application — the original files are passed on (`text/uri-list`); the drag start is backed by three independent paths (event filter, own mouse-move tracking, built-in Qt mechanics) and every step is written to the Log; **if dragging does not work — a no-drag fallback:** `Ctrl+C` (or right-click → “Copy selected files”), then paste them wherever needed — `Ctrl+V` into Explorer or a browser;

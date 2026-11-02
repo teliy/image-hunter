@@ -327,21 +327,38 @@ _STRINGS: dict[str, dict[str, str]] = {
     "viewer.folders_search_tip": {
         "ru": "Пока вы вводите буквы, в дереве остаются только папки,\n"
               "в имени которых они есть — остальные скрываются, а совпавшие\n"
-              "ветки раскрываются. Регистр не важен, масок нет.\n"
-              "Enter — открыть первую найденную, Esc — очистить поле.",
+              "ветки раскрываются. Ищется вглубь ВЫДЕЛЕННОЙ папки или диска:\n"
+              "что подсвечено в дереве, то и обыскивается (чужие диски не\n"
+              "трогаются — поиск не растягивается на все устройства).\n"
+              "Ничего не выделено — поиск по всем дискам. Регистр не важен,\n"
+              "масок нет. Enter — открыть первую найденную, Esc — очистить поле.",
         "en": "As you type, the tree keeps only folders whose names contain\n"
               "these letters — the rest are hidden, and matching branches\n"
-              "expand. Case-insensitive, no masks.\n"
+              "expand. The search goes deep into the HIGHLIGHTED folder or\n"
+              "drive: whatever is selected in the tree is what gets searched\n"
+              "(other drives are not touched, so the search does not crawl\n"
+              "every device). With nothing selected, all drives are searched.\n"
+              "Case-insensitive, no masks.\n"
               "Enter opens the first match, Esc clears the field.",
         "zh": "输入时，树中只保留名称包含这些字母的文件夹\n"
-              "（其余隐藏，匹配的分支自动展开）。\n"
+              "（其余隐藏，匹配的分支自动展开）。搜索深入到树中当前\n"
+              "选中的文件夹或磁盘内（不遍历其他磁盘，因此不会在\n"
+              "所有设备上慢慢搜索）；若未选中任何内容，则搜索所有磁盘。\n"
               "不区分大小写，无通配符。回车打开第一个结果，Esc 清空输入框。"},
     "viewer.folders_found": {
         "ru": "Найдено папок: {n}", "en": "Folders found: {n}", "zh": "已找到文件夹：{n}"},
+    "viewer.folders_found_in": {
+        "ru": "Найдено папок: {n} — в «{where}»",
+        "en": "Folders found: {n} — in “{where}”",
+        "zh": "已找到文件夹：{n}（在“{where}”内）"},
     "viewer.folders_none": {
         "ru": "Папок с таким именем не найдено",
         "en": "No folders with this name",
         "zh": "未找到同名文件夹"},
+    "viewer.folders_none_in": {
+        "ru": "Папок с таким именем не найдено (искали в «{where}»)",
+        "en": "No folders with this name (searched in “{where}”)",
+        "zh": "未找到同名文件夹（搜索范围：“{where}”）"},
     "viewer.ignore_dash": {
         "ru": "игнорировать дефис", "en": "ignore hyphens", "zh": "忽略连字符"},
     "viewer.ignore_dash_tip": {
@@ -547,6 +564,10 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ru": "Фильтр папок «{q}»: найдено {n}",
         "en": "Folder filter “{q}”: {n} found",
         "zh": "文件夹筛选“{q}”：找到 {n} 个"},
+    "log.event.folder_filter_in": {
+        "ru": "Фильтр папок «{q}»: найдено {n} (в «{where}»)",
+        "en": "Folder filter “{q}”: {n} found (in “{where}”)",
+        "zh": "文件夹筛选“{q}”：找到 {n} 个（在“{where}”内）"},
     "log.event.gpu_off": {
         "ru": "Сессия Wayland, но плагин wayland не загрузился — встроенный браузер "
               "рендерит программно (защита от зависаний).\nВернуть GPU можно "

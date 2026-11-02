@@ -1544,11 +1544,19 @@ class LocalViewer(QWidget):
         """Оставить в дереве только папки с введёнными буквами в имени.
 
         Совпадение ищется по загруженным узлам; чтобы буквы находили и
-        вложенные папки, дерево сверху вниз догружается, пока хватает
-        бюджета папок и секунд (см. _FS_DIR_BUDGET): на обычном домашнем
-        дереве это доли секунды, а гигантский или сетевой диск не подвесит
-        окно. Совпавшие папки раскрываются вместе со своими предками;
-        счётчик совпадений показывается над деревом."""
+        вложенные папки, дерево догружается, пока хватает бюджета папок
+        и секунд (см. _FS_DIR_BUDGET): на обычном домашнем дереве это доли
+        секунды, а гигантский или сетевой диск не подвесит окно.
+        Совпавшие папки раскрываются вместе со своими предками;
+        счётчик совпадений показывается над деревом.
+
+        Область поиска (v0.7.10): буквы ищутся вглубь ВЫДЕЛЕННОЙ папки
+        или диска — что подсвечено в дереве, то и обыскивается; чужие
+        верхние ветки прячутся целиком и не обходятся вовсе. Ничего
+        не выделено — как раньше, по всему дереву. Так фильтр больше не
+        шарахается по всем устройствам разом: на сетевом диске он больше
+        не платит обходом чужих ветвей и не находит «лишнее» в других
+        дисках (репорт: «поиск ищет на всех устройствах, долгий поиск»)."""
         needle = self.folder_search.text().strip().lower()
         if not needle:
             self._clear_folder_filter()
@@ -1557,31 +1565,54 @@ class LocalViewer(QWidget):
             return
         self._fs_applying = True
         try:
+            scope = self._filter_scope()
             # каждый этап — с таймингом: после зависания в журнале видно,
             # что именно тянуло GUI-поток (догрузка дерева или скрытие узлов)
             with applog.timed(tr("perf.op.filter_tree_load"),
                               always=False, slow_ms=400) as tl:
-                dirs, budget_hit = self._load_for_filter()
+                dirs, budget_hit = self._load_for_filter(scope)
                 tl.set(dirs=dirs, budget=budget_hit)
                 if dirs:
                     tl.force()   # догрузили ветви — покажем, сколько это заняло
             with applog.timed(tr("perf.op.folder_filter")) as tf:
-                n = self._filter_visible(needle)
+                n = self._filter_visible(needle, scope)
                 tf.set(matched=n)
         finally:
             self._fs_applying = False
         self.tree_info.show()
-        self.tree_info.setText(tr("viewer.folders_found", n=n) if n
-                               else tr("viewer.folders_none"))
-        applog.event("log.event.folder_filter", q=needle, n=n)
+        if scope is not None:
+            where = scope.text(0)
+            self.tree_info.setText(tr("viewer.folders_found_in", n=n, where=where) if n
+                                   else tr("viewer.folders_none_in", where=where))
+            applog.event("log.event.folder_filter_in", q=needle, n=n, where=where)
+        else:
+            self.tree_info.setText(tr("viewer.folders_found", n=n) if n
+                                   else tr("viewer.folders_none"))
+            applog.event("log.event.folder_filter", q=needle, n=n)
 
-    def _load_for_filter(self) -> tuple[int, bool]:
+    def _filter_scope(self):
+        """Узел, внутри которого ищет фильтр папок, или None.
+
+        Область задаёт фокус: выделенная в дереве папка (или диск) —
+        поиск идёт вглубь только её (v0.7.10). Ничего не выделено —
+        ищем по всему дереву, как раньше."""
+        item = self.tree.currentItem()
+        if item is not None and item.data(0, Qt.ItemDataRole.UserRole):
+            return item
+        return None
+
+    def _load_for_filter(self, scope=None) -> tuple[int, bool]:
         """Догрузить уровни дерева для фильтра: обход сверху вниз, пока не
         исчерпан бюджет папок/времени. Уже раскрытые папки не перечитываются
         (_populate_children кэшируется), поэтому каждая следующая буква
-        почти ничего не стоит. Возвращает (догружено папок, исчерпан ли бюджет)."""
+        почти ничего не стоит. Возвращает (догружено папок, исчерпан ли бюджет).
+
+        С областью (scope — выделенный узел) обход начинается с неё:
+        чужие ветки не догружаются вовсе — на сетевом диске это вся
+        экономия (v0.7.10)."""
         deadline = time.monotonic() + _FS_TIME_BUDGET
-        queue = [self.tree.invisibleRootItem()]
+        start = scope if scope is not None else self.tree.invisibleRootItem()
+        queue = [start]
         i = 0
         budget = _FS_DIR_BUDGET
         while i < len(queue) and budget > 0 and time.monotonic() <= deadline:
@@ -1597,11 +1628,49 @@ class LocalViewer(QWidget):
                     queue.append(child)         # заглушки не обходятся
         return _FS_DIR_BUDGET - budget, budget <= 0
 
-    def _filter_visible(self, needle: str) -> int:
+    def _filter_visible(self, needle: str, scope=None) -> int:
         """Скрыть папки без этих букв; совпавшие и их предки остаются видимы,
-        ветки к совпавшим раскрываются. Возвращает число совпавших папок."""
-        return sum(self._filter_item(self.tree.topLevelItem(i), needle)
-                   for i in range(self.tree.topLevelItemCount()))
+        ветки к совпавшим раскрываются. Возвращает число совпавших папок.
+
+        С областью (scope — выделенный узел) буквами обыскивается ТОЛЬКО
+        его поддерево: путь к фокусу остаётся видим, сестринские ветки и
+        все чужие верхние ветки прячутся целиком — совпадений оттуда не
+        будет (v0.7.10)."""
+        top_of_scope = None
+        scope_n = ""
+        if scope is not None:
+            scope_n = os.path.normcase(
+                os.path.normpath(scope.data(0, Qt.ItemDataRole.UserRole) or ""))
+            top_of_scope = scope
+            while top_of_scope.parent() is not None:
+                top_of_scope = top_of_scope.parent()
+        n = 0
+        for i in range(self.tree.topLevelItemCount()):
+            top = self.tree.topLevelItem(i)
+            if top_of_scope is not None and top is not top_of_scope:
+                top.setHidden(True)   # вне фокуса — ветка прячется, не обходится
+                continue
+            if scope is None:
+                n += self._filter_item(top, needle)
+                continue
+            self._hide_outside_scope(top, scope_n)
+            n += self._filter_item(scope, needle)
+        return n
+
+    def _hide_outside_scope(self, item, scope_n: str) -> None:
+        """Спрятать в ветке всё, кроме пути к фокусу: узел-предок scope
+        остаётся видим (это дорога к выделенной папке), сестринские ветки
+        прячутся целиком; поддерево самого scope не трогается — его
+        фильтрует _filter_item."""
+        item_n = os.path.normcase(
+            os.path.normpath(item.data(0, Qt.ItemDataRole.UserRole) or ""))
+        if item_n == scope_n:
+            return   # сам фокус — его поддерево фильтруется отдельно
+        if self._is_under(scope_n, item_n):   # item — предок scope: путь к фокусу
+            for j in range(item.childCount()):
+                self._hide_outside_scope(item.child(j), scope_n)
+        else:
+            item.setHidden(True)
 
     def _filter_item(self, item, needle: str) -> int:
         """Число совпавших папок в поддереве item (включая сам item)."""
@@ -1633,9 +1702,13 @@ class LocalViewer(QWidget):
         self.refresh_drives()
 
     def _first_match_item(self, needle: str):
-        """Первая видимая совпавшая папка (сверху вниз) — для Enter."""
+        """Первая видимая совпавшая папка (сверху вниз) — для Enter.
+        Скрытые ветки пропускаются целиком: при активной области (фокусе)
+        совпадение вне её не откроется и не уведёт в чужой диск."""
         def dfs(item):
-            if item.data(0, Qt.ItemDataRole.UserRole) and not item.isHidden() \
+            if item.isHidden():
+                return None   # ветка скрыта — внутрь не идём
+            if item.data(0, Qt.ItemDataRole.UserRole) \
                     and needle in item.text(0).lower():
                 return item
             for j in range(item.childCount()):
@@ -2154,6 +2227,10 @@ class LocalViewer(QWidget):
         item.setExpanded(True)
         self._folder = path
         self._update_fav_button()
+        # фокус сменился — сменилась и область фильтра папок (v0.7.10):
+        # с тем же текстом textChanged не сработает, применяем принудительно
+        if self.folder_search.text().strip() and not self._fs_applying:
+            self._apply_folder_filter()
         if self.search_edit.text().strip():
             self._start_search_now()   # поиск от заново выбранной папки
         else:
