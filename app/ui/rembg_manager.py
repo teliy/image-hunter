@@ -78,6 +78,27 @@ def nobg_path(path: str) -> str:
     return stem + _NOBG_SUFFIX + ".png"
 
 
+def _ensure_stdio() -> None:
+    """Подменить отсутствующие sys.stdout/stderr заглушками (v0.7.14).
+
+    На Windows программа запускается без консоли (pythonw), и
+    sys.stdout/sys.stderr равны None. Библиотеки, пишущие в консоль,
+    при этом падают: скачивание модели rembg идёт через pooch → tqdm,
+    а tqdm пишет прогресс в sys.stderr и умирает с «'NoneType' object
+    has no attribute 'write'» — у пользователя модель не скачивалась
+    и удаление фона не работало вовсе (репорт после 0.7.12). None
+    подменяется заглушкой, пишущей в никуда; настоящая консоль не
+    трогается, вызов идемпотентен."""
+    for name in ("stdout", "stderr"):
+        if getattr(sys, name, None) is None:
+            try:
+                stub = open(os.devnull, "w", encoding="utf-8")
+            except OSError:
+                import io
+                stub = io.StringIO()
+            setattr(sys, name, stub)
+
+
 # ---------- сигналы фоновых задач ----------
 
 
@@ -176,6 +197,7 @@ class RemoveBgTask(QRunnable):
         self.signals = signals
 
     def run(self) -> None:  # рабочий поток
+        _ensure_stdio()   # pythonw: без этого падает скачивание модели (tqdm)
         try:
             from rembg import remove, new_session
         except Exception as exc:   # noqa: BLE001 — наверх уйдёт текст

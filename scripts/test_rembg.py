@@ -9,7 +9,10 @@
 - UninstallTask удаляет пакет и кэш моделей целиком (~/.rembg, ~/.u2net);
 - RemoveBgTask: без установленного rembg честно репортит ошибку по каждому
   файлу (batch_done(0, N)), с настоящим rembg (если пакет стоит в окружении)
-  создаёт X_nobg.png;
+  создаёт X_nobg.png — в том числе при sys.stdout/stderr = None (pythonw
+  на Windows: скачивание модели падало с "'NoneType' object has no
+  attribute 'write'" — tqdm в pooch; фикс _ensure_stdio, репорт после 0.7.12);
+- _ensure_stdio: None-stdio подменяется заглушками, вызов идемпотентен;
 - кнопка 🪄 есть, клик без выбора картинки даёт подсказку в статусе;
 - контекстное меню ленты содержит «Удалить фон», подменю «Модель» и пункт
   установки/удаления модуля;
@@ -102,6 +105,10 @@ def main() -> int:
           [os.path.basename(d) for d in rembg_manager.model_cache_dirs()]
           == [".rembg", ".u2net"],
           str(rembg_manager.model_cache_dirs()))
+    # тесту нужен пустой кэш: от скачанных ранее прогонами/вручную моделей
+    # (е2е ниже сам скачает модель заново — часть сценария None-stdio)
+    for d in rembg_manager.model_cache_dirs():
+        shutil.rmtree(d, ignore_errors=True)
     check("models_size: пусто = 0", rembg_manager.models_size() == 0)
 
     # ---------- вьюер: кнопка и начальное состояние ----------
@@ -214,6 +221,20 @@ def main() -> int:
         rembg_manager._run_pip = real_pip
         rembg_manager.RemoveBgTask = real_task
 
+    # ---------- _ensure_stdio: pythonw-сценарий (None-stdio) ----------
+    saved_out, saved_err = sys.stdout, sys.stderr
+    sys.stdout = None
+    sys.stderr = None
+    try:
+        rembg_manager._ensure_stdio()
+        st_ok = sys.stdout is not None and sys.stderr is not None
+        rembg_manager._ensure_stdio()   # повторный вызов не должен ничего ломать
+        idem_ok = sys.stdout is not None and sys.stderr is not None
+    finally:
+        sys.stdout, sys.stderr = saved_out, saved_err
+    check("_ensure_stdio: None-stdout подменён заглушкой", st_ok)
+    check("_ensure_stdio: повторный вызов идемпотентен", idem_ok)
+
     # ---------- RemoveBgTask: ошибка без модуля / e2e с модулем ----------
     if not rembg_manager.is_installed():
         fake_png = os.path.join(tmpdir, "x.png")
@@ -233,19 +254,39 @@ def main() -> int:
         check("RemoveBgTask без модуля: batch_done(0, 1)",
               batches == [(0, 1)], str(batches))
     else:
-        # настоящий rembg: путь насквозь — до файла-результата
-        sig = rembg_manager.RembgSignals()
-        batches: list[tuple] = []
-        sig.batch_done.connect(lambda ok, fail: batches.append((ok, fail)))
-        out = os.path.join(tmpdir, "cat_nobg.png")
-        QThreadPool.globalInstance().start(
-            rembg_manager.RemoveBgTask([(png, out)],
-                                       rembg_manager.DEFAULT_MODEL, sig))
-        check("RemoveBgTask e2e: файл-результат создан",
-              wait_until(lambda: os.path.isfile(out), timeout_s=180), out)
-        wait_until(lambda: bool(batches))
-        check("RemoveBgTask e2e: batch_done(1, 0)",
-              batches == [(1, 0)], str(batches))
+        # настоящий rembg, ровно сценарий пользователя (репорт после 0.7.12):
+        # моделей нет (кэш вычищен — как после установки) и программа
+        # запущена без консоли (pythonw): sys.stdout/sys.stderr равны None.
+        # Раньше скачивание модели падало с "'NoneType' object has no
+        # attribute 'write'" (tqdm в pooch пишет в stderr) — удаление
+        # фона не работало вовсе. Теперь _ensure_stdio чинит stdio, модель
+        # скачивается и обработка доходит до файла-результата.
+        shutil.rmtree(os.path.join(os.path.expanduser("~"), ".rembg"),
+                      ignore_errors=True)
+        shutil.rmtree(os.path.join(os.path.expanduser("~"), ".u2net"),
+                      ignore_errors=True)
+        saved_out, saved_err = sys.stdout, sys.stderr
+        sys.stdout = None
+        sys.stderr = None
+        try:
+            sig = rembg_manager.RembgSignals()
+            batches: list[tuple] = []
+            sig.batch_done.connect(lambda ok, fail: batches.append((ok, fail)))
+            out = os.path.join(tmpdir, "cat_nobg.png")
+            QThreadPool.globalInstance().start(
+                rembg_manager.RemoveBgTask([(png, out)],
+                                           rembg_manager.DEFAULT_MODEL, sig))
+            out_ok = wait_until(lambda: os.path.isfile(out), timeout_s=300)
+            wait_until(lambda: bool(batches))
+            batch = list(batches)
+            cache_ok = os.path.isdir(
+                os.path.join(os.path.expanduser("~"), ".rembg"))
+        finally:
+            sys.stdout, sys.stderr = saved_out, saved_err
+        check("None-stdio e2e: файл-результат создан (модель скачалась)",
+              out_ok, out)
+        check("None-stdio e2e: batch_done(1, 0)", batch == [(1, 0)], str(batch))
+        check("None-stdio e2e: кэш моделей создан", cache_ok)
 
     # ---------- UninstallTask: чистит пакет и модели ----------
     calls.clear()

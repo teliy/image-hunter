@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QThreadPool, QTimer
 from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QApplication
 
@@ -73,12 +73,37 @@ def main() -> int:
     viewer.resize(800, 900)
     viewer.show()   # ленивые миниатюры грузятся только для видимых строк
 
-    # 1. дерево построено: есть диски (include_all — песочница на overlay-fs)
+    # 1. дерево построено: есть диски (include_all — песочница на overlay-fs).
+    # Диски перечисляются фоном (v0.7.14) — ждём прихода секции из рабочего потока.
+    viewer.refresh_drives(include_all=True)
+
+    def _has_drive() -> bool:
+        for i in range(viewer.tree.topLevelItemCount()):
+            p = viewer.tree.topLevelItem(i).data(0, Qt.ItemDataRole.UserRole) or ""
+            if p == "/" or (p and p[1:2] == ":"):
+                return True
+        return False
+
+    check("дерево содержит хотя бы один диск (фоновое перечисление)",
+          wait_until(_has_drive), "секция дисков не приехала")
+    # все задачи перечисления дочитаны И их сигналы доставлены (сигнал
+    # очередится в Qt: после опустошения пула нужен processEvents, иначе
+    # _on_drives_ready пересоздаст секцию уже после сбора tops)
+    def _pool_idle() -> bool:
+        return QThreadPool.globalInstance().activeThreadCount() == 0
+    wait_until(_pool_idle)
+    app.processEvents()
+    wait_until(_pool_idle)
+    app.processEvents()
+
+    # 1b. кэш дисков: повторный refresh_drives строит секцию сразу (без сети,
+    # без ожидания фоновой задачи — список обязан уже быть в дереве);
+    # tops собираются ПОСЛЕ него: refresh_drives делает tree.clear()
     viewer.refresh_drives(include_all=True)
     tops = [viewer.tree.topLevelItem(i) for i in range(viewer.tree.topLevelItemCount())]
     top_paths = [t.data(0, Qt.ItemDataRole.UserRole) for t in tops]
-    check("дерево содержит хотя бы один диск", any(p == "/" or (p and p[1:2] == ":") for p in top_paths),
-          str(top_paths))
+    check("повторный refresh_drives строит диски из кэша мгновенно",
+          any(p == "/" or (p and p[1:2] == ":") for p in top_paths), str(top_paths))
 
     # 2. быстрые ссылки Домой
     check("быстрая ссылка «Домой» есть", any(p == os.path.expanduser("~") for p in top_paths))
@@ -119,6 +144,8 @@ def main() -> int:
 
     # 7. синхронизация дерева по внешнему пути («Открыть папку…»):
     # подсветка приходит с завершением фонового скана — ждём её
+    import faulthandler
+    faulthandler.dump_traceback_later(60, exit=True)   # диагностика зависаний
     viewer.refresh_drives(include_all=True)
     viewer.load_folder(sub_a, sync_tree=True)
 
@@ -146,6 +173,18 @@ def main() -> int:
 
     # 9. list_image_files не сломан
     check("list_image_files возвращает 2 файла", len(list_image_files(tmp_root)) == 2)
+
+    # 10. без include_all виртуальные тома скрыты (фильтр внутри _DrivesTask);
+    # вызов в конце: смена списка пересоздаёт дисковую секцию — item'ы выше
+    # уже не используются
+    viewer.refresh_drives()
+    wait_until(lambda: QThreadPool.globalInstance().activeThreadCount() == 0)
+    app.processEvents()
+    paths_nv = [viewer.tree.topLevelItem(i).data(0, Qt.ItemDataRole.UserRole) or ""
+                for i in range(viewer.tree.topLevelItemCount())]
+    check("без include_all виртуальные тома скрыты",
+          all(not p.startswith(("/proc", "/run", "/etc", "/sys")) for p in paths_nv),
+          str(paths_nv))
 
     print()
     if FAILURES:

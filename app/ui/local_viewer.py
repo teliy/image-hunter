@@ -85,6 +85,7 @@ _TREE_TOKEN_ROLE = Qt.ItemDataRole.UserRole + 2   # жетон фоновой д
 _TREE_SYNC_ROLE = Qt.ItemDataRole.UserRole + 3    # путь-цель асинхронной прогулки к папке
 _TREE_SYNC_SEQ_ROLE = Qt.ItemDataRole.UserRole + 4  # поколение прогулки (для отмены)
 _FAV_ROLE = Qt.ItemDataRole.UserRole + 5          # узел — избранная папка (v0.7.9)
+_DRIVE_ROLE = Qt.ItemDataRole.UserRole + 6        # узел — диск (v0.7.14)
 _FAV_KEY = "viewer/favorites"                     # где лежат избранные папки
 
 # сетевость дисков уже выясненное (кэш): буква диска -> DRIVE_REMOTE
@@ -124,6 +125,18 @@ _VIRTUAL_FS = {
     "virtiofs", "iso9660",
 }
 _VIRTUAL_PREFIXES = ("/proc", "/sys", "/dev", "/run", "/snap", "/boot", "/var/lib")
+
+
+def _is_virtual_volume(si) -> bool:
+    """Виртуальный том (procfs, overlay, /run…) — в дереве дисков не показывать.
+
+    Модульная функция, чтобы звать из рабочего потока (_DrivesTask), где
+    класса LocalViewer ещё нет."""
+    fstype = bytes(si.fileSystemType()).decode(errors="ignore").lower()
+    if fstype in _VIRTUAL_FS or fstype.startswith("fuse."):
+        return True
+    path = si.rootPath()
+    return any(path == p or path.startswith(p + "/") for p in _VIRTUAL_PREFIXES)
 
 
 def _star_icon() -> QIcon:
@@ -496,6 +509,41 @@ class _SubdirsTask(QRunnable):
                    folder=os.path.basename(self.path) or self.path),
                 ms, dirs=len(subs))
         self.signals.ready.emit(self.token, self.item, self.path, subs)
+
+
+class _DrivesSignals(QObject):
+    ready = Signal(list)   # [(путь, подпись, объём, свободно), ...] — диски (v0.7.14)
+
+
+class _DrivesTask(QRunnable):
+    """Перечислить смонтированные тома вне GUI-потока (v0.7.14).
+
+    QStorageInfo на сетевом диске платит сетевым тайм-аутом прямо в
+    GUI-потоке: при холодном старте первый запрос к ещё не подключённому
+    сетевому диску (Z:) устанавливал SMB-сессию, и интерфейс замирал на
+    ~2 секунды (репорт: «Интерфейс не отвечал ≈1742 мс» при старте).
+    Диски читает рабочий поток; подпись и статистика объёма — там же,
+    так что на сетевом диске дерево ждёт ответа, а интерфейс — нет.
+    """
+
+    def __init__(self, signals: _DrivesSignals, include_all: bool = False):
+        super().__init__()
+        self.signals = signals
+        self.include_all = include_all
+
+    def run(self) -> None:  # рабочий поток
+        out: list[tuple[str, str, int, int]] = []
+        for si in QStorageInfo.mountedVolumes():
+            if not si.isValid() or not si.isReady():
+                continue
+            if not self.include_all and _is_virtual_volume(si):
+                continue
+            path = si.rootPath()
+            label = si.displayName() or path
+            if os.name != "nt" and label == path:
+                label = "💾 " + (path if len(path) > 1 else tr("viewer.drive_root"))
+            out.append((path, label, si.bytesTotal(), si.bytesFree()))
+        self.signals.ready.emit(out)
 
 
 class _DeleteSignals(QObject):
@@ -1166,6 +1214,10 @@ class LocalViewer(QWidget):
         self._scan_signals.done.connect(self._on_scan_done)
         self._subdir_signals = _SubdirsSignals()
         self._subdir_signals.ready.connect(self._on_subdirs_ready)
+        # диски: перечисление фоном + кэш последнего списка (v0.7.14)
+        self._drives_signals = _DrivesSignals()
+        self._drives_signals.ready.connect(self._on_drives_ready)
+        self._drives_cache: list[tuple[str, str, int, int]] = []
         self._delete_signals = _DeleteSignals()
         self._delete_signals.done.connect(self._on_delete_done)
         # узкий пул для сетевых файлов: пока сервер подвис, ждут одна-две
@@ -2209,7 +2261,13 @@ class LocalViewer(QWidget):
     # ---------- дерево дисков и папок ----------
 
     def refresh_drives(self, include_all: bool = False) -> None:
-        """Перечитает диски/устройства и быстрые ссылки (Домой, Изображения)."""
+        """Перечитает диски/устройства и быстрые ссылки (Домой, Изображения).
+
+        Сами тома перечисляются фоном (v0.7.14, см. _DrivesTask): QStorageInfo
+        на сетевом диске заминал GUI на сетевой тайм-аут. Секция дисков
+        строится из кэша последнего перечисления — при старте она появится
+        на экране мгновенно, как только рабочая задача пришлёт список,
+        при повторных вызовах (смена языка, ⟳) — сразу, без сети."""
         with applog.timed(tr("perf.op.refresh_drives")) as t:
             self.tree.clear()
 
@@ -2225,25 +2283,58 @@ class LocalViewer(QWidget):
             if pics and os.path.isdir(pics) and os.path.normpath(pics) != os.path.normpath(home):
                 self._add_folder_item(None, pics, title=tr("viewer.pictures"))
 
-            for si in QStorageInfo.mountedVolumes():
-                if not si.isValid() or not si.isReady():
-                    continue
-                if not include_all and self._is_virtual(si):
-                    continue
-                self._add_drive_item(si)
+            for drive in self._drives_cache:
+                self._add_drive_item_data(*drive)
             if self._folder and os.path.isdir(self._folder):
-                self._sync_tree(self._folder)   # подсветить текущую папку заново
+                self._sync_tree_async(self._folder)   # подсветить текущую папку заново (без замираний, v0.7.6)
             if self.folder_search.text().strip():
                 self._apply_folder_filter()   # дерево перечитано — фильтр заново
             t.set(roots=self.tree.topLevelItemCount())
+        # перечисление дисков — в рабочем потоке (v0.7.14): обновит секцию
+        # в _on_drives_ready, когда пришлёт актуальный список
+        QThreadPool.globalInstance().start(
+            _DrivesTask(self._drives_signals, include_all))
 
-    @staticmethod
-    def _is_virtual(si) -> bool:
-        fstype = bytes(si.fileSystemType()).decode(errors="ignore").lower()
-        if fstype in _VIRTUAL_FS or fstype.startswith("fuse."):
-            return True
-        path = si.rootPath()
-        return any(path == p or path.startswith(p + "/") for p in _VIRTUAL_PREFIXES)
+    def _on_drives_ready(self, drives: list) -> None:
+        """Список дисков пришёл из рабочего потока — обновить секцию дерева.
+
+        Сравнивается НАБОР дисков (путь + подпись): свободное место на
+        диске плавает между перечислениями, полное сравнение пересоздавало
+        бы секцию каждый раз и сворачивало раскрытые ветви. Набор тот же —
+        только освежается статистика объёма в подсказках; изменился —
+        секция пересобирается, затем асинхронная подсветка текущей папки
+        и активный фильтр заново (секция-то переезжала)."""
+        same_set = ([(d[0], d[1]) for d in drives]
+                    == [(d[0], d[1]) for d in self._drives_cache])
+        if same_set:
+            if not drives:
+                return
+            by_path: dict = {}
+            for i in range(self.tree.topLevelItemCount()):
+                it = self.tree.topLevelItem(i)
+                if it.data(0, _DRIVE_ROLE):
+                    by_path[it.data(0, Qt.ItemDataRole.UserRole)] = it
+            for path, _label, total, free in drives:
+                it = by_path.get(path)
+                if it is None:
+                    continue
+                tip = path
+                if total > 0:
+                    tip += "\n" + tr("viewer.free_space",
+                                     free=_fmt_bytes(free), total=_fmt_bytes(total))
+                it.setToolTip(0, tip)
+            self._drives_cache = drives
+            return
+        self._drives_cache = drives
+        for i in range(self.tree.topLevelItemCount() - 1, -1, -1):
+            if self.tree.topLevelItem(i).data(0, _DRIVE_ROLE):
+                self.tree.takeTopLevelItem(i)
+        for drive in drives:
+            self._add_drive_item_data(*drive)
+        if self._folder and os.path.isdir(self._folder):
+            self._sync_tree_async(self._folder)
+        if self.folder_search.text().strip():
+            self._apply_folder_filter()
 
     # ---------- избранные папки (v0.7.9) ----------
 
@@ -2383,15 +2474,13 @@ class LocalViewer(QWidget):
             else:
                 self.fav_add(path)
 
-    def _add_drive_item(self, si) -> None:
-        path = si.rootPath()
-        label = si.displayName() or path
-        if os.name != "nt" and label == path:
-            label = "💾 " + (path if len(path) > 1 else tr("viewer.drive_root"))
+    def _add_drive_item_data(self, path: str, label: str, total: int,
+                             free: int) -> None:
+        """Добавить узел диска из данных фоновой задачи _DrivesTask."""
         item = QTreeWidgetItem([label])
         item.setData(0, Qt.ItemDataRole.UserRole, path)
+        item.setData(0, _DRIVE_ROLE, True)
         item.setIcon(0, self.style().standardIcon(QStyle.StandardPixmap.SP_DriveHDIcon))
-        total, free = si.bytesTotal(), si.bytesFree()
         tip = path
         if total > 0:
             tip += "\n" + tr("viewer.free_space", free=_fmt_bytes(free), total=_fmt_bytes(total))
@@ -2467,12 +2556,23 @@ class LocalViewer(QWidget):
 
     def _populate_children_sync(self, item: QTreeWidgetItem) -> None:
         """Синхронное чтение подпапок — для фильтра папок и подсветки текущей
+
         папки, которым результат нужен немедленно. Обход ограничен бюджетом
         вызывающего (см. _load_for_filter), но подвисший сервер всё же может
-        задержать вызов — поэтому из кликов он больше не вызывается."""
-        if item.data(0, Qt.ItemDataRole.UserRole + 1):  # уже раскрывали
+        задержать вызов — поэтому из кликов он больше не вызывается.
+
+        Если узел уже помечен асинхронной догрузкой (UserRole+1), но дети
+        ещё не приехали (только заглушка фоновой задачи, v0.7.14: после
+        refresh_drives async-прогулка успела пометить корень раньше
+        синхронной подсветки), узел перечитывается синхронно, а жетон
+        поднимается — поздний фоновый результат не перезапишет детей."""
+        started = item.data(0, Qt.ItemDataRole.UserRole + 1)
+        if started and self._children_loaded(item):
             return
         item.setData(0, Qt.ItemDataRole.UserRole + 1, True)
+        if started:
+            self._tree_token += 1          # см. докстринг: отменяем фоновую догрузку
+            item.setData(0, _TREE_TOKEN_ROLE, self._tree_token)
         while item.childCount():
             item.removeChild(item.child(0))  # убираем заглушку
         path = item.data(0, Qt.ItemDataRole.UserRole)
@@ -2517,6 +2617,15 @@ class LocalViewer(QWidget):
             return []
         out.sort(key=lambda p: natural_key(os.path.basename(p)))
         return out
+
+    @staticmethod
+    def _children_loaded(item: QTreeWidgetItem) -> bool:
+        """Дети узла реально прочитаны (есть хоть один настоящий ребёнок:
+        заглушка фоновой догрузки UserRole пуста)."""
+        for i in range(item.childCount()):
+            if item.child(i).data(0, Qt.ItemDataRole.UserRole):
+                return True
+        return False
 
     def _on_tree_clicked(self, item: QTreeWidgetItem, _column: int) -> None:
         path = item.data(0, Qt.ItemDataRole.UserRole)

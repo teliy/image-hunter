@@ -209,6 +209,11 @@ def main() -> int:
     viewer = LocalViewer()
     viewer.resize(900, 900)
     viewer.show()
+    # диски перечисляются фоном (v0.7.14) — ждём прихода секции дисков,
+    # иначе все проверки дерева гоняют за гонку с рабочей задачей
+    wait_until(app, lambda: any(
+        np(viewer.tree.topLevelItem(i).data(0, Qt.ItemDataRole.UserRole) or "") == np(base)
+        for i in range(viewer.tree.topLevelItemCount())))
     app.processEvents()
 
     # 1. обычное дерево построено из подменённых корней
@@ -273,11 +278,13 @@ def main() -> int:
     check("после Enter в счётчике 1", "1" in viewer.tree_info.text(),
           viewer.tree_info.text())
 
-    # 7. смена языка перечитывает дерево и заново применяет фильтр
+    # 7. смена языка перечитывает дерево и заново применяет фильтр.
+    # Пересборка теперь асинхронно догружает ветвь фокуса (v0.7.14: диски
+    # фоном, подсветка — асинхронной прогулкой) — счётчик ждём.
     i18n.set_lang("en", persist=False)
-    app.processEvents()
     check("счётчик переведён (Folders found: 1)",
-          "Folders found: 1" in viewer.tree_info.text(), viewer.tree_info.text())
+          wait_until(app, lambda: "Folders found: 1" in viewer.tree_info.text()),
+          viewer.tree_info.text())
     check("плейсхолдер переведён", "Filter folders" in viewer.folder_search.placeholderText())
     i18n.set_lang("ru", persist=False)
     app.processEvents()
@@ -293,7 +300,14 @@ def main() -> int:
           np(tmp_root) in visible_paths(viewer) and np(base) in visible_paths(viewer))
     cur = viewer.tree.currentItem()
     cur_path = cur.data(0, Qt.ItemDataRole.UserRole) if cur else None
-    check("текущая папка подсвечена в дереве", cur_path == viewer.current_folder(),
+
+    def _cur_is_folder() -> bool:
+        c = viewer.tree.currentItem()
+        p = c.data(0, Qt.ItemDataRole.UserRole) if c else None
+        return p == viewer.current_folder()
+
+    check("текущая папка подсвечена в дереве",
+          wait_until(app, _cur_is_folder),
           f"{cur_path} vs {viewer.current_folder()}")
 
     # 9. Esc в поле чистит фильтр
@@ -340,7 +354,10 @@ def main() -> int:
           np(tmp_root) in visible_paths(viewer) and np(base) in visible_paths(viewer))
 
     # 13. ручное раскрытие при активном фильтре — новые подпапки тоже фильтруются
-    #     (после ⟳ диск уже загружен через _sync_tree; область — фокус на photos)
+    #     (после ⟳ дерево пересобрано; ветвь диска догружается асинхронно —
+    #     v0.7.14: ждём узел photos)
+    check("узел photos догрузился после ⟳",
+          wait_until(app, lambda: item_by_path(viewer, photos) is not None))
     focus_folder(viewer, photos)
     viewer.folder_search.setText("sub")       # дебаунс ещё не истёк
     viewer._populate_children(item_by_path(viewer, photos))   # «раскрыли» папку вручную
@@ -402,9 +419,9 @@ def main() -> int:
     lv.QStorageInfo = types.SimpleNamespace(
         mountedVolumes=lambda: [FakeSI(base), FakeSI(base2)])
     viewer.refresh_drives()
-    app.processEvents()
+    check("второй диск появился в дереве",
+          wait_until(app, lambda: item_by_path(viewer, base2) is not None))
     disk2_item = item_by_path(viewer, base2)
-    check("второй диск появился в дереве", disk2_item is not None)
 
     focus_folder(viewer, base2)   # фокус — второй диск
     viewer.folder_search.setText("inside")

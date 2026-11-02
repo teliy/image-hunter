@@ -74,6 +74,16 @@ Additionally, `udm=2` counts as a results page on any national Google domain (go
 
 Scenario: a name search is active in My Pictures, a batch of images is saved into the same folder from the Image Search tab — and back in the tab the strip was shown unfiltered while the query was still in the field; Enter had to be pressed again. The cause: saving calls `refresh()` on the current folder, and it re-read the folder with a plain scan, ignoring the active query. Now `refresh()` behaves like a tree click: with an active search it re-runs the search from the same folder — the new files join the same result set, nothing to retype. Without a query the behavior is unchanged — the folder is re-read as before.
 
+## Background removal works without a console; startup no longer freezes on a network drive (v0.7.14)
+
+Two field reports fixed: “🪄 Failed to remove the background — 'NoneType' object has no attribute 'write'” (background removal did not work at all) and “⚠ UI not responding ≈1742 ms” at startup.
+
+**Background removal on Windows without a console.** The app runs via pythonw — no console, so Python's `sys.stdout`/`sys.stderr` are `None`. The rembg model download goes through pooch with a tqdm progress bar, and tqdm writes to `sys.stderr` and crashed with “'NoneType' object has no attribute 'write'”: the model was never saved, and every attempt repeated the error (the first spent a minute on a slow GitHub connection, the second failed instantly). Dummy streams writing to nowhere are installed before processing (`_ensure_stdio`); a real console is untouched, the call is idempotent.
+
+**Drive tree is read in the background.** The drive list was built with `QStorageInfo` right in the GUI thread: the first request to a not-yet-connected network drive establishes an SMB session — the window froze for a couple of seconds (that “≈1742 ms” report). Volumes are now enumerated by a worker thread (_DrivesTask): the tree appears immediately, the drive section is filled in when the list arrives; on rebuilds (language change, ⟳) drives are restored from the cache instantly. If the set of drives is unchanged the section is left alone (expanded branches stay expanded); only the size tooltip is refreshed. The current-folder highlight after a rebuild is now the asynchronous walk (v0.7.6 principle), and the synchronous highlight can re-read a node whose background load hasn't landed yet (a token cancels the late result).
+
+Tests: `scripts/test_rembg.py` — 63 checks, including the exact scenario (empty model cache, stdio = None → the model downloads, the result file is created); test_tree — instant cache restore of drives, background enumeration, virtual volumes hidden; test_folder_search — waits rebuilt for the async tree.
+
 ## The current task is visible at the bottom, in the status bar (v0.7.13)
 
 The log collects the whole chronicle of the app's work, but the tab has to be opened first. Now every log line (events, warnings, errors) is mirrored into the left part of the status bar at the bottom of the window: whatever the app is doing — searching, downloading, removing backgrounds, installing or uninstalling the rembg module, syncing the drive tree — the current task is visible without switching tabs.
