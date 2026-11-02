@@ -126,7 +126,7 @@ def main() -> int:
 
         # 8. переключение при пустом поле: не ищем и не падаем
         viewer.search_edit.clear()
-        app.processEvents()
+        wait_until(lambda: viewer.list.count() == 4)   # пустой запрос — обычная лента (4 файла)
         before = viewer.list.count()
         viewer.ignore_dash_box.setChecked(False)
         app.processEvents()
@@ -160,7 +160,8 @@ def main() -> int:
         log_view = LogView()
         log_view.show()
         applog.error(tr("log.event.save_file_err",
-                        url="http://x/bad.png", err="не изображение (text/html)"))
+                        url="http://x/bad.png", err="не изображение (text/html)",
+                        engine="Тест"))   # v0.7.8: в шаблоне есть {engine}
         applog.error(tr("log.event.dl_file_err",
                         url="http://x/dl.png", err="404"))
         deadline = time.time() + 3

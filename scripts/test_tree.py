@@ -14,11 +14,27 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QImage
+from PySide6.QtWidgets import QApplication
 
 from app.ui.local_viewer import LocalViewer, list_image_files
 from PySide6.QtCore import QSettings
 
 FAILURES: list[str] = []
+
+
+def wait_until(cond, timeout_s: float = 10.0) -> bool:
+    """Крутить цикл событий до условия: фоновый скан/догрузка рабочего
+    потока одним processEvents() не дожидается — исторический флейм
+    этой проверки в загруженной песочнице (фикс в духе v0.7.10)."""
+    app = QApplication.instance()
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        app.processEvents()
+        if cond():
+            return True
+        time.sleep(0.02)
+        app.processEvents()
+    return bool(cond())
 
 
 def check(name: str, cond: bool, extra: str = "") -> None:
@@ -67,11 +83,15 @@ def main() -> int:
     # 2. быстрые ссылки Домой
     check("быстрая ссылка «Домой» есть", any(p == os.path.expanduser("~") for p in top_paths))
 
-    # 3. ленивое раскрытие корня диска
+    # 3. ленивое раскрытие корня диска (фоновая догрузка — ждём её)
     root_item = next(t for t in tops if t.data(0, Qt.ItemDataRole.UserRole) in ("/", "C:\\", "C:/"))
     viewer._populate_children(root_item)
+    check("корень диска раскрылся и показал подпапки",
+          wait_until(lambda: root_item.childCount() > 0
+                     and all(root_item.child(i).data(0, Qt.ItemDataRole.UserRole)
+                             for i in range(root_item.childCount()))),
+          f"{root_item.childCount()} шт.")
     kids = [root_item.child(i).data(0, Qt.ItemDataRole.UserRole) for i in range(root_item.childCount())]
-    check("корень диска раскрылся и показал подпапки", len(kids) > 0, f"{len(kids)} шт.")
     check("заглушка после раскрытия удалена",
           all(k for k in kids), "нет пустых путей")
 
@@ -80,7 +100,8 @@ def main() -> int:
     check("путь к тестовой папке раскрылся в дереве", target_item is not None)
     if target_item is not None:
         viewer._on_tree_clicked(target_item, 0)
-        check("клик по папке загрузил файлы папки", viewer.list.count() == 2,
+        check("клик по папке загрузил файлы папки",
+              wait_until(lambda: viewer.list.count() == 2),
               f"count={viewer.list.count()}")
         check("сортировка естественная (img1 < img2)",
               [viewer.list.item(i).text() for i in range(2)] == ["img1.png", "img2.png"])
@@ -88,20 +109,28 @@ def main() -> int:
 
     # 5. корень тестовой папки: 2 картинки, txt и скрытая папка не мешают
     viewer.load_folder(tmp_root)
-    check("в корне тестовой папки 2 изображения", viewer.list.count() == 2,
+    check("в корне тестовой папки 2 изображения",
+          wait_until(lambda: viewer.list.count() == 2),
           f"count={viewer.list.count()}")
 
     # 6. пустая папка — сообщение и 0 файлов
     viewer.load_folder(sub_b)
     check("пустая папка — 0 миниатюр", viewer.list.count() == 0)
 
-    # 7. синхронизация дерева по внешнему пути («Открыть папку…»)
+    # 7. синхронизация дерева по внешнему пути («Открыть папку…»):
+    # подсветка приходит с завершением фонового скана — ждём её
     viewer.refresh_drives(include_all=True)
     viewer.load_folder(sub_a, sync_tree=True)
+
+    def _cur_path():
+        c = viewer.tree.currentItem()
+        return c.data(0, Qt.ItemDataRole.UserRole) if c else None
+
+    check("синхронизация дерева подсветила папку",
+          wait_until(lambda: _cur_path() == sub_a), str(_cur_path()))
     cur = viewer.tree.currentItem()
-    cur_path = cur.data(0, Qt.ItemDataRole.UserRole) if cur else None
-    check("синхронизация дерева подсветила папку", cur_path == sub_a, str(cur_path))
-    check("путь в дереве раскрыт до папки", bool(cur and cur.parent() is not None and cur.parent().isExpanded()))
+    check("путь в дереве раскрыт до папки",
+          bool(cur and cur.parent() is not None and cur.parent().isExpanded()))
 
     # 8. миниатюры реально отрисовываются (фоновые задачи; счётчик накопительный — берём дельту)
     done_before = viewer._thumbs_done

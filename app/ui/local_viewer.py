@@ -14,6 +14,8 @@ import tempfile
 import time
 
 from PySide6.QtCore import (
+    QBuffer,
+    QByteArray,
     QEvent,
     QFile,
     QObject,
@@ -86,6 +88,9 @@ _FAV_KEY = "viewer/favorites"                     # где лежат избра
 
 # сетевость дисков уже выясненное (кэш): буква диска -> DRIVE_REMOTE
 _REMOTE_DRIVE_CACHE: dict[str, bool] = {}
+# наличие корзины по корню диска — тоже кэш: запрос за выделенные 200 файлов
+# не должен 200 раз ходить в shell (на сетевом диске каждый не мгновенен)
+_TRASH_DRIVE_CACHE: dict[str, bool] = {}
 
 
 def _is_remote_path(path: str) -> bool:
@@ -223,13 +228,17 @@ def _drive_has_trash(path: str) -> bool | None:
         root = os.path.splitdrive(path)[0]
         if len(root) < 2:          # относительный путь или что-то странное
             return None
+        cached = _TRASH_DRIVE_CACHE.get(root)
+        if cached is not None:
+            return cached          # один запрос на диск за всю сессию (v0.7.11)
         info = _RBInfo()
         info.cbSize = ctypes.sizeof(info)
         hr = ctypes.windll.shell32.SHQueryRecycleBinW(root + "\\",
                                                       ctypes.byref(info))
-        return hr == 0
+        _TRASH_DRIVE_CACHE[root] = (hr == 0)
+        return _TRASH_DRIVE_CACHE[root]
     except Exception:              # noqa: BLE001 — не удалось выяснить
-        return None
+        return None                # (не кэшируем — попробуем в следующий раз)
 
 
 def _remove_forever(path: str) -> tuple[bool, str]:
@@ -408,6 +417,34 @@ class _ViewTask(QRunnable):
             applog.slow_event(tr("perf.op.view_decode", name=name), ms,
                               **({"err": err} if err else {}))
         self.signals.ready.emit(self.row, self.path, img, err)
+
+
+class _GifSignals(QObject):
+    ready = Signal(int, str, bytes, str)   # строка, путь, байты файла, ошибка
+
+
+class _GifTask(QRunnable):
+    """Чтение GIF-файла в рабочий поток (см. _show_index и _on_gif_ready).
+
+    QMovie создаётся по пути файла и читает его в GUI-потоке: на подвисшем
+    WebDAV/SMB даже чтение заголовка замораживало окно на весь сетевой
+    тайм-аут — тот же класс проблем, что у полноразмерного просмотра
+    (v0.7.2). Файл читается питоновским I/O (GIL отпускается), анимация
+    строится из памяти поверх QBuffer (v0.7.11).
+    """
+
+    def __init__(self, path: str, row: int, signals: _GifSignals):
+        super().__init__()
+        self.path, self.row, self.signals = path, row, signals
+
+    def run(self) -> None:  # рабочий поток
+        t0 = time.perf_counter()
+        data, err = imgload.read_file_bytes(self.path)
+        ms = round((time.perf_counter() - t0) * 1000)
+        if ms >= 400:   # медленное чтение (сеть) — в журнал
+            applog.slow_event(tr("perf.op.view_decode", name=os.path.basename(self.path)),
+                              ms, **({"err": err} if err else {}))
+        self.signals.ready.emit(self.row, self.path, data or b"", err)
 
 
 # ---------- фоновое чтение папок и дерева (сеть не заминает интерфейс, v0.7.2) ----------
@@ -1082,6 +1119,9 @@ class LocalViewer(QWidget):
         self._view_signals.ready.connect(self._on_view_ready)
         self._view_inflight = 0
         self._view_busy = False
+        # фоновое чтение GIF: анимация строится из памяти (v0.7.11)
+        self._gif_signals = _GifSignals()
+        self._gif_signals.ready.connect(self._on_gif_ready)
         # применяем миниатюры пачками по таймеру: сотни setIcon подряд
         # заставляют список перестраивать раскладку на каждую иконку
         self._thumb_timer = QTimer(self)
@@ -1106,6 +1146,15 @@ class LocalViewer(QWidget):
         self._visible_timer.setSingleShot(True)
         self._visible_timer.setInterval(120)
         self._visible_timer.timeout.connect(self._queue_visible_thumbs)
+        # рескейл «по размеру окна» — после паузы в ресайзе (v0.7.11):
+        # SmoothTransformation на большом фото занимает десятки миллисекунд,
+        # и на каждый пиксель перетаскивания края окна они складывались
+        # в заметные подлагивания; теперь картинка подгоняется один раз —
+        # когда окно перестало меняться
+        self._resize_timer = QTimer(self)
+        self._resize_timer.setSingleShot(True)
+        self._resize_timer.setInterval(80)
+        self._resize_timer.timeout.connect(self._apply_mode)
         # асинхронное чтение папок и дерева: скан по сети не должен
         # останавливать интерфейс (v0.7.2)
         self._scan_signals = _ScanSignals()
@@ -1169,7 +1218,17 @@ class LocalViewer(QWidget):
             self.search_edit.clear()
             self.search_edit.blockSignals(False)
             self._cancel_search()
-            self.load_folder(folder, sync_tree=True)
+            self.load_folder(folder)   # скан в рабочем потоке
+            self.show_in_tree(folder)  # подсветка — асинхронной прогулкой (v0.7.11)
+
+    def show_in_tree(self, folder: str) -> None:
+        """Подсветить folder в дереве без замираний (асинхронная прогулка, v0.7.6).
+
+        Раньше «Открыть папку…» подсвечивала синхронно (_sync_tree): каждый
+        уровень пути платил скан в GUI-потоке — на сетевом диске с подвисшим
+        сервером окно замерало на сетевой тайм-аут за каждый уровень.
+        """
+        self._sync_tree_async(folder)
 
     def current_folder(self) -> str:
         """Папка, открытая сейчас во вкладке (используется для сохранения WebP)."""
@@ -1268,20 +1327,25 @@ class LocalViewer(QWidget):
         """Файлы удалены в фоне — обновить ленту; при отказе корзины спросить
         про окончательное удаление и запустить вторую фазу."""
         trash_n = perm_n = failed_n = 0
+        # как именно удаляли: фаза 1 с заранее известным «навсегда»
+        # (диск без корзины, self._delete_perm) — тоже окончательное;
+        # счёт по номеру фазы называл такое удаление «в корзину»
+        # и в статусе, и в журнале (v0.7.11)
+        perm = (phase == 2) or self._delete_perm
         retry: list[str] = []               # корзина отказала — попытка 2
         for path, ok, err in results:
             if ok:
-                if phase == 1:
-                    trash_n += 1
-                else:
+                if perm:
                     perm_n += 1
+                else:
+                    trash_n += 1
                 self._remove_row_by_path(path)
             else:
                 applog.error(tr("log.event.trash_err", path=path, err=err))
                 failed_n += 1
-                if phase == 1:
+                if not perm:
                     retry.append(path)
-        if phase == 1 and retry and not self._delete_perm:
+        if not perm and retry:
             self._set_view_busy(False)
             ans = QMessageBox.question(
                 self, tr("viewer.del_perm_ask_title"),
@@ -1825,17 +1889,18 @@ class LocalViewer(QWidget):
         self._movie = None
         path = self._paths[row]
         if os.path.splitext(path)[1].lower() == ".gif":
-            # GIF маленькие: анимирует QMovie, фон не нужен
+            # GIF читается в фоне (v0.7.11): QMovie(path) валидирует файл в
+            # GUI-потоке — на подвисшем сетевом диске это замораживало окно.
+            # Анимация построится из памяти в _on_gif_ready.
             self._pixmap = None
+            self._movie = None
             self._mode = "fit"
-            movie = QMovie(path)
-            if movie.isValid():
-                self._movie = movie
-                self.view_label.setMovie(movie)
-                movie.start()
-                self._set_view_status(path, row, movie.currentPixmap().size())
-            else:
-                self.view_label.setText(tr("viewer.cant_open", err="GIF"))
+            self._view_inflight += 1
+            self._set_view_busy(True)
+            self.status.setText(f"{os.path.basename(path)}  •  {tr('viewer.loading')}")
+            # сетевой файл — через узкий отдельный пул (v0.7.2, см. _is_remote_path)
+            pool = self._net_pool if _is_remote_path(path) else QThreadPool.globalInstance()
+            pool.start(_GifTask(path, row, self._gif_signals))
             return
         # большой файл (фото, тем более AVIF, тем более по сети) — декодируем
         # в фоне: интерфейс не подвисает, Windows не пишет «Не отвечает»
@@ -1859,6 +1924,34 @@ class LocalViewer(QWidget):
             self._set_view_status(path, row, self._pixmap.size())
         elif err:
             self.view_label.setText(tr("viewer.cant_open", err=err))
+
+    def _on_gif_ready(self, row: int, path: str, data: bytes, err: str) -> None:
+        """GIF прочитан в фоне — построить анимацию из памяти (QBuffer).
+
+        QMovie не владеет устройством: буфер делается ребёнком самой анимации
+        и умирает вместе с ней — отдельной ссылки держать не нужно.
+        """
+        self._view_inflight = max(0, self._view_inflight - 1)
+        if self._view_inflight == 0:
+            self._set_view_busy(False)
+        # пока читали, выбрали другую плитку/папку — показать нечего
+        if not (0 <= row < len(self._paths)) or self._paths[row] != path:
+            return
+        if err:
+            self.view_label.setText(tr("viewer.cant_open", err=err))
+            return
+        buf = QBuffer()
+        buf.setData(QByteArray(data))
+        buf.open(QBuffer.OpenModeFlag.ReadOnly)
+        movie = QMovie(buf)
+        if not movie.isValid():
+            self.view_label.setText(tr("viewer.cant_open", err="GIF"))
+            return
+        buf.setParent(movie)   # устройство живёт, пока жива анимация (v0.7.11)
+        self._movie = movie
+        self.view_label.setMovie(movie)
+        movie.start()
+        self._set_view_status(path, row, movie.currentPixmap().size())
 
     def _set_view_status(self, path: str, row: int, size: QSize) -> None:
         self.status.setText(
@@ -2406,7 +2499,7 @@ class LocalViewer(QWidget):
     def resizeEvent(self, event) -> None:  # noqa: N802 (Qt API)
         super().resizeEvent(event)
         if self._mode == "fit":
-            self._apply_mode()
+            self._resize_timer.start()   # рескейл — после паузы в ресайзе (v0.7.11)
         self._schedule_visible_thumbs()
 
     def eventFilter(self, obj, event) -> bool:  # noqa: N802 (Qt API)

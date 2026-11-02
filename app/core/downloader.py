@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import re
+import threading
 import time
 from urllib.parse import unquote, urlparse
 
@@ -47,6 +48,28 @@ RETRY_STATUSES = frozenset({401, 403, 429})
 
 # Обёртка CDN Cloudflare: /cdn-cgi/image/<параметры>/<оригинал>
 _CDN_WRAP_RE = re.compile(r"/cdn-cgi/image/[^/?&]+/(https?://.+)$", re.IGNORECASE)
+
+# сессия requests, закреплённая за рабочим потоком (см. _http_get)
+_TLS = threading.local()
+
+
+def _http_get():
+    """Функция запроса с сессией на поток — переиспользование TCP/TLS.
+
+    Каждый requests.get() открывает новое соединение: пачка из сотни картинок
+    с одного CDN платит рукопожатие TLS за каждую, а сокеты копятся в
+    TIME_WAIT. Сессия, закреплённая за рабочим потоком (их у загрузчика
+    максимум 6 + 3 у сохранения), переиспользует соединения через пул
+    urllib3 (v0.7.11). Если requests подменён тестами (объект без Session) —
+    честный запасной путь через requests.get.
+    """
+    if getattr(requests, "__name__", "") != "requests":
+        return requests.get   # подмена requests в тестах — без сессии
+    session = getattr(_TLS, "session", None)
+    if session is None:
+        session = requests.Session()
+        _TLS.session = session
+    return session.get
 
 
 def unwrap_cdn_url(url: str) -> str | None:
@@ -88,13 +111,14 @@ def fetch_image(url: str, referer: str | None = None) -> requests.Response:
 
     last_exc: Exception | None = None
     last_resp: requests.Response | None = None
+    http_get = _http_get()
     for attempt_url, ref in attempts:
         headers = dict(BASE_HEADERS)
         if ref:
             headers["Referer"] = ref
         try:
-            resp = requests.get(attempt_url, headers=headers,
-                                timeout=TIMEOUT, stream=True)
+            resp = http_get(attempt_url, headers=headers,
+                            timeout=TIMEOUT, stream=True)
         except Exception as exc:  # noqa: BLE001 — сеть моргнула, попробуем ещё
             last_exc, last_resp = exc, None
             continue
@@ -102,7 +126,11 @@ def fetch_image(url: str, referer: str | None = None) -> requests.Response:
             last_exc, last_resp = None, resp
             resp.close()
             continue
-        resp.raise_for_status()
+        try:
+            resp.raise_for_status()
+        except Exception:
+            resp.close()   # неудачный ответ не держит соединение до GC (v0.7.11)
+            raise
         return resp
     if last_exc is not None:
         raise last_exc
@@ -131,7 +159,10 @@ def filename_from_url(url: str, content_type: str) -> str:
 
 
 def unique_path(directory: str, filename: str) -> str:
-    """Вернуть путь, не совпадающий с уже существующими файлами."""
+    """Вернуть путь, не совпадающий с уже существующими файлами.
+
+    Запись идёт через _create_exclusive — эта функция осталась для
+    справочных целей (показать пользователю, куда сохранится файл)."""
     stem, ext = os.path.splitext(filename)
     candidate = os.path.join(directory, filename)
     counter = 1
@@ -139,6 +170,28 @@ def unique_path(directory: str, filename: str) -> str:
         candidate = os.path.join(directory, f"{stem}-{counter}{ext}")
         counter += 1
     return candidate
+
+
+def _create_exclusive(directory: str, filename: str) -> tuple[int, str]:
+    """Создать файл записи с атомарно-свободным именем (O_CREAT|O_EXCL).
+
+    Классический «os.path.exists → open» гонок не видит: шесть параллельных
+    скачиваний, у которых совпало имя (image.jpg с разных ссылок), получали
+    один и тот же путь, и один файл затирал другой. Эксклюзивное создание
+    атомарно средствами ОС: проигравший поток честно берёт следующий
+    свободный номер (image-1.jpg, image-2.jpg…) — ничего не пропадает
+    (v0.7.11).
+    """
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+    stem, ext = os.path.splitext(filename)
+    candidate = os.path.join(directory, filename)
+    counter = 1
+    while True:
+        try:
+            return os.open(candidate, flags, 0o644), candidate
+        except FileExistsError:
+            candidate = os.path.join(directory, f"{stem}-{counter}{ext}")
+            counter += 1
 
 
 class _DownloadTask(QRunnable):
@@ -171,9 +224,9 @@ class _DownloadTask(QRunnable):
             # имя — по фактическому адресу ответа: после запасной попытки
             # (раскрытая обёртка CDN) это уже настоящий адрес файла
             fname = filename_from_url(resp.url or self.url, content_type)
-            path = unique_path(self.directory, fname)
+            fd, path = _create_exclusive(self.directory, fname)
             received = 0
-            with open(path, "wb") as fh:
+            with os.fdopen(fd, "wb") as fh:
                 for chunk in resp.iter_content(chunk_size=64 * 1024):
                     if self.owner.is_stopped():
                         fh.close()

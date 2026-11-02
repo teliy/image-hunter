@@ -127,17 +127,18 @@ def main() -> int:
         viewer.show()          # offscreen: без показа вьюпорт пуст и миниатюры не ставятся
         app.processEvents()
         viewer.load_folder(tmp)
-        app.processEvents()
-        rows = {os.path.basename(viewer._paths[r]): r
-                for r in range(len(viewer._paths))}
+        # лента наполняется фоновым сканом — один processEvents() его не ждёт;
+        # без ожидания rows строился по пустому списку (флейм в загруженной песочнице)
         deadline = time.time() + 15
         while time.time() < deadline:
             app.processEvents()
-            if rows["картинка.avif"] in viewer._thumb_done_rows:
+            rows = {os.path.basename(viewer._paths[r]): r
+                    for r in range(len(viewer._paths))}
+            if "картинка.avif" in rows and rows["картинка.avif"] in viewer._thumb_done_rows:
                 break
             time.sleep(0.03)
         check("миниатюра AVIF готова",
-              rows["картинка.avif"] in viewer._thumb_done_rows,
+              "картинка.avif" in rows and rows["картинка.avif"] in viewer._thumb_done_rows,
               f"done={sorted(viewer._thumb_done_rows)}")
 
         # 8. выбор плитки: просмотр грузится ФОНОВО (интерфейс не блокируется)
@@ -171,8 +172,16 @@ def main() -> int:
         with open(bad, "wb") as f:
             f.write(b"not an image at all, just text")
         viewer.load_folder(tmp)
-        app.processEvents()
-        rows = {os.path.basename(viewer._paths[r]): r for r in range(len(viewer._paths))}
+        # фоновый скан: ждём ленту с 4 файлами, потом строим карту строк
+        deadline = time.time() + 15
+        rows = {}
+        while time.time() < deadline:
+            app.processEvents()
+            rows = {os.path.basename(viewer._paths[r]): r
+                    for r in range(len(viewer._paths))}
+            if "битый.jpg" in rows:
+                break
+            time.sleep(0.03)
         viewer.list.setCurrentRow(rows["битый.jpg"])
         deadline = time.time() + 15
         while time.time() < deadline:

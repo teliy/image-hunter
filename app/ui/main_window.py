@@ -136,6 +136,11 @@ class MainWindow(QMainWindow):
     # ---------- обновление ----------
 
     def check_updates(self) -> None:
+        # защита от повторного клика (v0.7.11): каждая проверка — сетевой
+        # запрос и диалог по завершении; двойной клик плодил и то и другое
+        if getattr(self, "_upd_checking", False):
+            return
+        self._upd_checking = True
         self._status.showMessage(tr("main.upd_checking"))
         applog.event("main.upd_checking")
         self._upd_signals = updates.UpdatesSignals()
@@ -143,6 +148,7 @@ class MainWindow(QMainWindow):
         QThreadPool.globalInstance().start(updates.VersionCheckTask(self._upd_signals))
 
     def _on_version_checked(self, remote: str) -> None:
+        self._upd_checking = False   # проверка закончилась — можно проверять снова
         if not remote:
             self._status.clearMessage()
             applog.warning(tr("main.upd_check_fail"))
@@ -192,7 +198,8 @@ class MainWindow(QMainWindow):
             folder = QFileDialog.getExistingDirectory(self, tr("main.save_pick_title"))
             if not folder:
                 return
-            self.local.load_folder(folder, sync_tree=True)   # откроем её же в просмотре
+            self.local.load_folder(folder)      # откроем её же в просмотре
+            self.local.show_in_tree(folder)     # подсветка без замираний (v0.7.11)
 
         ext = image_saver.SAVE_FORMATS[fmt][1]
         base_default = image_saver.sanitize_base_name(self.web.current_query()) or "image"

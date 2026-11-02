@@ -74,6 +74,28 @@ Additionally, `udm=2` counts as a results page on any national Google domain (go
 
 Scenario: a name search is active in My Pictures, a batch of images is saved into the same folder from the Image Search tab — and back in the tab the strip was shown unfiltered while the query was still in the field; Enter had to be pressed again. The cause: saving calls `refresh()` on the current folder, and it re-read the folder with a plain scan, ignoring the active query. Now `refresh()` behaves like a tree click: with an active search it re-runs the search from the same folder — the new files join the same result set, nothing to retype. Without a query the behavior is unchanged — the folder is re-read as before.
 
+## Stability and speed: results of a full code audit (v0.7.11)
+
+The whole codebase was re-reviewed for freezes, races and slow spots. Eight narrow places were found and fixed:
+
+**1. GIFs are no longer read on the UI thread.** Full-size pictures have been decoded in the background since v0.7.2, but GIFs slipped through: `QMovie` opens the file right in the GUI thread, and on a stalled network drive even reading the header froze the window for the network timeout. The GIF file is now read in a worker thread (the same GIL-releasing Python I/O) and the animation is built from memory over a `QBuffer` — the last file read in the GUI thread is gone.
+
+**2. Parallel downloads no longer overwrite each other.** The file name comes from the link, and six parallel downloads often share one (`image.jpg`): the classic “does it exist → create” check cannot see races, so one file silently replaced another. The file is now created atomically by the OS (`O_CREAT|O_EXCL`): the losing thread honestly takes the next free number (`image-1.jpg`, `image-2.jpg`…), nothing is lost.
+
+**3. Connection reuse.** Every request opened a new TCP/TLS connection: a batch of a hundred images from one CDN paid a handshake for each. Each worker thread now has its own `requests` session — connections are reused, batches download noticeably faster, and sockets no longer pile up in `TIME_WAIT`. Failed responses are closed immediately instead of waiting for the garbage collector.
+
+**4. “Open folder…” highlight — without freezes.** Picking a folder via the dialog highlighted it in the tree synchronously: on a network drive every level of the path paid a scan in the GUI thread. The highlight now uses the asynchronous walk (the same one used at startup since v0.7.6) — including when a batch is saved into a new folder.
+
+**5. Resizing the window with a large photo no longer stutters.** Dragging the window edge rescaled the picture on every pixel, and smooth scaling of a large photo costs tens of milliseconds — the delays added up into visible sluggishness. The rescale now happens once, when the window stops changing.
+
+**6. “Update” without duplicates.** Double-clicking the update button ran two network checks and showed two dialogs in a row. While a check is in progress, repeated clicks do nothing.
+
+**7. The recycle bin is queried once per drive.** Before deleting, the app checks whether the drive has a recycle bin; with a hundred files selected the query went to the shell once per file. The result is now cached per drive root.
+
+**8. The delete report is now honest.** Permanent deletion on a drive without a recycle bin was counted in the status and the log as “moved to trash”: the count followed the deletion phase number, not the actual mode. “Permanently deleted: N” and the `delete_perm` log event are now reported correctly.
+
+**9. The network caches already in place** (v0.7.2–v0.7.10): drive remoteness, recycle-bin presence, lazy thumbnails, background scans and batched search — the audit confirmed these mechanisms work as designed.
+
 ## The folder filter searches inside the highlighted folder or drive (v0.7.10)
 
 **1. The scope is the focus.** Typing in the “🔍 Filter folders…” box used to crawl every branch of the tree at once — Home, favorites and all drives, including network ones: on WebDAV/SMB the search dragged on for long seconds, and the results flashed “foreign” folders from other drives. Now the search goes deep into whatever is highlighted in the tree: select drive Z: — the filter searches that whole drive; select the “Автозапчасти” folder — only its subfolders. Foreign branches are hidden entirely and never traversed — that is the whole saving on a network drive. With nothing selected, all drives are searched, as before. The counter above the tree shows where the search ran: “Folders found: 2 — in “Z:/Автозапчасти””.

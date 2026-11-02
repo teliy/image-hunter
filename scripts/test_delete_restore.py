@@ -40,6 +40,19 @@ def wait_until(app, cond, timeout_s: float = 20.0) -> bool:
     return bool(cond())
 
 
+def load_wait(viewer, app, folder: str) -> None:
+    """Открыть папку и ДОЖДАТЬСЯ фонового скана.
+
+    Один processEvents() рабочий поток не ждёт: в загруженной песочнице
+    скан успевал не всегда, и проверка падала на пустом списке
+    (исторический флейм — фикс в духе v0.7.10)."""
+    expected = len([n for n in os.listdir(folder)
+                    if n.lower().endswith(".png")])
+    viewer.load_folder(folder)
+    wait_until(app, lambda: viewer.list.count() == expected,
+               timeout_s=10.0)
+
+
 class FakeSI:
     def __init__(self, path: str):
         self._path = path
@@ -143,8 +156,7 @@ def main() -> int:
 
     # ---------- 1. удаление в корзину: подтверждение «Да» ----------
     fresh()
-    viewer.load_folder(tmp)
-    app.processEvents()
+    load_wait(viewer, app, tmp)
     check("папка загружена (4 файла)", viewer.list.count() == 4)
     viewer.list.item(0).setSelected(True)   # a.png
     viewer.list.item(2).setSelected(True)   # c.png
@@ -155,7 +167,7 @@ def main() -> int:
     lv.QMessageBox.question = staticmethod(ans)
 
     viewer.delete_selected_files()
-    app.processEvents()
+    wait_until(app, lambda: viewer._delete_phase == 0)   # фоновое удаление дошло
     check("в корзину ушло 2 файла", len(FakeQFile.trashed) == 2,
           str(FakeQFile.trashed))
     check("задан ровно один диалог (обычное подтверждение)",
@@ -173,15 +185,14 @@ def main() -> int:
 
     # ---------- 2. корзина отказала + «Да» → удаление окончательно ----------
     fresh()
-    viewer.load_folder(tmp)
-    app.processEvents()
+    load_wait(viewer, app, tmp)
     FakeQFile.fail_names = {"a.png"}
     ans = Answers(lv.QMessageBox.StandardButton.Yes,   # корзина
                   lv.QMessageBox.StandardButton.Yes)   # окончательно?
     lv.QMessageBox.question = staticmethod(ans)
     viewer.list.item(0).setSelected(True)   # a.png
     viewer.delete_selected_files()
-    app.processEvents()
+    wait_until(app, lambda: viewer._delete_phase == 0)   # фоновое удаление дошло
     check("после отказа корзины был второй диалог",
           ans.titles == [i18n.tr("viewer.del_title"),
                          i18n.tr("viewer.del_perm_ask_title")], str(ans.titles))
@@ -195,14 +206,13 @@ def main() -> int:
 
     # ---------- 3. корзина отказала + «Нет» → файл остаётся ----------
     fresh()
-    viewer.load_folder(tmp)
-    app.processEvents()
+    load_wait(viewer, app, tmp)
     ans = Answers(lv.QMessageBox.StandardButton.Yes,   # корзина
                   lv.QMessageBox.StandardButton.No)    # окончательно? — нет
     lv.QMessageBox.question = staticmethod(ans)
     viewer.list.item(0).setSelected(True)   # a.png
     viewer.delete_selected_files()
-    app.processEvents()
+    wait_until(app, lambda: viewer._delete_phase == 0)   # фоновое удаление дошло
     check("при отказе обоих путей файл остаётся на диске",
           os.path.exists(os.path.join(tmp, "a.png")))
     check("в списке 4 файла", viewer.list.count() == 4)
@@ -216,13 +226,12 @@ def main() -> int:
     real_has_trash = lv._drive_has_trash
     lv._drive_has_trash = lambda p: False     # Z:/сетевой диск без корзины
     try:
-        viewer.load_folder(tmp)
-        app.processEvents()
+        load_wait(viewer, app, tmp)
         ans = Answers(lv.QMessageBox.StandardButton.Yes)
         lv.QMessageBox.question = staticmethod(ans)
         viewer.list.item(0).setSelected(True)   # a.png
         viewer.delete_selected_files()
-        app.processEvents()
+        wait_until(app, lambda: viewer._delete_phase == 0)   # фоновое удаление дошло
         check("на диске без корзины задан один диалог о полном удалении",
               ans.titles == [i18n.tr("viewer.del_perm_title")], str(ans.titles))
         check("файл удалён навсегда (без попытки корзины)",
@@ -236,26 +245,24 @@ def main() -> int:
 
     # ---------- 5. «Нет» в подтверждении: ничего не удаляется ----------
     fresh()
-    viewer.load_folder(tmp)
-    app.processEvents()
+    load_wait(viewer, app, tmp)
     FakeQFile.trashed.clear()
     ans = Answers(lv.QMessageBox.StandardButton.No)
     lv.QMessageBox.question = staticmethod(ans)
     viewer.list.item(0).setSelected(True)
     viewer.delete_selected_files()
-    app.processEvents()
+    wait_until(app, lambda: viewer._delete_phase == 0)   # фоновое удаление дошло
     check("«Нет» — ни один файл не ушёл в корзину", not FakeQFile.trashed)
     check("«Нет» — список не изменился", viewer.list.count() == 4)
 
     # ---------- 6. удаление последнего файла: просмотр очищается ----------
-    viewer.load_folder(tmp)
-    app.processEvents()
+    load_wait(viewer, app, tmp)
     FakeQFile.fail_names.clear()
     ans = Answers(lv.QMessageBox.StandardButton.Yes)
     lv.QMessageBox.question = staticmethod(ans)
     viewer.list.selectAll()
     viewer.delete_selected_files()
-    app.processEvents()
+    wait_until(app, lambda: viewer._delete_phase == 0)   # фоновое удаление дошло
     check("все файлы удалены — список пуст", viewer.list.count() == 0)
     check("просмотр очищен", viewer.view_label.text() != "",
           viewer.view_label.text())
@@ -266,8 +273,7 @@ def main() -> int:
     os.chmod(ro, 0o444)   # «только чтение» — как бывают скачанные webp
     lv._drive_has_trash = lambda p: False
     try:
-        viewer.load_folder(tmp)
-        app.processEvents()
+        load_wait(viewer, app, tmp)
         ans = Answers(lv.QMessageBox.StandardButton.Yes)
         lv.QMessageBox.question = staticmethod(ans)
         row = next(i for i in range(viewer.list.count())
@@ -275,7 +281,7 @@ def main() -> int:
                    == "ro.png")
         viewer.list.item(row).setSelected(True)   # ro.png
         viewer.delete_selected_files()
-        app.processEvents()
+        wait_until(app, lambda: viewer._delete_phase == 0)   # фоновое удаление дошло
         check("read-only файл удалён окончательно", not os.path.exists(ro))
     finally:
         lv._drive_has_trash = real_has_trash

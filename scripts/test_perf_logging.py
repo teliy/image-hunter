@@ -68,7 +68,7 @@ i18n.set_lang("ru", persist=False)   # проверки текста — на р
 applog.setup()
 logging.getLogger("app").addHandler(capture)
 
-check("версия 0.7.2", __version__ == "0.7.2", __version__)
+check("версия 0.7.11", __version__ == "0.7.11", __version__)
 check("setup подключил хендлер", applog._handler is not None)
 check("сторож запущен после setup", applog._watchdog is not None)
 
@@ -202,11 +202,17 @@ from app.ui.local_viewer import LocalViewer  # noqa: E402 — после соз�
 v = LocalViewer()
 RECORDS.clear()
 v.load_folder(tmp)
-check("лента наполнена", v.list.count() == 3, str(v.list.count()))
+check("лента наполнена", wait_until(lambda: v.list.count() == 3),
+      str(v.list.count()))
 check("открытие папки замерено",
-      any(tr("perf.op.load_folder") in m for _l, m in RECORDS),
+      wait_until(lambda: any(tr("perf.op.load_folder") in m for _l, m in RECORDS)),
       str(RECORDS[:4]))
-check("сканирование папки замерено",
+# строка о скане пишется только если скан занял ≥ 400 мс — на быстрой машине
+# это недетерминировано, поэтому сам механизм медленных событий проверяем
+# напрямую (в v0.7.10 та же идея: детерминизм вместо гонки с таймингами)
+RECORDS.clear()
+applog.slow_event(tr("perf.op.scan_folder"), 450, files=3)
+check("медленный скан попадает в журнал (slow_event)",
       any(tr("perf.op.scan_folder") in m for _l, m in RECORDS), "")
 
 RECORDS.clear()
@@ -215,7 +221,8 @@ app.processEvents()
 check("Ctrl+A выделил все плитки", len(v.list.selectedItems()) == 3,
       str(len(v.list.selectedItems())))
 check("Ctrl+A отмечен в журнале",
-      any(tr("log.event.select_all", n=3) in m for _l, m in RECORDS),
+      wait_until(lambda: any(tr("log.event.select_all", n=3) in m
+                             for _l, m in RECORDS)),
       str(RECORDS[-3:] if RECORDS else []))
 
 print()
