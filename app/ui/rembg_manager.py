@@ -13,7 +13,11 @@ Runtime, без облаков и ключей. Ставится pip-ом пря
 
 Пакет не тянет ML-модели: выбранная модель (REMBG_MODELS) скачивается
 автоматически при первом удалении фона и кэшируется в домашней папке
-(``~/.rembg``; у старых версий — ``~/.u2net``). «Удалить модуль»
+(``~/.rembg``; у старых версий — ``~/.u2net``). Скачивание перехватывается
+(hook_model_downloads): пока модели нет в кэше, файл качается здесь —
+через requests, с докладом прогресса сигналами (статусная строка видит
+«Скачивается модель u2netp: 1,2 МБ из 4,7 МБ (26 %)»), а штатный pooch
+потом только проверяет хеш. «Удалить модуль»
 вычищает и пакет, и кэш моделей целиком — на диске не остаётся ничего.
 
 Здесь только механика; все надписи (i18n) и журнальные события — в
@@ -27,6 +31,9 @@ import os
 import shutil
 import subprocess
 import sys
+import time
+
+import requests
 
 from PySide6.QtCore import QObject, QRunnable, Signal
 
@@ -109,6 +116,122 @@ class RembgSignals(QObject):
     uninstall_done = Signal(bool, str, int)  # ok, хвост вывода, освобождено МБ
     file_done = Signal(str, str, bool, str)  # путь, результат, ok, ошибка
     batch_done = Signal(int, int)            # готово, с ошибками
+    revert_done = Signal(list, list)         # удалённые результаты, [(путь, ошибка)]
+    # жизнь модели (v0.7.15): статусная строка рассказывает про скачивание
+    model_prepare = Signal(str)              # модель готовится (грузится в память)
+    model_ready = Signal(str)                # модель готова — началась обработка
+    model_dl_start = Signal(str, int)        # модель, всего байт (0 — неизвестно)
+    model_dl_progress = Signal(int, int)     # скачано байт, всего байт
+    model_dl_done = Signal(str, int, int)    # модель, скачано байт, миллисекунды
+
+
+# активная задача с объектом сигналов: pooch-перехват докладывает прогресс ей
+_DL_REPORTER: "RembgSignals | None" = None
+
+
+def _dl_emit(ev: str, *args) -> None:
+    """Доложить о скачивании модели активной задаче (если она есть)."""
+    rep = _DL_REPORTER
+    if rep is None:
+        return
+    try:
+        getattr(rep, ev).emit(*args)
+    except RuntimeError:
+        pass   # объект сигналов уже удалён — не беда
+
+
+def _stream_model(url: str, target: str) -> None:
+    """Скачать модель в ``target`` (через «.part») с докладом прогресса.
+
+    Штатно модель качает pooch, но его прогресс живёт в консоли: у
+    программы её нет (pythonw, v0.7.14) и из интерфейса она не видна —
+    пользователь сидит в тишине, пока качаются 5–176 МБ. Здесь свой
+    потоковый download через requests: каждые ~0,25 с сигнал
+    model_dl_progress доезжает до статус-бара. При любой ошибке «.part»
+    подчищается, исключение уходит наверх — вызывающий код отдаст
+    скачивание штатному pooch."""
+    tmp = target + ".part"
+    t0 = time.monotonic()
+    name = os.path.splitext(os.path.basename(target))[0]
+    try:
+        # папки кэша ещё нет при первом запуске: pooch создаёт её лениво,
+        # когда качает сам — наш канал идёт раньше и должен создать сам
+        os.makedirs(os.path.dirname(target) or ".", exist_ok=True)
+        with requests.get(url, stream=True, timeout=(10, 120),
+                          headers={"User-Agent": "ImageHunter"}) as r:
+            r.raise_for_status()
+            total = int(r.headers.get("Content-Length") or 0)
+            _dl_emit("model_dl_start", name, total)
+            done, last = 0, 0.0
+            with open(tmp, "wb") as f:
+                for chunk in r.iter_content(65536):
+                    if not chunk:
+                        continue
+                    f.write(chunk)
+                    done += len(chunk)
+                    now = time.monotonic()
+                    if now - last >= 0.25:   # не заваливаем GUI-очередь
+                        last = now
+                        _dl_emit("model_dl_progress", done, total)
+            _dl_emit("model_dl_progress", done, total)   # финальные 100 %
+        os.replace(tmp, target)
+        _dl_emit("model_dl_done", name, done,
+                 int((time.monotonic() - t0) * 1000))
+    except Exception:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _make_retrieve_wrapper(orig, accepts_progressbar: bool):
+    """Обёртка pooch.retrieve: своё скачивание + доклад, потом оригинал.
+
+    Оригинал зовётся всегда — он проверит хеш скачанного файла и при
+    порче перекачает сам (уже без консольного прогресса)."""
+
+    def retrieve(url, known_hash=None, fname=None, path=None,
+                 processor=None, downloader=None, progressbar=True, **kw):
+        target = os.path.join(path, fname) if (path and fname) else None
+        if target and not os.path.exists(target):
+            try:
+                _stream_model(url, target)
+            except Exception:   # noqa: BLE001 — наш канал не вышел, скачает pooch
+                pass            # «.part» уже подчищен в _stream_model
+        args = dict(fname=fname, path=path, processor=processor,
+                    downloader=downloader)
+        if accepts_progressbar:
+            args["progressbar"] = False   # tqdm в консоли больше не нужен
+        return orig(url, known_hash=known_hash, **args, **kw)
+
+    return retrieve
+
+
+def hook_model_downloads() -> None:
+    """Показывать скачивание модели rembg в интерфейсе (v0.7.15).
+
+    rembg качает модель через pooch.retrieve, чей прогресс (tqdm) пишется
+    в консоль — которой у pythonw-версии нет и которая из программы не
+    видна. Мы один раз за жизнь процесса подменяем pooch.retrieve своей
+    обёрткой: пока файла модели нет в кэше — качаем сами с сигналами
+    прогресса, дальше всё равно зовём оригинал (проверка хеша, докачка).
+    Вызов идемпотентен и безопасен, если pooch не установлен."""
+    try:
+        import pooch
+    except Exception:   # noqa: BLE001 — перехватывать нечего
+        return
+    if getattr(pooch, "_imagehunter_hook", False):
+        return   # уже перехвачено — двойная обёртка дала бы рекурсию
+    try:
+        import inspect
+        accepts_pb = "progressbar" in inspect.signature(pooch.retrieve).parameters
+    except (TypeError, ValueError):
+        accepts_pb = True
+    orig = pooch.retrieve
+    pooch.retrieve = _make_retrieve_wrapper(orig, accepts_pb)
+    pooch._imagehunter_hook = True   # type: ignore[attr-defined]
 
 
 # ---------- задачи: установка / удаление пакета ----------
@@ -177,6 +300,31 @@ def _dir_size(path: str) -> int:
     return total
 
 
+class RevertTask(QRunnable):
+    """«Вернуть оригиналы»: убрать файлы-результаты только что пачки (v0.7.15).
+
+    Результаты «*_nobg.png» созданы программой секунды назад, оригиналы
+    не тронуты — их можно удалить навсегда, не засоряя корзину. По сети
+    удаление может идти секунды, поэтому — как все файловые операции —
+    в рабочем потоке."""
+
+    def __init__(self, paths: list[str], signals: RembgSignals) -> None:
+        super().__init__()
+        self.paths = list(paths)
+        self.signals = signals
+
+    def run(self) -> None:  # рабочий поток
+        removed: list[str] = []
+        errors: list[tuple[str, str]] = []
+        for p in self.paths:
+            try:
+                os.remove(p)
+                removed.append(p)
+            except OSError as exc:
+                errors.append((p, str(exc)))
+        self.signals.revert_done.emit(removed, errors)
+
+
 # ---------- задача: удаление фона у пачки файлов ----------
 
 
@@ -197,7 +345,18 @@ class RemoveBgTask(QRunnable):
         self.signals = signals
 
     def run(self) -> None:  # рабочий поток
+        global _DL_REPORTER
+        _DL_REPORTER = self.signals   # перехват докладывает прогресс сюда
+        try:
+            self._run_inner()
+        finally:
+            _DL_REPORTER = None
+
+    def _run_inner(self) -> None:
         _ensure_stdio()   # pythonw: без этого падает скачивание модели (tqdm)
+        # прогресс скачивания модели — в статусную строку (v0.7.15);
+        # перехват безвреден, если pooch нет, и ставится один раз
+        hook_model_downloads()
         try:
             from rembg import remove, new_session
         except Exception as exc:   # noqa: BLE001 — наверх уйдёт текст
@@ -205,6 +364,7 @@ class RemoveBgTask(QRunnable):
                 self.signals.file_done.emit(path, "", False, str(exc))
             self.signals.batch_done.emit(0, len(self.jobs))
             return
+        self.signals.model_prepare.emit(self.model)
         ok = fail = 0
         try:
             session = new_session(self.model)   # при первом запуске скачает модель
@@ -213,6 +373,7 @@ class RemoveBgTask(QRunnable):
                 self.signals.file_done.emit(path, "", False, str(exc))
             self.signals.batch_done.emit(0, len(self.jobs))
             return
+        self.signals.model_ready.emit(self.model)
         for path, out in self.jobs:
             try:
                 with open(path, "rb") as f:

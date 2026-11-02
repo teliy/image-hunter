@@ -299,13 +299,16 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ru": "🪄 Удалить фон", "en": "🪄 Remove Background", "zh": "🪄 删除背景"},
     "viewer.rembg_tip": {
         "ru": "Удалить фон у картинки (модуль rembg, всё считается локально).\n"
-              "Результат — «имя_nobg.png» рядом с оригиналом; при первом\n"
-              "запуске скачается выбранная модель.",
+              "Результат — «имя_nobg.png» рядом с оригиналом; после обработки\n"
+              "можно сохранить его или вернуть оригиналы. При первом запуске\n"
+              "скачается выбранная модель.",
         "en": "Remove the image background (rembg module, fully local).\n"
-              "The result is “name_nobg.png” next to the original; the first\n"
-              "run downloads the selected model.",
+              "The result is “name_nobg.png” next to the original; afterwards\n"
+              "you can keep it or revert to the originals. The first run\n"
+              "downloads the selected model.",
         "zh": "删除图片背景（rembg 模块，完全本地）。\n"
-              "结果为原图旁的“名称_nobg.png”；首次运行会下载所选模型。"},
+              "结果为原图旁的“名称_nobg.png”；处理后可保留结果或恢复原图。\n"
+              "首次运行会下载所选模型。"},
     "viewer.rembg_none": {
         "ru": "Сначала выберите картинку в ленте",
         "en": "Select an image in the strip first",
@@ -435,6 +438,88 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ru": "🪄 Ошибка удаления модуля: {info}",
         "en": "🪄 Module removal error: {info}",
         "zh": "🪄 模块删除错误：{info}"},
+    # ---------- выбор после удаления фона + прогресс модели (v0.7.15) ----------
+    "viewer.rembg_choice_q": {
+        "ru": "Готово без фона: {n}.\n"
+              "Файлы «*_nobg.png» лежат рядом с оригиналами — пока это окно\n"
+              "открыто, ленту можно щёлкать и рассматривать результаты.\n\n"
+              "Сохранить результат или вернуть оригиналы?",
+        "en": "Done without background: {n}.\n"
+              "The “*_nobg.png” files sit next to the originals — while this\n"
+              "window is open you can click the strip and inspect them.\n\n"
+              "Keep the result or revert to the originals?",
+        "zh": "已去除背景：{n} 个。\n"
+              "“*_nobg.png”文件保存在原图旁——当前窗口打开时仍可点击\n"
+              "缩略图栏查看结果。\n\n"
+              "保留结果还是恢复原图？"},
+    "viewer.rembg_choice_more": {
+        "ru": "…и ещё {n}", "en": "…and {n} more", "zh": "…等 {n} 个"},
+    "viewer.rembg_btn_save": {
+        "ru": "💾 Сохранить результат", "en": "💾 Keep Result", "zh": "💾 保留结果"},
+    "viewer.rembg_btn_save_tip": {
+        "ru": "Файлы «*_nobg.png» останутся рядом с оригиналами",
+        "en": "The “*_nobg.png” files stay next to the originals",
+        "zh": "“*_nobg.png”文件将保留在原图旁"},
+    "viewer.rembg_btn_revert": {
+        "ru": "↩ Вернуть оригиналы", "en": "↩ Revert to Originals", "zh": "↩ 恢复原图"},
+    "viewer.rembg_btn_revert_tip": {
+        "ru": "Удалить результаты этой пачки — оригиналы не менялись",
+        "en": "Remove this batch's results — originals were not touched",
+        "zh": "删除本批结果——原图未被改动"},
+    "viewer.rembg_saved": {
+        "ru": "Результат сохранён: {n}", "en": "Result kept: {n}", "zh": "已保留结果：{n}"},
+    "viewer.rembg_reverting": {
+        "ru": "Возвращаю оригиналы…", "en": "Restoring the originals…", "zh": "正在恢复原图…"},
+    "viewer.rembg_reverted": {
+        "ru": "Оригиналы возвращены: {n}", "en": "Originals restored: {n}", "zh": "已恢复原图：{n}"},
+    "viewer.rembg_revert_fail": {
+        "ru": "Оригиналы возвращены: {ok}, не удалось удалить: {fail}",
+        "en": "Originals restored: {ok}, failed to remove: {fail}",
+        "zh": "已恢复原图：{ok}，删除失败：{fail}"},
+    "viewer.rembg_prepare": {
+        "ru": "Готовится модель {model}…",
+        "en": "Preparing the {model} model…",
+        "zh": "正在准备模型 {model}…"},
+    "viewer.rembg_ready": {
+        "ru": "Модель {model} готова",
+        "en": "The {model} model is ready",
+        "zh": "模型 {model} 已就绪"},
+    "viewer.rembg_dl_start": {
+        "ru": "Скачивается модель {model}…",
+        "en": "Downloading the {model} model…",
+        "zh": "正在下载模型 {model}…"},
+    "viewer.rembg_dl_prog": {
+        "ru": "Скачивается модель {model}: {done} из {total} ({pct} %)",
+        "en": "Downloading the {model} model: {done} of {total} ({pct} %)",
+        "zh": "正在下载模型 {model}：{done}/{total}（{pct} %）"},
+    "viewer.rembg_dl_prog_na": {
+        "ru": "Скачивается модель {model}: {done}",
+        "en": "Downloading the {model} model: {done}",
+        "zh": "正在下载模型 {model}：{done}"},
+    "viewer.rembg_dl_done": {
+        "ru": "Модель {model} скачана ({size})",
+        "en": "The {model} model is downloaded ({size})",
+        "zh": "模型 {model} 下载完成（{size}）"},
+    "log.event.rembg_model_dl": {
+        "ru": "🪄 Модель {model} скачана: {size}, {ms} мс",
+        "en": "🪄 The {model} model downloaded: {size}, {ms} ms",
+        "zh": "🪄 模型 {model} 已下载：{size}，{ms} 毫秒"},
+    "log.event.rembg_saved": {
+        "ru": "🪄 Результат сохранён: {n}",
+        "en": "🪄 Result kept: {n}",
+        "zh": "🪄 已保留结果：{n}"},
+    "log.event.rembg_revert_start": {
+        "ru": "🪄 Возвращаю оригиналы: удаляю результаты ({n})",
+        "en": "🪄 Restoring originals: removing the results ({n})",
+        "zh": "🪄 正在恢复原图：删除结果（{n}）"},
+    "log.event.rembg_revert": {
+        "ru": "🪄 Оригиналы возвращены: удалено файлов {n}, ошибок {fail}",
+        "en": "🪄 Originals restored: {n} file(s) removed, {fail} failed",
+        "zh": "🪄 已恢复原图：删除 {n} 个文件，{fail} 个失败"},
+    "log.event.rembg_revert_err": {
+        "ru": "🪄 Не удалось удалить результат: {name} — {err}",
+        "en": "🪄 Failed to remove the result: {name} — {err}",
+        "zh": "🪄 删除结果失败：{name} — {err}"},
     "viewer.no_images": {
         "ru": "В этой папке нет изображений", "en": "No images in this folder", "zh": "此文件夹中没有图片"},
     "viewer.pick_first": {

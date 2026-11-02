@@ -51,6 +51,7 @@ from PySide6.QtGui import QColor, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
+    QDialog,
     QFileDialog,
     QHBoxLayout,
     QLabel,
@@ -59,6 +60,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMenu,
     QMessageBox,
+    QPushButton,
     QScrollArea,
     QSizePolicy,
     QSplitter,
@@ -172,6 +174,35 @@ def _fmt_bytes(num: float) -> str:
 def natural_key(name: str):
     """Сортировка «по-человечески»: file2 < file10."""
     return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", name)]
+
+
+def _checker_pixmap(path: str, box: int = 132) -> QPixmap | None:
+    """Миниатюра результата на «шахматке»: прозрачность видна сразу.
+
+    None — файл не читается как картинка (порчен, нестандартный). Зовётся
+    только для локальных файлов: чтение по сети в GUI-потоке запрещено
+    (принцип v0.7.2)."""
+    try:
+        img = QImage(path)
+    except Exception:   # noqa: BLE001 — любой сбой читателя — без превью
+        return None
+    if img is None or img.isNull():
+        return None
+    cell = 10
+    pm = QPixmap(box, box)
+    p = QPainter(pm)
+    for y in range(0, box, cell):
+        for x in range(0, box, cell):
+            p.fillRect(x, y, cell, cell,
+                       QColor("#e2e2e2") if (x // cell + y // cell) % 2 == 0
+                       else QColor("#b4b4b4"))
+    scaled = img.scaled(box - 12, box - 12,
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation)
+    p.drawImage((box - scaled.width()) // 2, (box - scaled.height()) // 2,
+                scaled)
+    p.end()
+    return pm
 
 
 def _is_hidden_entry(entry: os.DirEntry) -> bool:
@@ -939,6 +970,53 @@ class _GripEdit(QLineEdit):
         super().leaveEvent(ev)
 
 
+_REMBG_SAVE = 1     # код завершения диалога выбора: сохранить результат
+_REMBG_REVERT = 2   # …вернуть оригиналы (Esc/крестик дают 0 = «сохранить»)
+
+
+class _RembgChoiceDialog(QDialog):
+    """Выбор после удаления фона: сохранить результат или вернуть оригиналы.
+
+    Немодальный: пока окно открыто, лента живёт — можно щёлкать по плиткам
+    «*_nobg.png» и смотреть результаты в полном размере, решать не
+    вслепую. Превью первого результата рисуется на «шахматке», чтобы
+    прозрачность была видна сразу. Esc и крестик закрывают окно как
+    «Сохранить» — результат теряется только по явному клику."""
+
+    def __init__(self, parent, results: list[str],
+                 preview: QPixmap | None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(tr("viewer.rembg"))
+        self.setMinimumWidth(340)
+        lay = QVBoxLayout(self)
+        info = QLabel(tr("viewer.rembg_choice_q", n=len(results)))
+        info.setWordWrap(True)
+        lay.addWidget(info)
+        if preview is not None:
+            pic = QLabel()
+            pic.setPixmap(preview)
+            pic.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+            lay.addWidget(pic)
+            cap = os.path.basename(results[0])
+            if len(results) > 1:
+                cap += " " + tr("viewer.rembg_choice_more", n=len(results) - 1)
+            cap_lbl = QLabel(cap)
+            cap_lbl.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+            lay.addWidget(cap_lbl)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        self.btn_revert = QPushButton(tr("viewer.rembg_btn_revert"))
+        self.btn_revert.setToolTip(tr("viewer.rembg_btn_revert_tip"))
+        self.btn_revert.clicked.connect(lambda: self.done(_REMBG_REVERT))
+        row.addWidget(self.btn_revert)
+        self.btn_save = QPushButton(tr("viewer.rembg_btn_save"))
+        self.btn_save.setToolTip(tr("viewer.rembg_btn_save_tip"))
+        self.btn_save.setDefault(True)
+        self.btn_save.clicked.connect(self.accept)   # accept() = «сохранить»
+        row.addWidget(self.btn_save)
+        lay.addLayout(row)
+
+
 class LocalViewer(QWidget):
     """Слева дерево дисков/папок, затем лента миниатюр, справа просмотр выбранной картинки."""
 
@@ -1238,12 +1316,24 @@ class LocalViewer(QWidget):
         self._rembg_signals.uninstall_done.connect(self._on_rembg_uninstall_done)
         self._rembg_signals.file_done.connect(self._on_rembg_file_done)
         self._rembg_signals.batch_done.connect(self._on_rembg_batch_done)
+        # жизнь модели и возврат оригиналов — статусная строка рассказывает
+        # про модуль целиком: готовится, качается (сколько из скольких), готова
+        self._rembg_signals.model_prepare.connect(self._on_rembg_model_prepare)
+        self._rembg_signals.model_ready.connect(self._on_rembg_model_ready)
+        self._rembg_signals.model_dl_start.connect(self._on_rembg_model_dl_start)
+        self._rembg_signals.model_dl_progress.connect(
+            self._on_rembg_model_dl_progress)
+        self._rembg_signals.model_dl_done.connect(self._on_rembg_model_dl_done)
+        self._rembg_signals.revert_done.connect(self._on_rembg_revert_done)
         self._rembg_busy = False       # pip/обработка уже идут — второй запуск не нужен
         self._rembg_pending: list[str] | None = None   # очередь после установки
         self._rembg_ok = 0
         self._rembg_fail = 0
         self._rembg_total = 0
         self._rembg_t0 = 0.0
+        self._rembg_results: list[str] = []   # результаты пачки (выбор сохранить/вернуть)
+        self._rembg_choice: QDialog | None = None   # открытый диалог выбора
+        self._dl_model = ""                   # какая модель сейчас качается
         saved_model = QSettings("ImageHunter", "ImageHunter").value(
             rembg_manager.MODEL_KEY, rembg_manager.DEFAULT_MODEL, type=str)
         # в настройках могла остаться модель, которой больше нет в списке
@@ -1562,6 +1652,15 @@ class LocalViewer(QWidget):
 
     def _rembg_start(self, paths: list[str]) -> None:
         """Запустить фоновую обработку пачки (одна сессия на пачку)."""
+        # новый запуск закрывает прошлый вопрос «Сохранить/Вернуть» как
+        # «Сохранить»: результаты прежней пачки остаются на диске
+        dlg, self._rembg_choice = self._rembg_choice, None
+        if dlg is not None:
+            try:
+                dlg.done(_REMBG_SAVE)
+            except RuntimeError:
+                pass   # окно уже уничтожено вместе с вьюером
+        self._rembg_results = []
         jobs: list[tuple[str, str]] = []
         skipped = 0
         for p in paths:
@@ -1597,6 +1696,7 @@ class LocalViewer(QWidget):
         """Промежуточный итог по файлу: прогресс в статусе, ошибки в журнал."""
         if ok:
             self._rembg_ok += 1
+            self._rembg_results.append(out)   # результат этой пачки — для выбора
         else:
             self._rembg_fail += 1
             applog.error(tr("log.event.rembg_file_err",
@@ -1615,6 +1715,108 @@ class LocalViewer(QWidget):
                      ms=ms, extra=applog.extra(model=self._rembg_model))
         if ok:
             self.refresh()   # файлы «_nobg.png» появляются в ленте
+            self._open_rembg_choice()   # сохранить результат или вернуть оригиналы
+
+    # ---------- выбор после удаления фона: сохранить или вернуть (v0.7.15) ----------
+
+    def _open_rembg_choice(self) -> None:
+        """Спросить после пачки: сохранить результат или вернуть оригиналы.
+
+        Диалог немодальный — пока он открыт, лента кликается, и результат
+        можно рассмотреть в полном размере. Превью строится только для
+        локальных файлов: чтение по сети в GUI-потоке запрещено (v0.7.2)."""
+        results = list(self._rembg_results)
+        if not results:
+            return
+        preview = (None if _is_remote_path(results[0])
+                   else _checker_pixmap(results[0]))
+        dlg = _RembgChoiceDialog(self, results, preview)
+        dlg.finished.connect(self._on_rembg_choice_done)
+        dlg.finished.connect(dlg.deleteLater)   # закрытый диалог — уничтожить
+        self._rembg_choice = dlg
+        dlg.show()
+
+    def _on_rembg_choice_done(self, code: int) -> None:
+        """Диалог выбора закрыт: сохранить результат или вернуть оригиналы.
+
+        Любое закрытие, кроме явного «Вернуть оригиналы» (кнопка), — это
+        «Сохранить»: результат теряется только по осознанному клику."""
+        results, self._rembg_results = self._rembg_results, []
+        self._rembg_choice = None
+        if code == _REMBG_REVERT and results:
+            self.status.setText(tr("viewer.rembg_reverting"))
+            applog.event("log.event.rembg_revert_start", n=len(results))
+            QThreadPool.globalInstance().start(
+                rembg_manager.RevertTask(results, self._rembg_signals))
+        elif results:
+            applog.event("log.event.rembg_saved", n=len(results))
+            self.status.setText(tr("viewer.rembg_saved", n=len(results)))
+
+    def _on_rembg_revert_done(self, removed: list, errors: list) -> None:
+        """Результаты убраны: лента без «_nobg», статус и журнал в курсе.
+
+        Оригиналы не трогались, так что «вернуть» — это просто убрать
+        файлы-результаты этой пачки; порядок в ленте чинится как после
+        обычного удаления (v0.7.11)."""
+        for p in removed:
+            self._remove_row_by_path(p)
+        if removed:
+            # строки сместились — кэш миниатюр по номерам строк больше не верен
+            self._pending_thumbs.clear()
+            self._thumb_queued.clear()
+            self._thumb_done_rows.clear()
+            self._schedule_visible_thumbs()
+            if self.list.currentItem() is None and self.list.count():
+                self.list.setCurrentRow(0)
+            elif not self.list.count():
+                self._pixmap = None
+                self._movie = None
+                self.view_label.setText(tr("viewer.no_images"))
+        for p, err in errors:
+            applog.error(tr("log.event.rembg_revert_err",
+                            name=os.path.basename(p), err=err))
+        applog.event("log.event.rembg_revert", n=len(removed),
+                     fail=len(errors))
+        if errors:
+            self.status.setText(tr("viewer.rembg_revert_fail",
+                                   ok=len(removed), fail=len(errors)))
+        else:
+            self.status.setText(tr("viewer.rembg_reverted", n=len(removed)))
+
+    # ---------- статусная строка рассказывает про модель (v0.7.15) ----------
+
+    def _on_rembg_model_prepare(self, model: str) -> None:
+        """Модель готовится: грузится в память, при отсутствии качается."""
+        self.status.setText(tr("viewer.rembg_prepare", model=model))
+
+    def _on_rembg_model_ready(self, model: str) -> None:
+        """Модель готова — дальше идут уже сообщения обработки файлов."""
+        self.status.setText(tr("viewer.rembg_ready", model=model))
+
+    def _on_rembg_model_dl_start(self, model: str, total: int) -> None:
+        """Началось скачивание модели — имя запоминаем для тиков прогресса."""
+        self._dl_model = model
+        self.status.setText(tr("viewer.rembg_dl_start", model=model))
+
+    def _on_rembg_model_dl_progress(self, done: int, total: int) -> None:
+        """Тик скачивания: только статусная строка, журнал не заваливаем."""
+        if total > 0:
+            pct = round(done * 100 / total)
+            self.status.setText(tr("viewer.rembg_dl_prog",
+                                   model=self._dl_model,
+                                   done=_fmt_bytes(done),
+                                   total=_fmt_bytes(total), pct=pct))
+        else:
+            self.status.setText(tr("viewer.rembg_dl_prog_na",
+                                   model=self._dl_model,
+                                   done=_fmt_bytes(done)))
+
+    def _on_rembg_model_dl_done(self, model: str, size: int, ms: int) -> None:
+        """Модель скачана: строка в журнал и итог в статусной строке."""
+        applog.event("log.event.rembg_model_dl", model=model,
+                     size=_fmt_bytes(size), ms=ms)
+        self.status.setText(tr("viewer.rembg_dl_done", model=model,
+                               size=_fmt_bytes(size)))
 
     def _rembg_start_install(self, pending: list[str] | None = None) -> None:
         """Установить rembg в фоне; ``pending`` — что обработать после."""
