@@ -175,15 +175,21 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ru": "Выделите картинки (Ctrl/Shift) и перетащите их мышью в Проводник,\n"
               "почту или другое приложение — передаются оригинальные файлы.\n"
               "Если тянуть не получается: Ctrl+C (или правый клик → «Копировать\n"
-              "выделенные файлы»), затем вставьте их там, где нужно (Ctrl+V).",
+              "выделенные файлы»), затем вставьте их там, где нужно (Ctrl+V).\n"
+              "Двойной клик по имени файла — переименовать его, по самой\n"
+              "картинке — открыть в системном просмотрщике.",
         "en": "Select images (Ctrl/Shift) and drag them into Explorer,\n"
               "e-mail or any other app — the original files are passed on.\n"
               "If dragging does not work: Ctrl+C (or right-click → “Copy\n"
-              "selected files”), then paste them where needed (Ctrl+V).",
+              "selected files”), then paste them where needed (Ctrl+V).\n"
+              "Double-click a file's name to rename it; double-click the\n"
+              "picture itself to open it in the system viewer.",
         "zh": "选中图片（Ctrl/Shift）后拖动到文件管理器、\n"
               "邮件或其他应用程序 — 传递的是原始文件。\n"
               "如果无法拖动：Ctrl+C（或右键 →“复制所选文件”），\n"
-              "然后在需要的地方粘贴 (Ctrl+V)。"},
+              "然后在需要的地方粘贴 (Ctrl+V)。\n"
+              "双击文件名可重命名；双击图片本身\n"
+              "将在系统查看器中打开。"},
     "viewer.ctx_open": {
         "ru": "Открыть", "en": "Open", "zh": "打开"},
     "viewer.ctx_copy": {
@@ -194,6 +200,40 @@ _STRINGS: dict[str, dict[str, str]] = {
         "en": "The files go to the clipboard as normal copied files —\n"
               "paste them into Explorer or a browser (Ctrl+V)",
         "zh": "文件将以常规复制方式放入剪贴板 —\n可粘贴到文件管理器或浏览器 (Ctrl+V)"},
+    "viewer.ctx_rename": {
+        "ru": "✏️ Переименовать", "en": "✏️ Rename", "zh": "✏️ 重命名"},
+    "viewer.ctx_rename_tip": {
+        "ru": "F2 или двойной клик по имени файла — переименовать, не выходя\n"
+              "из программы. Двойной клик по самой картинке по-прежнему\n"
+              "открывает её в системном просмотрщике.",
+        "en": "F2 or double-click the file's name to rename it without leaving\n"
+              "ImageHunter. Double-clicking the picture itself still opens\n"
+              "it in the system viewer.",
+        "zh": "按 F2 或双击文件名即可重命名，无需离开程序。\n双击图片本身仍会在系统查看器中打开。"},
+    "viewer.rename_nothing": {
+        "ru": "Нечего переименовывать — выберите картинку в ленте",
+        "en": "Nothing to rename — pick an image in the strip first",
+        "zh": "没有可重命名的内容 — 请先在缩略图条中选择图片"},
+    "viewer.rename_busy": {
+        "ru": "Предыдущее переименование ещё не завершилось — секунду",
+        "en": "The previous rename has not finished yet — one moment",
+        "zh": "上一次重命名尚未完成 — 请稍候"},
+    "viewer.rename_progress": {
+        "ru": "Переименовываю «{name}»…", "en": "Renaming “{name}”…", "zh": "正在重命名“{name}”…"},
+    "viewer.rename_invalid": {
+        "ru": "Такое имя файла не подходит: пустое, с точкой или пробелом на конце\n"
+              "либо с символами \\ / : * ? \" < > |",
+        "en": "This file name will not work: empty, ending with a dot or space,\n"
+              "or containing \\ / : * ? \" < > |",
+        "zh": "该文件名不可用：为空、以点或空格结尾，\n或包含 \\ / : * ? \" < > | 字符"},
+    "viewer.rename_done": {
+        "ru": "Переименовано: {old} → {new}",
+        "en": "Renamed: {old} → {new}",
+        "zh": "已重命名：{old} → {new}"},
+    "viewer.rename_err": {
+        "ru": "Не удалось переименовать «{name}»: {err}",
+        "en": "Could not rename “{name}”: {err}",
+        "zh": "无法重命名“{name}”：{err}"},
     "viewer.ctx_delete": {
         "ru": "🗑 Удалить", "en": "🗑 Delete", "zh": "🗑 删除"},
     "viewer.ctx_delete_tip": {
@@ -907,6 +947,14 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ru": "Удалено окончательно (диск без корзины): {n} — {folder}",
         "en": "Deleted permanently (no Recycle Bin): {n} — {folder}",
         "zh": "已永久删除（磁盘无回收站）：{n} — {folder}"},
+    "log.event.rename": {
+        "ru": "Переименован файл: {old} → {new}",
+        "en": "File renamed: {old} → {new}",
+        "zh": "文件已重命名：{old} → {new}"},
+    "log.event.rename_err": {
+        "ru": "ОШИБКА переименования «{old}»: {err}",
+        "en": "RENAME ERROR “{old}”: {err}",
+        "zh": "重命名错误“{old}”：{err}"},
     "log.event.collect": {
         "ru": "[{engine}] Собрано ссылок с выдачи: {total}, добавлено в загрузки: {added}",
         "en": "[{engine}] Links collected: {total}, added to downloads: {added}",

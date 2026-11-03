@@ -22,6 +22,7 @@ from PySide6.QtCore import (
     QMimeData,
     QPoint,
     QPointF,
+    QRect,
     QRunnable,
     QSettings,
     QSize,
@@ -50,6 +51,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtGui import QColor, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QApplication,
     QCheckBox,
     QDialog,
@@ -67,6 +69,7 @@ from PySide6.QtWidgets import (
     QSlider,
     QSplitter,
     QStyle,
+    QStyledItemDelegate,
     QToolButton,
     QTreeWidget,
     QTreeWidgetItem,
@@ -687,6 +690,56 @@ class _DeleteTask(QRunnable):
         self.signals.done.emit(self.phase, results)
 
 
+# ---------- переименование файла (F2, двойной клик по имени, меню; v0.7.17) ----------
+
+def _clean_rename_name(raw: str) -> str:
+    """Привести имя от редактора к виду, который согласится с Windows и POSIX.
+
+    Пробелы по краям и точки на конце убираются: Windows такие имена не
+    создаёт, а Проводник их молча обрезает. Внутренности не трогаем."""
+    return raw.strip().rstrip(". ")
+
+
+def _name_is_allowed(name: str) -> bool:
+    """Имя файла допустимо: непустое и без запрещённых в Windows символов.
+
+    \\ / : * ? \" < > | и управляющие символы — отказ (на POSIX часть из них
+    разрешена, но один и тот же список даёт предсказуемое поведение везде)."""
+    if not name or name in (".", ".."):
+        return False
+    return not any(c in name for c in '<>:"/\\|?*') and all(ord(c) >= 32 for c in name)
+
+
+class _RenameSignals(QObject):
+    done = Signal(str, str, bool, str)   # старый путь, новый путь, ok, ошибка
+
+
+class _RenameTask(QRunnable):
+    """Переименование в рабочем потоке (см. _on_item_changed).
+
+    По сети os.rename может упереться в сетевой тайм-аут — в GUI-потоке это
+    было бы зависанием окна (принцип v0.7.2). POSIX-овый os.rename молча
+    перезаписал бы существующий файл — на всякий случай проверяем existence:
+    переименование «только регистр» на нечувствительной к регистру файловой
+    системе (Windows) при этом остаётся разрешённым."""
+
+    def __init__(self, old: str, new: str, signals: _RenameSignals):
+        super().__init__()
+        self.old, self.new, self.signals = old, new, signals
+
+    def run(self) -> None:  # рабочий поток
+        ok, err = True, ""
+        try:
+            case_only = (os.path.normcase(os.path.abspath(self.new))
+                         == os.path.normcase(os.path.abspath(self.old)))
+            if os.path.exists(self.new) and not case_only:
+                raise FileExistsError(os.path.basename(self.new))
+            os.rename(self.old, self.new)
+        except OSError as e:
+            ok, err = False, str(e)
+        self.signals.done.emit(self.old, self.new, ok, err)
+
+
 # ---------- фоновый поиск по имени ----------
 
 class _SearchSignals(QObject):
@@ -815,6 +868,54 @@ def _drag_action_name(action) -> str:
     return tr("log.act.cancel")
 
 
+class _NameEdit(QLineEdit):
+    """Поле редактирования имени (открывается двойным кликом по имени плитки,
+    F2 или меню). При получении фокуса выделяет имя БЕЗ расширения — как
+    Проводник: правят обычно имя, а не формат.
+
+    Особенность Qt: QAbstractItemView::openEditor делает editor->selectAll()
+    ПОСЛЕ delegate->setEditorData, поэтому выделение, выставленное прямо в
+    setEditorData, затирается. Выделяем отложенным одиночным тиком (таймер с
+    контекстом редактора: редактор уже закрыт — вызов не случится) и
+    повторяем при каждом возврате фокуса в поле.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._base_pending = False
+
+    def arm_base_selection(self) -> None:
+        self._base_pending = True
+        QTimer.singleShot(0, self, self._apply_base_selection)
+
+    def focusInEvent(self, ev) -> None:  # noqa: N802 (Qt API)
+        super().focusInEvent(ev)
+        if self.text():
+            QTimer.singleShot(0, self, self._apply_base_selection)
+
+    def _apply_base_selection(self) -> None:
+        if not self._base_pending or not self.text():
+            return
+        self._base_pending = False
+        base, dot, _ext = self.text().rpartition(".")
+        if dot and base:
+            self.setSelection(0, len(base))
+        else:
+            self.selectAll()   # «.gitignore» и «кот» правят целиком
+
+
+class _RenameDelegate(QStyledItemDelegate):
+    """Делегат ленты: редактор имени — _NameEdit (имя без расширения)."""
+
+    def createEditor(self, parent, option, index):  # noqa: N802 (Qt API)
+        return _NameEdit(parent)
+
+    def setEditorData(self, editor, index):  # noqa: N802 (Qt API)
+        super().setEditorData(editor, index)
+        if isinstance(editor, _NameEdit):
+            editor.arm_base_selection()
+
+
 class _ThumbList(QListWidget):
     """Список миниатюр: перетаскивание выделенных файлов мышью в другие приложения.
 
@@ -838,6 +939,8 @@ class _ThumbList(QListWidget):
     DRAG_THRESHOLD = 12        # px манхэттенского смещения, после которого тянем
     DRAG_FACTORY = QDrag       # для подмены в тестах
 
+    nameDoubleClicked = Signal(object)   # плитка, у которой кликнули по ИМЕНИ
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._press_index = None     # плитка, на которой зажали мышь
@@ -852,6 +955,36 @@ class _ThumbList(QListWidget):
         """Пути файлов, лежащие в выделенных плитках."""
         return [it.data(Qt.UserRole) for it in self.selectedItems()
                 if it.data(Qt.UserRole)]
+
+    # ---------- двойной клик: по имени — переименовать (v0.7.17) ----------
+
+    def _name_rect(self, item) -> QRect:
+        """Прямоугольник подписи плитки (текст под миниатюрой).
+
+        В IconMode иконка занимает верх плитки, подпись — всё, что ниже.
+        Точную раскладку знает только стиль, и QStyle.SE_ItemViewItemText
+        здесь возвращает всю плитку целиком — считаем от размера иконки:
+        +2px граница между иконкой и подписью (клики в зазор — ещё иконка)."""
+        r = self.visualItemRect(item)
+        top = r.top() + self.iconSize().height() + 2
+        return QRect(r.x(), top, r.width(), max(1, r.bottom() - top + 1))
+
+    def _pos_on_name(self, item, pos: QPoint) -> bool:
+        """Клик пришёлся на подпись плитки (имя файла), а не на картинку."""
+        r = self.visualItemRect(item)
+        return r.contains(pos) and pos.y() >= self._name_rect(item).top()
+
+    def mouseDoubleClickEvent(self, ev) -> None:  # noqa: N802 (Qt API)
+        if ev.button() == Qt.MouseButton.LeftButton:
+            item = self.itemAt(ev.position().toPoint())
+            if (item is not None and item.data(Qt.UserRole)
+                    and self._pos_on_name(item, ev.position().toPoint())):
+                # двойной клик по имени — переименовать; super() НЕ зовём:
+                # он эмитит itemDoubleClicked, который открывает файл
+                self.nameDoubleClicked.emit(item)
+                ev.accept()
+                return
+        super().mouseDoubleClickEvent(ev)   # по картинке — открыть как раньше
 
     # ---------- запуск перетаскивания (общий для всех трёх слоёв) ----------
 
@@ -1126,6 +1259,11 @@ class LocalViewer(QWidget):
         # только для картинок с альфа-каналом, размер клетки — ползунком
         self._checker_on = False
         self._checker_cell = _checker_cell_setting()
+        # переименование файла (v0.7.17): не больше одной задачи за раз —
+        # пока она едет, редактор имени не открывается заново
+        self._rename_inflight = False
+        self._rename_signals = _RenameSignals()
+        self._rename_signals.done.connect(self._on_rename_done)
 
         # --- верхняя панель ---
         bar = QHBoxLayout()
@@ -1222,6 +1360,8 @@ class LocalViewer(QWidget):
         self.list.setSpacing(6)
         self.list.setUniformItemSizes(True)
         self.list.setMinimumWidth(THUMB + 34)  # ширина задаётся сплиттером — панель растягивается мышью
+        # редактор переименования: поле с выделением имени без расширения (v0.7.17)
+        self.list.setItemDelegate(_RenameDelegate(self.list))
         # drag'n'drop: выделенные файлы перетаскиваются мышью в другие приложения
         self.list.setSelectionMode(QListWidget.ExtendedSelection)
         self.list.setDragEnabled(True)
@@ -1241,12 +1381,25 @@ class LocalViewer(QWidget):
         sc_del = QShortcut(QKeySequence(QKeySequence.StandardKey.Delete), self.list)
         sc_del.setContext(Qt.ShortcutContext.WidgetShortcut)
         sc_del.activated.connect(self.delete_selected_files)
+        # F2 — переименовать файл под курсором (v0.7.17). Контекст WidgetShortcut:
+        # пока открыт редактор имени (QLineEdit), F2 в нём печатает символ «2»,
+        # лента ничего не перехватывает
+        sc_ren = QShortcut(QKeySequence("F2"), self.list)
+        sc_ren.setContext(Qt.ShortcutContext.WidgetShortcut)
+        sc_ren.activated.connect(self.rename_current_file)
         self.list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.list.customContextMenuRequested.connect(self._list_context_menu)
         self.list.currentRowChanged.connect(self._show_index)
         self.list.itemDoubleClicked.connect(
             lambda item: QDesktopServices.openUrl(QUrl.fromLocalFile(item.data(Qt.UserRole)))
         )
+        # двойной клик по ИМЕНИ плитки — переименование, по картинке — открытие
+        # (обработка сигнала из _ThumbList, v0.7.17)
+        self.list.nameDoubleClicked.connect(self._begin_rename)
+        # правка имени завершена (Enter/клик мимо): имя из редактора → на диск.
+        # itemChanged приходит и от выставления миниатюр — там текст равен имени
+        # из пути, и хендлер выйдет сразу (см. _on_item_changed)
+        self.list.itemChanged.connect(self._on_item_changed)
         # прокрутили список — надо догрузить миниатюры новых видимых строк
         self.list.verticalScrollBar().valueChanged.connect(self._schedule_visible_thumbs)
 
@@ -1677,6 +1830,129 @@ class LocalViewer(QWidget):
         self._paths = [self._paths[i] for i in keep]
         self._meta = [self._meta[i] for i in keep]
 
+    # ---------- переименование файла (F2, двойной клик по имени, меню; v0.7.17) ----------
+
+    def _item_by_path(self, path: str) -> QListWidgetItem | None:
+        """Найти плитку по полному пути (сравнение без учёта регистра/разделителей)."""
+        norm = os.path.normcase(os.path.normpath(path))
+        for r in range(self.list.count()):
+            it = self.list.item(r)
+            p = it.data(Qt.UserRole)
+            if p and os.path.normcase(os.path.normpath(p)) == norm:
+                return it
+        return None
+
+    def rename_current_file(self) -> None:
+        """F2 или пункт меню «Переименовать»: править имя текущей плитки.
+
+        Как в Проводнике: из выделенных переименовывается тот файл, на
+        котором курсор, — пачкам имена не раздают."""
+        item = self.list.currentItem()
+        if item is None or not item.data(Qt.UserRole):
+            self.status.setText(tr("viewer.rename_nothing"))
+            return
+        self._begin_rename(item)
+
+    def _begin_rename(self, item: QListWidgetItem) -> None:
+        """Открыть редактор имени у плитки (двойной клик по имени / F2 / меню).
+
+        Программный editItem() при NoEditTriggers отказывает («edit: editing
+        failed»), а включать триггеры насовсем нельзя: двойной клик по
+        картинке должен открывать файл, а не править имя. Триггер двойного
+        клика включается только на время вызова editItem и сразу
+        возвращается как был. Qt::ItemIsEditable у плиток изначально нет —
+        ставим тем же жестом: всё равно редактор открывается только явно."""
+        if item is None or not item.data(Qt.UserRole):
+            return
+        if self._rename_inflight:
+            # предыдущее переименование ещё едет (обычно это доли секунды,
+            # на подвисшем сетевом диске — дольше): не плодим очередь
+            self.status.setText(tr("viewer.rename_busy"))
+            return
+        self.list.setCurrentItem(item)
+        self.list.scrollToItem(item)
+        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
+        self.list.setEditTriggers(QAbstractItemView.EditTrigger.DoubleClicked)
+        try:
+            self.list.editItem(item)
+        finally:
+            self.list.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+
+    def _on_item_changed(self, item: QListWidgetItem) -> None:
+        """Правка имени завершена (Enter, клик мимо): имя из редактора — на диск.
+
+        itemChanged приходит и от выставления миниатюр, и от наших же
+        обновлений плитки — во всех этих случаях текст плитки равен имени из
+        её пути, и хендлер выходит сразу. Дальше идёт только настоящий ввод
+        пользователя, пока задача переименования не едет."""
+        if self._rename_inflight or item is None:
+            return
+        path = item.data(Qt.UserRole)
+        if not path:
+            return
+        old_name = os.path.basename(path)
+        new_name = _clean_rename_name(item.text())
+        if new_name == old_name:
+            if item.text() != old_name:   # «имя.jpg   » — вернуть ровное имя
+                item.setText(old_name)
+            return
+        if not _name_is_allowed(new_name):
+            # пустое имя или запрещённые в Windows символы — на диск не несём
+            item.setText(old_name)   # itemChanged вернётся сюда и выйдет по равенству
+            self.status.setText(tr("viewer.rename_invalid"))
+            return
+        new_path = os.path.join(os.path.dirname(path), new_name)
+        self._rename_inflight = True
+        self.status.setText(tr("viewer.rename_progress", name=new_name))
+        # os.rename по сети может держать тайм-аут — только в рабочем потоке
+        QThreadPool.globalInstance().start(
+            _RenameTask(path, new_path, self._rename_signals))
+
+    def _on_rename_done(self, old: str, new: str, ok: bool, err: str) -> None:
+        """Файл переименован в фоне — обновить плитку, _paths и статус.
+
+        Флаг _rename_inflight держится до самого конца: оба обновления
+        плитки (путь и текст) дают itemChanged, и каждый из них должен быть
+        проигнорирован хендлером правки."""
+        old_name, new_name = os.path.basename(old), os.path.basename(new)
+        item = self._item_by_path(old)
+        if ok:
+            if item is not None:
+                item.setData(Qt.UserRole, new)
+                item.setText(new_name)
+                # подсказка как при построении ленты: в показанных результатах
+                # поиска — путь от папки (как _on_search_batch), иначе имя
+                if self.search_edit.text().strip():
+                    try:
+                        item.setToolTip(os.path.relpath(new, self._folder)
+                                        if self._folder else new_name)
+                    except ValueError:
+                        item.setToolTip(new_name)
+                else:
+                    item.setToolTip(new_name)
+            # строка осталась на месте — достаточно заменить путь
+            norm = os.path.normcase(os.path.normpath(old))
+            for i, p in enumerate(self._paths):
+                if os.path.normcase(os.path.normpath(p)) == norm:
+                    self._paths[i] = new
+                    break
+            if item is not None and self.list.row(item) == self.list.currentRow():
+                # переименовали открытую картинку — имя в статусе просмотра
+                if self._pixmap is not None:
+                    self._set_view_status(new, self.list.currentRow(),
+                                          self._pixmap.size())
+                elif self._movie is not None:
+                    self._set_view_status(new, self.list.currentRow(),
+                                          self._movie.currentPixmap().size())
+            self.status.setText(tr("viewer.rename_done", old=old_name, new=new_name))
+            applog.event("log.event.rename", old=old_name, new=new_name)
+        else:
+            if item is not None:
+                item.setText(old_name)   # имя не уехало — вернуть старое
+            self.status.setText(tr("viewer.rename_err", name=old_name, err=err))
+            applog.error(tr("log.event.rename_err", old=old_name, err=err))
+        self._rename_inflight = False
+
     def _build_list_menu(self) -> tuple[QMenu, dict[str, object]]:
         """Собрать меню ленты (без exec — тест проверяет состав напрямую)."""
         menu = QMenu(self)
@@ -1684,6 +1960,8 @@ class LocalViewer(QWidget):
         acts["open"] = menu.addAction(tr("viewer.ctx_open"))
         acts["copy"] = menu.addAction(tr("viewer.ctx_copy"))
         acts["copy"].setToolTip(tr("viewer.ctx_copy_tip"))
+        acts["rename"] = menu.addAction(tr("viewer.ctx_rename"))
+        acts["rename"].setToolTip(tr("viewer.ctx_rename_tip"))
         acts["bg"] = menu.addAction(tr("viewer.rembg"))
         acts["bg"].setToolTip(tr("viewer.rembg_tip"))
         acts["del"] = menu.addAction(tr("viewer.ctx_delete"))
@@ -1711,7 +1989,7 @@ class LocalViewer(QWidget):
         return menu, acts
 
     def _list_context_menu(self, pos) -> None:
-        """Правый клик на ленте: открыть / копировать / удалить фон / удалить."""
+        """Правый клик на ленте: открыть / копировать / переименовать / фон / удалить."""
         menu, acts = self._build_list_menu()
         chosen = menu.exec(self.list.mapToGlobal(pos))
         if chosen is acts.get("open"):
@@ -1720,6 +1998,8 @@ class LocalViewer(QWidget):
                 QDesktopServices.openUrl(QUrl.fromLocalFile(item.data(Qt.UserRole)))
         elif chosen is acts.get("copy"):
             self.copy_selected_files()
+        elif chosen is acts.get("rename"):
+            self.rename_current_file()
         elif chosen is acts.get("bg"):
             self._on_rembg_button()
         elif chosen is acts.get("del"):

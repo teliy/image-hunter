@@ -74,6 +74,14 @@ Additionally, `udm=2` counts as a results page on any national Google domain (go
 
 Scenario: a name search is active in My Pictures, a batch of images is saved into the same folder from the Image Search tab — and back in the tab the strip was shown unfiltered while the query was still in the field; Enter had to be pressed again. The cause: saving calls `refresh()` on the current folder, and it re-read the folder with a plain scan, ignoring the active query. Now `refresh()` behaves like a tree click: with an active search it re-runs the search from the same folder — the new files join the same result set, nothing to retype. Without a query the behavior is unchanged — the folder is re-read as before.
 
+## Renaming files — F2, double-click on the name, and a menu item (v0.7.17)
+
+A request: “add the ability to rename files, both via the mouse menu and by double-clicking on the file name”.
+
+Image names can now be edited right in the My Pictures strip without leaving the program: a “✏️ Rename” item in the right-click menu on a tile, the **F2** key, or a double-click on the **file name** below the thumbnail. The editor opens with the base name (without extension) selected, like in Explorer — Enter or clicking away applies the change, Esc cancels. Double-clicking the picture itself still opens it in the system viewer. Among selected tiles, the file under the cursor is renamed, as in Explorer. The rename itself runs in a worker thread (the window does not freeze on network drives), and the strip and the status of the opened image update immediately. The new name is checked in advance: empty names, names ending with a dot or space, or containing characters forbidden in Windows (`\ / : * ? " < > |`) are rejected, and a clash with an existing file restores the old name with an explanation in the status line. Every outcome is recorded in the “Journal” (renamed / error with cause).
+
+Tests: `scripts/test_rename.py` — tile label geometry, double-click routing (name → editor, picture → open), the full rename cycle (file on disk, `_paths`, tile, status), the F2 shortcut, the menu item, rejection of empty and forbidden names, clash with an existing file, case-only rename, opened-image status update, version smoke.
+
 ## Checkerboard background for transparent images, slider-sized (v0.7.16)
 
 A request from work: “let the background for transparent formats be a grid of gray and white squares, adjustable in size by a slider”.
