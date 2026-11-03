@@ -1,6 +1,8 @@
 # Image Hunter
 
 [English](README.en.md) | 中文 | [Русский](README.md)
+> **项目主页：** https://teliy.github.io/image-hunter/ · [发布版本](https://github.com/teliy/image-hunter/releases) · [更新日志](CHANGELOG.md) · [讨论区](https://github.com/teliy/image-hunter/discussions)
+
 
 本地图片浏览 **+ 搜索引擎图片搜索 + 按链接批量保存** — 全部集中在一个窗口的四个标签页中（第四个是“📜 日志”：程序运行记录）。支持 Windows 和 Linux。
 

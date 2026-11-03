@@ -1,6 +1,8 @@
 # Image Hunter
 
 **English** | [中文](README.zh.md) | [Русский](README.md)
+> **Project page:** https://teliy.github.io/image-hunter/ · [Releases](https://github.com/teliy/image-hunter/releases) · [Changelog](CHANGELOG.md) · [Discussions](https://github.com/teliy/image-hunter/discussions)
+
 
 Local image browser **+ image search in search engines + bulk saving by links** — all in one window, on four tabs (the fourth is “📜 Log”: a chronicle of everything the app does). For Windows and Linux.
 

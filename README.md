@@ -1,6 +1,8 @@
 # Image Hunter
 
 [English](README.en.md) | [中文](README.zh.md) | Русский
+> **Страница проекта:** https://teliy.github.io/image-hunter/ · [Релизы](https://github.com/teliy/image-hunter/releases) · [Журнал изменений](CHANGELOG.md) · [Обсуждения](https://github.com/teliy/image-hunter/discussions)
+
 
 Программа для Windows и Linux: **просмотр локальных изображений + поиск картинок в поисковиках + массовое сохранение по ссылкам** — всё в одном окне, на четырёх вкладках (четвёртая — «📜 Журнал»: хроника всей работы).
 
