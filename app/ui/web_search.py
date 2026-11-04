@@ -39,6 +39,7 @@ from app.core import applog, i18n, webengine
 from app.core.engines import ENGINES, is_image_search_url   # реэкспорт (см. __all__)
 from app.core.extractor import (
     collect_image_urls,
+    collect_tiles,
     fetch_checked_selections,
     inject_checkbox_ui,
     run_js,
@@ -469,6 +470,10 @@ class WebSearch(QWidget):
         # инъекция идемпотентна, повторяем несколько раз.
         for ms in (0, 1500, 3500, 7000, 12000):
             QTimer.singleShot(ms, self._inject_serp)
+        # плитки для телефона — тем же лестничным приёмом (выдача дорисовывается,
+        # каждая порция заменяет предыдущую более полной)
+        for ms in (2500, 7000, 12000):
+            QTimer.singleShot(ms, self._push_tiles_to_phone)
 
     def _on_url_changed(self, url: QUrl) -> None:
         """Новый поиск/вертикаль без перезагрузки страницы — тоже выдача."""
@@ -478,6 +483,43 @@ class WebSearch(QWidget):
         self._inject_serp()
         for ms in (1500, 4000, 9000):
             QTimer.singleShot(ms, self._inject_serp)
+        for ms in (4000, 10000):
+            QTimer.singleShot(ms, self._push_tiles_to_phone)
+
+    def _push_tiles_to_phone(self) -> None:
+        """Отдать «очищенные плитки» выдачи в мост «программа → телефон».
+
+        Сбор идёт по всем фреймам-выдачам (как и сбор ссылок); порции
+        разных проходов сливаются с дедупликацией по превью. Пустой сбор
+        (страница ещё рисуется) ничего не затирает — это решает
+        desktop_results.update. Сбор не привязан к адресу главной страницы:
+        выдача может быть во вложенном фрейме (Mail.ru).
+        """
+        from app.server import desktop_results    # лениво: модуль лёгкий
+
+        def emit(parts: list) -> None:
+            tiles: list[dict] = []
+            seen: set[str] = set()
+            for part in parts:
+                for t in part:
+                    if not isinstance(t, dict):
+                        continue
+                    key = str(t.get("thumb") or t.get("url") or "")
+                    if not key or key in seen:
+                        continue
+                    seen.add(key)
+                    tiles.append(t)
+            if tiles:
+                desktop_results.update(
+                    query=self.query.text().strip(),
+                    engine=self.engine_meta()[2],
+                    page_url=self.current_url().toString(),
+                    tiles=tiles)
+
+        try:
+            self._gather_serp(collect_tiles, emit, timeout_ms=4000)
+        except Exception:                        # noqa: BLE001 — мост не роняет вкладку
+            pass
 
     def _on_render_gone(self, status, exit_code: int) -> None:
         """Процесс отрисовки умер (OOM, песочница, драйвер) — перезапустить вкладку.

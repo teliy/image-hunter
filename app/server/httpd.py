@@ -30,7 +30,10 @@ ThreadingHTTPServer (поток на запрос, daemon-потоки) + оди
 заход по ссылке с токеном). Сравнение постоянным временем
 (hmac.compare_digest). Неавторизованному отдаётся 401 — и страница «/»,
 и API. В запросе не логируются путь и токен: журнал не должен стать
-источником утечки.
+источником утечки. Существенные действия и подключения пишутся в журнал
+программы (open страницы, поиск, переименование, удаление, rembg,
+скачивание в папку и на устройство, отказы «только просмотр») —
+служба миниатюр и листингов в журнал не пишется: заспамила бы его.
 
 Ошибки API — JSON ``{"error": "…"}`` с честным кодом: 400 (плохой
 запрос), 403 (только просмотр / вне корней), 404 (не найдено),
@@ -259,6 +262,7 @@ class _Handler(BaseHTTPRequestHandler):
         extra = {"Cache-Control": "private, max-age=3600"}
         if q.get("dl") in ("1", "true", "yes"):
             extra["Content-Disposition"] = f'attachment; filename="{fname}"'
+            applog.event("log.event.srv_dl_dev", name=fname)
         self._send(200, data, ctype, extra)
 
     def _send_image(self, path: str, attachment: bool = False) -> None:
@@ -309,6 +313,8 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             self._set_token_cookie()          # cookie — только проверенному
             if u.path in ("/", "/index.html"):
+                applog.event("log.event.srv_conn",
+                             addr=self.client_address[0] if self.client_address else "?")
                 self._send(200, webui.PAGE.encode("utf-8"),
                            "text/html; charset=utf-8")
                 return

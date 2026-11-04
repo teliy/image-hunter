@@ -132,7 +132,9 @@ class _Upstream(BaseHTTPRequestHandler):
                 self._send(500, b"boom", "text/plain")
                 return
             page = f"<html><head><title>ddg</title>"
-            page += f"<script>window.vqd='{_MOCK_VQD}';</script></head>"
+            # vqd в JSON-форме (как в современных блобах выдачи) + старая форма
+            page += f"<script>var cfg={{\"vqd\":\"{_MOCK_VQD}\"}};"
+            page += f"window.vqd='{_MOCK_VQD}';</script></head>"
             page += "<body>серверная выдача</body></html>"
             self._send(200, page.encode(), "text/html")
         elif u.path == "/ijs":             # JSON-выдача картинок
@@ -180,6 +182,41 @@ class _Upstream(BaseHTTPRequestHandler):
             body += '<a class="iusc" m="{битый json"></a>'
             body += "</body></html>"
             self._send(200, body.encode(), "text/html")
+        elif u.path == "/bing2":           # новый формат data-m=
+            meta = {"murl": host + "/img/photo.jpeg",
+                    "turl": host + "/img/thumb1.png", "t": "data-m & плитка",
+                    "w": 800, "h": 600, "purl": host + "/page/b2"}
+            attr = html_mod.escape(json.dumps(meta), quote=True)
+            self._send(200,
+                       f'<html><body><div class="imgpt" data-m="{attr}"></div></body></html>'.encode(),
+                       "text/html")
+        elif u.path == "/bing-empty":      # JS-оболочка без плиток (как сейчас часто Bing)
+            self._send(200, "<html><body><div id='b_content'>"
+                       "включите JavaScript</div></body></html>".encode(),
+                       "text/html")
+        elif u.path == "/ovapi":           # Openverse: официальный JSON-API
+            page_n = int(q.get("page") or 1)
+            rows = [{"url": host + "/img/cat.png", "thumbnail": host + "/img/thumb1.png",
+                     "title": "OV &amp; tile", "width": 800, "height": 600,
+                     "foreign_landing_url": host + "/page/ov1"}] if page_n == 1 else []
+            self._send(200, json.dumps({"result_count": 25, "results": rows}).encode(),
+                       "application/json")
+        elif u.path == "/wikiapi":         # MediaWiki: generator=search (Commons)
+            off = int(q.get("gsroffset") or 0)
+            pages = {}
+            if off == 0:                   # вторая страница — пустая (конец выдачи)
+                pages["p1"] = {"title": "File:B.jpg", "index": 2,
+                               "imageinfo": [{"url": host + "/img/photo.jpeg",
+                                              "thumburl": host + "/img/thumb2.png",
+                                              "width": 1024, "height": 768,
+                                              "descriptionurl": host + "/page/w2"}]}
+                pages["p0"] = {"title": "File:A.jpg", "index": 1,
+                               "imageinfo": [{"url": host + "/img/cat.png",
+                                              "thumburl": host + "/img/thumb1.png",
+                                              "width": 800, "height": 600,
+                                              "descriptionurl": host + "/page/w1"}]}
+            self._send(200, json.dumps({"query": {"pages": pages}}).encode(),
+                       "application/json")
         elif u.path == "/img/cat.png":
             self._send(200, _IMG_PNG, "image/png")
         elif u.path == "/img/photo.jpeg":
@@ -463,9 +500,12 @@ def main() -> int:
 
         # ---------- интернет-поиск и скачивание (мок вместо сети) ----------
         up, up_srv = make_upstream()
-        saved_urls = (websearch.DDG_BASE, websearch.DDG_IJS, websearch.BING_URL)
-        websearch.DDG_BASE, websearch.DDG_IJS, websearch.BING_URL = \
-            up + "/ddg", up + "/ijs", up + "/bing"
+        from app.server import desktop_results
+        saved_urls = (websearch.DDG_BASE, websearch.DDG_IJS, websearch.BING_URL,
+                      websearch.OPENVERSE_API, websearch.WIKIMEDIA_API)
+        websearch.DDG_BASE, websearch.DDG_IJS, websearch.BING_URL, \
+            websearch.OPENVERSE_API, websearch.WIKIMEDIA_API = \
+            up + "/ddg", up + "/ijs", up + "/bing", up + "/ovapi", up + "/wikiapi"
         try:
             st, body, _ = http(base, "/api/web/search?engine=ddg&q=cat")
             j = json.loads(body)
@@ -502,6 +542,112 @@ def main() -> int:
             st, body, _ = http(base, "/api/web/search?engine=ddg&q=fail")
             check("web/search: поисковик не ответил — 502", st == 502,
                   str(st) + " " + json.loads(body).get("error", "")[:60])
+
+            # Openverse: официальный JSON-API
+            st, body, _ = http(base, "/api/web/search?engine=openverse&q=cat")
+            j = json.loads(body)
+            check("web/search openverse: плитка разобрана",
+                  st == 200 and len(j["results"]) == 1
+                  and j["results"][0]["title"] == "OV & tile"   # сущности раскрыты
+                  and j["results"][0]["url"] == up + "/img/cat.png"
+                  and j["results"][0]["thumb"] == up + "/img/thumb1.png"
+                  and j["results"][0]["source"] == up + "/page/ov1",
+                  str(j.get("results")))
+            st, body, _ = http(base, "/api/web/search?engine=openverse&q=cat&offset=20")
+            check("web/search openverse: offset → страница 2 (пустая)",
+                  st == 200 and json.loads(body)["results"] == [])
+
+            # Wikimedia Commons: MediaWiki API, порядок по «index»
+            st, body, _ = http(base, "/api/web/search?engine=commons&q=cat")
+            j = json.loads(body)
+            check("web/search commons: две плитки в порядке выдачи",
+                  st == 200 and len(j["results"]) == 2
+                  and j["results"][0]["title"] == "A.jpg"     # «File:» снят
+                  and j["results"][1]["title"] == "B.jpg"
+                  and j["results"][0]["url"] == up + "/img/cat.png"
+                  and j["results"][0]["thumb"] == up + "/img/thumb1.png"
+                  and j["results"][0]["source"] == up + "/page/w1",
+                  str(j.get("results")))
+            st, body, _ = http(base, "/api/web/search?engine=commons&q=cat&offset=50")
+            check("web/search commons: offset → пусто", st == 200
+                  and json.loads(body)["results"] == [])
+
+            # «Программа»: мост с вкладки «Поиск картинок» программы
+            st, body, _ = http(base, "/api/web/search?engine=desktop&q=x")
+            check("web/search desktop: пустой мост — 200, 0 плиток",
+                  st == 200 and json.loads(body)["results"] == [])
+            desktop_results.update(
+                query="кот", engine="яндекс",
+                page_url="https://yandex.ru/images/search?text=%D0%BA%D0%BE%D1%82",
+                tiles=[{"url": up + "/img/cat.png", "thumb": up + "/img/thumb1.png",
+                        "title": "с программы", "w": 800, "h": 600,
+                        "source": up + "/page/1"},
+                       {"url": "ftp://bad", "thumb": "", "title": "мусор"},
+                       {"url": up + "/img/photo.jpeg", "thumb": up + "/img/thumb1.png",
+                        "title": "дубль по превью"}])
+            check("мост: плитки чистятся и дедуплицируются",
+                  len(desktop_results.get()["tiles"]) == 1
+                  and desktop_results.get()["query"] == "кот")
+            st, body, _ = http(base, "/api/web/search?engine=desktop&q=whatever")
+            j = json.loads(body)
+            check("web/search desktop: плитки программы",
+                  st == 200 and len(j["results"]) == 1
+                  and j["results"][0]["title"] == "с программы"
+                  and j["source_engine"] == "яндекс", str(j))
+
+            # Bing: новый формат data-m= и JS-оболочка без плиток — честная ошибка
+            websearch.BING_URL = up + "/bing2"
+            st, body, _ = http(base, "/api/web/search?engine=bing&q=cat")
+            j = json.loads(body)
+            check("web/search bing: data-m= разобран",
+                  st == 200 and len(j["results"]) == 1
+                  and j["results"][0]["title"] == "data-m & плитка"
+                  and j["results"][0]["url"] == up + "/img/photo.jpeg",
+                  str(j.get("results")))
+            websearch.BING_URL = up + "/bing-empty"
+            st, body, _ = http(base, "/api/web/search?engine=bing&q=cat")
+            check("web/search bing: оболочка без плиток — 502 с подсказкой",
+                  st == 502 and "другой поисковик" in json.loads(body).get("error", ""),
+                  str(st) + " " + json.loads(body).get("error", "")[:70])
+            websearch.BING_URL = up + "/bing"
+
+            # журнал: деятельность веб-сервера видна в программе
+            cap_lines: list[str] = []
+
+            class _Cap(logging.Handler):
+                def emit(self, r) -> None:
+                    cap_lines.append(r.getMessage())
+
+            cap = _Cap()
+            logging.getLogger().addHandler(cap)
+            try:
+                http(base, "/", token="tt")          # открытие интерфейса — тоже событие
+                jrn = os.path.join(tmp, "журнал.png")
+                Image.new("RGB", (8, 8)).save(jrn)
+                st, body, _ = http(base, "/api/web/search?engine=desktop&q=x")
+                st, body, _ = http(base, "/api/rename",
+                                   data={"path": jrn, "name": "переименован-журнал.png"},
+                                   method="POST")
+                check("rename перед проверкой журнала", st == 200)
+                api.view_only = True
+                st, _, _ = http(base, "/api/delete",
+                                data={"paths": [os.path.join(tmp, "переименован-журнал.png")]},
+                                method="POST")
+                check("view_only: delete — 403 (внутри проверки журнала)", st == 403)
+                api.view_only = False
+                time.sleep(0.2)
+                text = "\n".join(cap_lines)
+                check("журнал: открыт веб-интерфейс", "🌐 Открыт веб-интерфейс" in text,
+                      str(cap_lines[-5:]))
+                check("журнал: поиск с телефона",
+                      "🔎 Поиск с телефона «x» (Программа)" in text, "")
+                check("журнал: переименование с телефона",
+                      "✏️ Переименовано с телефона: журнал.png → переименован-журнал.png" in text,
+                      "")
+                check("журнал: отказ «только просмотр»",
+                      "🔒 Отказано (только просмотр): удаление" in text, "")
+            finally:
+                logging.getLogger().removeHandler(cap)
 
             # прокси: просмотр и «скачать на устройство»
             st, body, hdrs = http(base, "/api/web/proxy?url=" + q(up + "/img/cat.png"))
@@ -595,10 +741,15 @@ def main() -> int:
             # интерфейс: кнопка 🔎, выбор поисковика, маршруты
             for needle in ('id="bweb"', 'id="weng"', "/api/web/search",
                            "/api/web/proxy", "/api/web/download", "id=\"wfab\"",
-                           "web_search_ph", "dl_done"):
+                           "web_search_ph", "dl_done",
+                           'value="openverse"', 'value="desktop"',
+                           'value="commons"', 'value="ddg"', 'value="bing"',
+                           "web_desktop_hint", "web_to", "webEmptyText",
+                           "ih_web_engine", "eng-desktop"):
                 check(f"UI: страница содержит {needle}", needle in webui_mod.PAGE)
         finally:
-            websearch.DDG_BASE, websearch.DDG_IJS, websearch.BING_URL = saved_urls
+            websearch.DDG_BASE, websearch.DDG_IJS, websearch.BING_URL, \
+                websearch.OPENVERSE_API, websearch.WIKIMEDIA_API = saved_urls
             up_srv.shutdown()
 
         # ---------- «только просмотр» ----------

@@ -10,6 +10,14 @@ Written in Python + PySide6 (Qt6): heavy operations (rendering, network, image d
 
 > **⚡ Special focus — fast work over the network and with network drives** (SMB/NAS, mounted shares): a folder is read in one request, thumbnails are built only for the visible part of the list, ready previews are cached on disk. A network folder with thousands of photos opens without lags — neither in the app nor on the network. Details in [“Fast work over the network and with network drives”](#fast-work-over-the-network-and-with-network-drives).
 
+## Web search from your phone: new engines, the app bridge and server logging (v0.8.3)
+
+**Five engines instead of two.** The “Web” mode header now offers: **Openverse** — the official JSON API of the open-image aggregator (Flickr, Wikimedia, NASA and hundreds more sources: no key, no scraping, ready-made previews), **Wikimedia** — the official Commons API, **DuckDuckGo** and **Bing** — server-side scraping where it still works (Bing increasingly serves an empty JS shell — now that is an honest error suggesting another engine, not a silent “nothing found”), and **“From program”** — a bridge from the app’s “Image search” tab: the app searches with a real browser that network blocks, captchas and changed result formats cannot scare, and automatically hands the phone the cleaned-up, lightweight tiles — only the original URL, preview, title and source page. The engine choice is remembered; requests time out after 60 s — the endless “Searching…” is gone.
+
+**Web server and API activity in the app’s Log.** Opening the web UI (with the client address), phone searches (engine, query, result count, errors), renames, deletions, background-removal starts, downloads to a folder or to the device, view-only denials — all of it lands both in the app’s log and in the phone’s log. Thumbnails and listings are not logged, so the log stays clean.
+
+Tests: the web-search section of `scripts/test_server.py` — mocks for Openverse/Wikimedia/Bing (the m= and data-m= formats, the empty shell), the “app → phone” bridge, log events (search/rename/denial), UI elements.
+
 ## Modules menu: install, removal and settings (v0.8.2)
 
 The **Modules** item in the menu bar (next to Help) gathers the management of all pluggable modules in one place. The menu is rebuilt every time it opens, so its items and checkmarks always show the current state.

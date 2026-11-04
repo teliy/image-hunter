@@ -1107,6 +1107,47 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ru": "🛰 Не удалось скачать {url}: {err}",
         "en": "🛰 Failed to download {url}: {err}",
         "zh": "🛰 下载失败 {url}：{err}"},
+    # ---------- деятельность веб-сервера и API в журнале программы ----------
+    "log.event.srv_conn": {
+        "ru": "🌐 Открыт веб-интерфейс ({addr})",
+        "en": "🌐 Web UI opened ({addr})",
+        "zh": "🌐 已打开网页界面（{addr}）"},
+    "log.event.srv_search": {
+        "ru": "🔎 Поиск с телефона «{q}» ({engine}): найдено {n}",
+        "en": "🔎 Phone search “{q}” ({engine}): {n} found",
+        "zh": "🔎 手机搜索「{q}」（{engine}）：找到 {n} 条"},
+    "log.event.srv_search_err": {
+        "ru": "🔎 Поиск с телефона «{q}» ({engine}) не удался: {err}",
+        "en": "🔎 Phone search “{q}” ({engine}) failed: {err}",
+        "zh": "🔎 手机搜索「{q}」（{engine}）失败：{err}"},
+    "log.event.srv_dl_dev": {
+        "ru": "⬇ Сохранено на устройство с телефона: {name}",
+        "en": "⬇ Saved to device from phone: {name}",
+        "zh": "⬇ 已从手机保存到设备：{name}"},
+    "log.event.srv_rename": {
+        "ru": "✏️ Переименовано с телефона: {old} → {new}",
+        "en": "✏️ Renamed from phone: {old} → {new}",
+        "zh": "✏️ 手机重命名：{old} → {new}"},
+    "log.event.srv_delete": {
+        "ru": "🗑 Удалено с телефона: {n} шт. ({names})",
+        "en": "🗑 Deleted from phone: {n} ({names})",
+        "zh": "🗑 已从手机删除：{n} 个（{names}）"},
+    "log.event.srv_nobg": {
+        "ru": "🪄 Удаление фона с телефона: {n} файл(ов), модель {model}",
+        "en": "🪄 Background removal from phone: {n} file(s), model {model}",
+        "zh": "🪄 手机启动去除背景：{n} 个文件，模型 {model}"},
+    "log.event.srv_denied": {
+        "ru": "🔒 Отказано (только просмотр): {op}",
+        "en": "🔒 Denied (view-only): {op}",
+        "zh": "🔒 已拒绝（仅查看）：{op}"},
+    "srv.op.rename": {
+        "ru": "переименование", "en": "rename", "zh": "重命名"},
+    "srv.op.delete": {
+        "ru": "удаление", "en": "delete", "zh": "删除"},
+    "srv.op.rembg": {
+        "ru": "удаление фона", "en": "background removal", "zh": "去除背景"},
+    "srv.op.download": {
+        "ru": "скачивание в папку", "en": "download to folder", "zh": "下载到文件夹"},
     # ---------- отладка производительности: тайминги операций в журнале ----------
     "log.event.timing": {
         "ru": "⏱ {op}: {ms} мс{extra}",

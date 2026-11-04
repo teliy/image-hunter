@@ -644,3 +644,118 @@ def fetch_checked_selections(page, callback) -> None:
         callback(clean)
 
     run_js(page, "window.__IH_SEL_JSON || '[]'", _done)
+
+
+# ---------------------------------------------------------------- плитки для телефона
+# ТILES_JS — «очищенные и облегчённые» плитки выдачи для моста
+# «программа → телефон» (app/server/desktop_results.py): программа
+# ищет настоящим браузером и передаёт телефону готовый список —
+# только ссылка на оригинал, превью, заголовок и страница-источник,
+# никакого HTML. JS общий для всех поисковиков: оригинал вынимается
+# из ссылки-плитки (imgurl= у Google, img_url= у Яндекса, u= у
+# DuckDuckGo, murl из JSON-атрибута m=/data-m= у Bing), превью — из
+# src/атрибутов ленивой загрузки; иконки и логотипы отсекаются по
+# размеру. Идемпотентно: функция кэшируется в window.__IH_TILES.
+
+TILES_JS = r"""
+(() => {
+  if (window.__IH_TILES) return window.__IH_TILES();
+  const abs = (u) => {
+    try {
+      const a = new URL(u, location.href);
+      if (a.protocol === 'http:' || a.protocol === 'https:') return a.href;
+    } catch (e) {}
+    return "";
+  };
+  const origFromParams = (href) => {
+    try {
+      const u = new URL(href, location.href);
+      const names = ['imgurl', 'img_url', 'murl', 'mediaurl', 'u', 'url'];
+      for (const n of names) {
+        let v = u.searchParams.get(n);
+        if (!v) continue;
+        v = v.trim();
+        if (/^https?:\/\//i.test(v)) return v;
+        try { const dec = decodeURIComponent(v);
+              if (/^https?:\/\//i.test(dec)) return dec; } catch (e) {}
+        let b = v.replace(/-/g, '+').replace(/_/g, '/');   // DDG: base64-url
+        while (b.length % 4) b += '=';
+        try { const dec2 = atob(b);
+              if (/^https?:\/\//i.test(dec2)) return dec2; } catch (e) {}
+      }
+    } catch (e) {}
+    return "";
+  };
+  const origFromAncestor = (im) => {
+    let el = im;
+    for (let up = 0; up < 6 && el; up++, el = el.parentElement) {
+      if (el.getAttribute) {
+        const mattr = el.getAttribute('m') || el.getAttribute('data-m');
+        if (mattr) {
+          try {
+            const j = JSON.parse(mattr);
+            if (j && typeof j.murl === 'string' && /^https?:/i.test(j.murl)) return j.murl;
+          } catch (e) {}
+        }
+      }
+      if (el.tagName === 'A' && el.href) {
+        const o = origFromParams(el.href);
+        if (o) return o;
+      }
+    }
+    return "";
+  };
+  const thumbOf = (im) => abs(im.currentSrc || im.src
+      || (im.getAttribute && (im.getAttribute('data-src')
+          || im.getAttribute('data-lazy-src')
+          || im.getAttribute('data-thumb')
+          || im.getAttribute('data-original'))) || "");
+  const srcAnchor = (im) => {
+    let el = im;
+    for (let up = 0; up < 6 && el; up++, el = el.parentElement) {
+      if (el.tagName === 'A' && el.href) return abs(el.href);
+    }
+    return "";
+  };
+  window.__IH_TILES = function () {
+    const out = [], seen = {};
+    document.querySelectorAll('img').forEach(function (im) {
+      const thumb = thumbOf(im);
+      if (!thumb) return;
+      const nw = im.naturalWidth || im.width || 0,
+            nh = im.naturalHeight || im.height || 0;
+      if (nw && nw < 80) return;                     // иконки/логотипы/фавиконы
+      const key = thumb.split('#')[0];
+      if (seen[key]) return;
+      seen[key] = 1;
+      out.push({ url: origFromAncestor(im) || thumb,
+                 thumb: thumb,
+                 title: String(im.alt || im.title || '').trim().slice(0, 150),
+                 w: 0, h: 0,
+                 source: srcAnchor(im) });
+    });
+    return JSON.stringify(out.slice(0, 200));
+  };
+  return window.__IH_TILES();
+})()
+"""
+
+MAX_TILES = 200
+
+
+def collect_tiles(page, callback) -> None:
+    """Собрать «очищенные плитки» выдачи: ``callback([{url, thumb, title,
+    w, h, source}, …])`` в GUI-потоке.
+
+    Плитки идут в мост «программа → телефон» (app/server/desktop_results.py):
+    телефон показывает ту же выдачу, что открыта в программе.
+    """
+    def _done(result):
+        try:
+            tiles = json.loads(result) if isinstance(result, str) \
+                else list(result or [])
+        except Exception:
+            tiles = []
+        callback([t for t in tiles if isinstance(t, dict)][:MAX_TILES])
+
+    run_js(page, TILES_JS, _done)

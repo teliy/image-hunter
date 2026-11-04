@@ -19,7 +19,7 @@
 8. конфликт с существующим файлом: старое имя возвращается, оба файла целы;
 9. переименование «только регистр» разрешено;
 10. переименование открытой картинки обновляет имя в статусе просмотра;
-11. смоук: версия 0.8.2.
+11. смоук: версия 0.8.3.
 
 Запуск: QT_QPA_PLATFORM=offscreen python scripts/test_rename.py
 """
@@ -318,6 +318,14 @@ def main() -> int:
     make_png(os.path.join(tmp, "second.png"))
     load_wait(viewer, app, tmp)   # новый_кот.png, second.png
     check("в папке 2 файла", viewer.list.count() == 2, str(viewer.list.count()))
+    # Ошибка конфликта ставится в статус внутри _on_rename_done, но фоновая
+    # загрузка миниатюры может перекрыть её в той же пачке событий — наблюдаем
+    # сам сигнал done(ok=False): детерминировано при любой гонке статуса
+    seen_err: list[str] = []
+    def _probe(old_p, new_p, ok, err):
+        if not ok:
+            seen_err.append(err)
+    viewer._rename_signals.done.connect(_probe)
     item = viewer._item_by_path(os.path.join(tmp, "новый_кот.png"))
     check("плитка нового_кот.png найдена по пути", item is not None)
     item.setText("second.png")
@@ -333,10 +341,15 @@ def main() -> int:
           os.path.join(tmp, "новый_кот.png") in viewer._paths
           and os.path.join(tmp, "second.png") in viewer._paths,
           str(viewer._paths))
+    # статус ставится сигналом из рабочего потока: он мог прийти на тик позже
+    # исчезновения _rename_inflight — ждём его, а не читаем сразу (гонка)
     check("конфликт: статус с ошибкой",
-          viewer.status.text().startswith(
-              i18n.tr("viewer.rename_err", name="новый_кот.png", err="")[:20]),
-          viewer.status.text())
+          seen_err and "second.png" in seen_err[0],
+          str(seen_err) + " | статус: " + viewer.status.text())
+    try:
+        viewer._rename_signals.done.disconnect(_probe)
+    except (RuntimeError, TypeError):
+        pass
 
     # ---------- 8. переименование «только регистр» ----------
     item = viewer._item_by_path(os.path.join(tmp, "новый_кот.png"))
@@ -383,7 +396,7 @@ def main() -> int:
               and viewer.list.currentItem().text() == "финал.png")
 
     # ---------- 11. смоук ----------
-    check("версия 0.8.2", __version__ == "0.8.2", __version__)
+    check("версия 0.8.3", __version__ == "0.8.3", __version__)
 
     print()
     if FAILURES:

@@ -6,12 +6,23 @@
 headless-процессом — такой путь не подходит: там нет ни Qt-виджетов, ни JS.
 Поэтому сервер сам ходит по адресам, которые отдают данные в чистом виде:
 
+* Openverse — официальный JSON-API агрегатора открытых картинок
+  (Flickr, Wikimedia, NASA и сотни других источников): без ключа,
+  без скрапинга — тот же формат плиток, что у страницы программы;
+* Wikimedia Commons — официальный API MediaWiki: поиск по свободным
+  файлам с готовыми миниатюрами нужного размера;
 * DuckDuckGo — JSON-выдача ``i.js``: тот же адрес, откуда страница выдачи
   берёт очередную пачку плиток при прокрутке; перед первым запросом со
-  страницы выдачи снимается токен ``vqd``;
-* Bing — серверная HTML-выдача: у каждой плитки в атрибуте ``m=`` лежит
-  JSON со ссылкой на оригинал (``murl``), миниатюру (``turl``), заголовком
-  и размерами.
+  страницы выдачи снимается токен ``vqd`` (сайт недоступен в некоторых
+  странах — тогда ошибку честно пишет в интерфейс);
+* Bing — серверная HTML-выдача: у каждой плитки в атрибуте ``m=`` или
+  ``data-m=`` лежит JSON со ссылкой на оригинал (``murl``), миниатюрой
+  (``turl``), заголовком и размерами; движок часто отдаёт мобильным
+  клиентам пустую JS-оболочку — это не тихая пустота, а ошибка 502;
+* «Программа» — плитки последней выдачи вкладки «Поиск картинок»
+  (мост ``app/server/desktop_results.py``): программа ищет настоящим
+  браузером, ему не страшны блокировки, и передаёт телефону готовый
+  чистый список — туда, где чистый HTTP уже не справляется.
 
 Формат результата общий для всех движков и повторяет то, что показывают
 плитки в программе: ``url`` (оригинал), ``thumb`` (миниатюра), ``title``,
@@ -54,12 +65,27 @@ class WebSearchError(Exception):
 DDG_BASE = "https://duckduckgo.com"           # страница выдачи, из неё берём vqd
 DDG_IJS = "https://duckduckgo.com/i.js"       # JSON-выдача картинок
 BING_URL = "https://www.bing.com/images/search"  # серверная HTML-выдача
+OPENVERSE_API = "https://api.openverse.org/v1/images/"   # официальный JSON-API
+WIKIMEDIA_API = "https://commons.wikimedia.org/w/api.php"  # MediaWiki API
 
-# движки для интерфейса: (ключ, подпись в списке)
+# движки для интерфейса: (ключ, подпись в списке). Первые два —
+# официальные API (работают всюду), «Программа» — мост с вкладкой
+# «Поиск картинок» (см. app/server/desktop_results.py), последние два —
+# скрапинг там, где он ещё возможен.
 ENGINES: list[tuple[str, str]] = [
+    ("openverse", "Openverse"),
+    ("desktop", "Программа"),
+    ("commons", "Wikimedia"),
     ("ddg", "DuckDuckGo"),
     ("bing", "Bing"),
 ]
+
+# Wikimedia требует честный User-Agent с контактом (политика WMF):
+# браузерная подделка получает 403 на api.php
+WIKIMEDIA_UA = "ImageHunter/0.8 (github.com/teliy/image-hunter; dima.teliy@gmail.com)"
+
+OPENVERSE_PAGE = 20                # максимум плиток на страницу у Openverse
+WIKIMEDIA_THUMB = 320              # ширина миниатюры от Commons (px)
 
 SEARCH_TIMEOUT = (10, 20)      # (подключение, чтение) для страниц выдачи
 DOWNLOAD_TIMEOUT = (10, 60)    # …и для самих картинок
@@ -95,6 +121,10 @@ RETRY_STATUSES = frozenset({401, 403, 429})
 
 # обёртка CDN Cloudflare: /cdn-cgi/image/<параметры>/<оригинал>
 _CDN_WRAP_RE = re.compile(r"/cdn-cgi/image/[^/?&]+/(https?://.+)$", re.IGNORECASE)
+
+# плитки Bing: старый формат m="{json}" и новый data-m="{json}"
+_BING_M_RE = re.compile(r'm="(\{[^"]+\})"')
+_BING_DM_RE = re.compile(r'data-m="(\{[^"]+\})"')
 
 # сессия requests, закреплённая за потоком (как в программе, v0.7.11):
 # переиспользование TCP/TLS, а не новое рукопожатие на каждую картинку
@@ -157,6 +187,32 @@ def _search_headers() -> dict:
     return dict(BASE_HEADERS)
 
 
+SEARCH_RETRIES = 1            # повтор при кратком сбое официальных API (5xx/сеть)
+
+
+def _search_get(url: str, params: dict, headers: dict):
+    """GET выдачи официального API с одним повтором при кратком сбое.
+
+    Openverse временами отдаёт одноразовые 500 или роняет соединение —
+    сразу повторить — и поиск спасён; в остальном поведение обычное.
+    """
+    last: object = ""
+    for attempt in range(1 + SEARCH_RETRIES):
+        try:
+            resp = _http_get()(url, params=params, headers=headers,
+                               timeout=SEARCH_TIMEOUT)
+            if resp.status_code < 500 or attempt == SEARCH_RETRIES:
+                return resp
+            last = f"HTTP {resp.status_code}"
+            resp.close()
+        except Exception as exc:               # noqa: BLE001
+            if attempt == SEARCH_RETRIES:
+                raise
+            last = exc
+        time.sleep(1.0)
+    raise WebSearchError(f"поиск не ответил ({last})")
+
+
 def _norm_result(url, thumb, title, w, h, source) -> dict | None:
     """Привести плитку выдачи к общему формату; мусор — None."""
     url = str(url or "").strip()
@@ -195,9 +251,12 @@ def _dedupe(items: list[dict], limit: int) -> list[dict]:
 
 # ---- DuckDuckGo: страница выдачи → токен vqd → JSON i.js
 
-# vqd живёт в скриптах страницы: vqd="4-1234…", vqd='4-…', vqd=4-…&;
-# формат — цифры и дефисы, поэтому шаблон устойчив к смене кавычек
-_VQD_RE = re.compile(r"""vqd\s*=\s*["']?([\d][\d-]{5,})["']?""", re.IGNORECASE)
+# vqd живёт в скриптах страницы (vqd="4-…", vqd='4-…', vqd=4-…) и в
+# JSON-блобах ("vqd":"4-…"): между vqd и разделителем может стоять
+# закрывающая кавычка — допускаем её с обеих сторон «=»/«:»;
+# формат значения — цифры и дефисы, поэтому шаблон устойчив к смене кавычек
+_VQD_RE = re.compile(
+    r"""vqd["']?\s*[:=]\s*["']?([\d][\d-]{5,})["']?""", re.IGNORECASE)
 
 
 def _ddg_vqd(query: str) -> str:
@@ -211,7 +270,10 @@ def _ddg_vqd(query: str) -> str:
     except WebSearchError:
         raise
     except Exception as exc:               # noqa: BLE001
-        raise WebSearchError(f"DuckDuckGo не ответил: {exc}") from exc
+        raise WebSearchError(
+            f"DuckDuckGo не ответил: {exc}. Возможно, сайт недоступен "
+            "из вашей сети (в некоторых странах заблокирован) — "
+            "выберите другой поисковик") from exc
     m = _VQD_RE.search(page)
     if not m:
         raise WebSearchError(
@@ -248,9 +310,6 @@ def _search_ddg(query: str, offset: int, limit: int) -> list[dict]:
 
 # ---- Bing: серверная HTML-выдача, у плиток атрибут m='{"murl":…}'
 
-_BING_M_RE = re.compile(r'm="(\{[^"]+\})"')
-
-
 def _search_bing(query: str, offset: int, limit: int) -> list[dict]:
     params = {"q": query, "count": "35"}
     if offset:
@@ -266,7 +325,9 @@ def _search_bing(query: str, offset: int, limit: int) -> list[dict]:
     except Exception as exc:               # noqa: BLE001
         raise WebSearchError(f"Bing не ответил: {exc}") from exc
     items: list[dict | None] = []
-    for raw in _BING_M_RE.findall(page):
+    # старый формат — m="{json}"; новый — data-m="{json}" (мобильная выдача);
+    # их можно просто объединить: m= как часть data-m= даёт те же плитки
+    for raw in _BING_M_RE.findall(page) + _BING_DM_RE.findall(page):
         try:
             meta = json.loads(html_mod.unescape(raw))
         except Exception:                  # noqa: BLE001 — битая плитка не роняет выдачу
@@ -275,10 +336,114 @@ def _search_bing(query: str, offset: int, limit: int) -> list[dict]:
             continue
         items.append(_norm_result(meta.get("murl"), meta.get("turl"), meta.get("t"),
                                   meta.get("w"), meta.get("h"), meta.get("purl")))
+    results = _dedupe(items, limit)
+    if not results:
+        # Bing всё чаще отдаёт JS-оболочку без плиток (заглушка «включите
+        # JavaScript»): раньше это выглядело как «ничего не нашлось», теперь —
+        # честная ошибка, чтобы интерфейс переключил поисковик
+        raise WebSearchError(
+            "Bing не отдал результаты — движок скрыл выдачу от автоматических "
+            "запросов; выберите другой поисковик")
+    return results
+
+
+# ---- Openverse: официальный JSON-API открытых картинок (без ключа)
+
+
+def _search_openverse(query: str, offset: int, limit: int) -> list[dict]:
+    """Плитки из Openverse (Flickr, Wikimedia, NASA… — сотни источников).
+
+    Анонимный доступ без ключа (лимит запросов generous, пагинация —
+    ``page``); данные приходят готовые: ссылка на оригинал, миниатюра
+    (прокси Openverse), заголовок, размеры и страница-источник.
+    """
+    page = offset // OPENVERSE_PAGE + 1   # «Ещё» клиента = следующая страница
+    params = {"q": query, "page_size": str(OPENVERSE_PAGE), "page": str(page)}
+    headers = _search_headers()
+    headers["Accept"] = "application/json"
+    try:
+        resp = _search_get(OPENVERSE_API, params, headers)
+        resp.raise_for_status()
+        data = json.loads(resp.text)
+        resp.close()
+    except WebSearchError:
+        raise
+    except Exception as exc:               # noqa: BLE001
+        raise WebSearchError(f"Openverse не ответил: {exc}") from exc
+    rows = data.get("results") or [] if isinstance(data, dict) else []
+    return _dedupe(
+        [_norm_result(r.get("url"), r.get("thumbnail"), r.get("title"),
+                      r.get("width"), r.get("height"),
+                      r.get("foreign_landing_url"))
+         for r in rows if isinstance(r, dict)],
+        limit)
+
+
+# ---- Wikimedia Commons: официальный MediaWiki API свободных файлов
+
+
+def _search_commons(query: str, offset: int, limit: int) -> list[dict]:
+    """Файлы Wikimedia Commons: оригинал + миниатюра нужного размера.
+
+    Поиск ограничен пространством имён «Файл» (gsrnamespace=6) растровыми
+    картинками (filetype:bitmap); пагинация — gsroffset. Wikimedia требует
+    честный User-Agent с контактом — браузерная подделка ловит 403.
+    """
+    params = {"action": "query", "format": "json",
+              "generator": "search",
+              "gsrsearch": f"filetype:bitmap {query}",
+              "gsrnamespace": "6",
+              "gsrlimit": str(max(1, min(limit, 50))),
+              "gsroffset": str(offset),
+              "prop": "imageinfo", "iiprop": "url|size|mime",
+              "iiurlwidth": str(WIKIMEDIA_THUMB)}
+    headers = dict(BASE_HEADERS)
+    headers["User-Agent"] = WIKIMEDIA_UA
+    headers["Accept"] = "application/json"
+    try:
+        resp = _search_get(WIKIMEDIA_API, params, headers)
+        resp.raise_for_status()
+        data = json.loads(resp.text)
+        resp.close()
+    except WebSearchError:
+        raise
+    except Exception as exc:               # noqa: BLE001
+        raise WebSearchError(f"Wikimedia не ответил: {exc}") from exc
+    pages = list((data.get("query") or {}).get("pages", {}).values()) \
+        if isinstance(data, dict) else []
+    # API возвращает словарь страниц — порядок выдачи несёт поле «index»
+    pages.sort(key=lambda p: p.get("index", 1 << 30) if isinstance(p, dict)
+               else 1 << 30)
+    items: list[dict | None] = []
+    for p in pages:
+        info = (p.get("imageinfo") or [{}])[0] if isinstance(p, dict) else {}
+        if not isinstance(info, dict):
+            continue
+        items.append(_norm_result(info.get("url"), info.get("thumburl"),
+                                  str(p.get("title") or "").removeprefix("File:"),
+                                  info.get("width"), info.get("height"),
+                                  info.get("descriptionurl")))
     return _dedupe(items, limit)
 
 
-_ENGINE_FN = {"ddg": _search_ddg, "bing": _search_bing}
+# ---- «Программа»: мост с вкладкой «Поиск картинок» (desktop_results)
+
+
+def _search_desktop(query: str, offset: int, limit: int) -> list[dict]:
+    """Плитки последней выдачи программы (см. app/server/desktop_results.py).
+
+    Запрос здесь игнорируется намеренно: показывается последняя выдача
+    целиком, чтобы телефон видел то же, что и экран программы, даже если
+    запрос набран по-другому. Программа ищет настоящим браузером — этому
+    пути не мешают ни блокировки сетей, ни смена форматов выдачи.
+    """
+    from app.server import desktop_results   # лениво: модуль лёгкий
+    return _dedupe(list(desktop_results.get()["tiles"]), limit)
+
+
+_ENGINE_FN = {"ddg": _search_ddg, "bing": _search_bing,
+              "openverse": _search_openverse, "commons": _search_commons,
+              "desktop": _search_desktop}
 
 
 # ---------------------------------------------------------------- скачивание

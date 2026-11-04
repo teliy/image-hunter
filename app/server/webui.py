@@ -146,6 +146,9 @@ dialog.token::backdrop{background:rgba(0,0,0,.6)}
   <div id="crumbs"></div>
   <div class="srow">
     <select class="sel" id="weng" style="display:none" title="Поисковик">
+      <option value="openverse">Openverse</option>
+      <option value="desktop" id="eng-desktop">Программа</option>
+      <option value="commons">Wikimedia</option>
       <option value="ddg">DuckDuckGo</option>
       <option value="bing">Bing</option>
     </select>
@@ -216,6 +219,9 @@ ru:{deep:"вглубь",back:"← Назад",dl:"⬇️ Скачать",ren:"�
  web_mode:"Интернет",web_search_ph:"Поиск картинок в интернете…",
  web_hint:"Введите запрос — найденные картинки можно скачать в папку на компьютере или на устройство",
  web_no_results:"В интернете ничего не нашлось",web_err:"Поиск не удался: {err}",
+ web_to:"Сервер не ответил за 60 с — поисковик завис или недоступен",
+ engine_desktop:"Программа",
+ web_desktop_hint:"Здесь появится последняя выдача вкладки «Поиск картинок» программы — поищите на компьютере, плитки передадутся сюда автоматически",
  found_n:"Найдено: {n}",more:"Ещё",no_more:"Больше ничего нет",
  to_folder:"💾 В папку на компьютере",to_folder_short:"💾 В папку",
  mark:"Отметить",unmark:"Снять отметку",save_to:"Скачать в папку «{name}»",
@@ -239,6 +245,9 @@ en:{deep:"deep",back:"← Back",dl:"⬇️ Save",ren:"✏️",nobg:"🪄",del:"�
  web_mode:"Web",web_search_ph:"Search images on the web…",
  web_hint:"Type a query — found images can be saved to a computer folder or to this device",
  web_no_results:"Nothing found on the web",web_err:"Search failed: {err}",
+ web_to:"Server did not respond within 60 s — the engine is stuck or unreachable",
+ engine_desktop:"From program",
+ web_desktop_hint:"The latest results from the program’s “Image search” tab will appear here — search on the computer and the tiles are passed automatically",
  found_n:"Found: {n}",more:"More",no_more:"No more results",
  to_folder:"💾 To a folder on the computer",to_folder_short:"💾 To folder",
  mark:"Mark",unmark:"Unmark",save_to:"Download to folder “{name}”",
@@ -253,10 +262,11 @@ function t(k, p){ var s = (T[lang][k] || k); if(p) for(var key in p) s = s.split
 function applyLang(){
   document.documentElement.lang = lang;
   document.getElementById("blang").textContent = T[lang].langs;
+  document.getElementById("eng-desktop").textContent = t("engine_desktop");
   document.getElementById("q").placeholder = t(mode === "web" ? "web_search_ph" : "search_ph");
   document.querySelectorAll("[data-t]").forEach(function(el){ el.textContent = t(el.dataset.t); });
   document.getElementById("empty").textContent =
-    mode === "web" ? (wQuery ? t("web_no_results") : t("web_hint"))
+    mode === "web" ? webEmptyText()
                    : (curQ ? t("empty_q") : t("empty"));
 }
 
@@ -266,7 +276,23 @@ var TOKEN = params.get("token") || localStorage.getItem("ih_web_token") || "";
 if(params.get("token")) localStorage.setItem("ih_web_token", TOKEN);
 function api(path, opts){
   var sep = path.indexOf("?") >= 0 ? "&" : "?";
+  opts = opts || {};
+  // страховка от вечного «Ищу…»: если сервер не ответил за 60 с —
+  // запрос отменяется и интерфейс показывает ошибку (см. web_to)
+  if(typeof AbortController !== "undefined" && !opts.signal){
+    var ctl = new AbortController();
+    opts.signal = ctl.signal;
+    setTimeout(function(){ ctl.abort(); }, 60000);
+  }
   return fetch(path + sep + "token=" + encodeURIComponent(TOKEN), opts);
+}
+function apiErr(e){
+  return (e && e.name === "AbortError") ? t("web_to") : (e && e.message ? e.message : String(e));
+}
+function webEmptyText(){
+  var eng = document.getElementById("weng").value;
+  if(eng === "desktop") return t("web_desktop_hint");
+  return wQuery ? t("web_no_results") : t("web_hint");
 }
 function apiUrl(path, more){
   var sep = path.indexOf("?") >= 0 ? "&" : "?";
@@ -420,8 +446,16 @@ document.getElementById("q").addEventListener("keydown", function(ev){
     if(mode === "web") webSearch(); else runSearch(); }
 });
 document.getElementById("weng").addEventListener("change", function(){
-  if(mode === "web" && wQuery) webSearch();
+  try{ localStorage.setItem("ih_web_engine", this.value); }catch(e){}
+  if(mode === "web"){ if(wQuery) webSearch(); else renderWeb(); }
 });
+(function(){                          // восстановить выбор поисковика
+  var saved = localStorage.getItem("ih_web_engine");
+  var w = document.getElementById("weng");
+  for(var i = 0; i < w.options.length; i++){
+    if(w.options[i].value === saved){ w.value = saved; break; }
+  }
+})();
 document.getElementById("deep").addEventListener("change", function(){
   if(mode === "files" && document.getElementById("q").value.trim()) runSearch();
 });
@@ -492,9 +526,10 @@ function webSearch(){
                    toast(t("web_err", {err: res.j.error || res.code}), "err"); return; }
       wResults = res.j.results || [];
       renderWeb();
-      setStatus(t("found_n", {n: wResults.length}));
+      setStatus(t("found_n", {n: wResults.length})
+                + (res.j.source_engine ? (" — " + res.j.source_engine) : ""));
     })
-    .catch(function(e){ if(seq === webSeq){ setStatus(""); toast(t("err", {err: e}), "err"); } });
+    .catch(function(e){ if(seq === webSeq){ setStatus(""); toast(t("web_err", {err: apiErr(e)}), "err"); } });
 }
 function webMore(){
   if(!wQuery) return;
@@ -515,13 +550,15 @@ function webMore(){
       renderWeb();
       setStatus(t("found_n", {n: wResults.length}));
     })
-    .catch(function(e){ setStatus(""); toast(t("err", {err: e}), "err"); });
+    .catch(function(e){ setStatus(""); toast(t("web_err", {err: apiErr(e)}), "err"); });
 }
 function renderWeb(){
   var fbox = document.getElementById("folders"); fbox.innerHTML = "";
   var grid = document.getElementById("grid"); grid.innerHTML = "";
+  var eng = document.getElementById("weng").value;
   wResults.forEach(function(f, i){ grid.appendChild(wtile(f, i)); });
-  if(wResults.length && wQuery){
+  // у «Программы» выдача приходит целиком — кнопка «Ещё» не нужна
+  if(wResults.length && wQuery && eng !== "desktop"){
     var more = document.createElement("button");
     more.className = "tile fold";
     more.innerHTML = "<span class='fi'>⏬</span><span class='nm'>" + esc(t("more")) + "</span>";
@@ -531,7 +568,7 @@ function renderWeb(){
   crumbsWeb();
   var empty = document.getElementById("empty");
   empty.style.display = wResults.length ? "none" : "block";
-  empty.textContent = wQuery ? t("web_no_results") : t("web_hint");
+  empty.textContent = webEmptyText();
   document.title = "Image Hunter — 🔎 " + (wQuery || t("web_mode"));
   updWfab();
 }

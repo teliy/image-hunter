@@ -98,6 +98,16 @@ def _clean_rename_name(raw: str) -> str:
     return (raw or "").strip().rstrip(". ")
 
 
+def tr_label(key: str) -> str:
+    """Название операции на языке интерфейса — для строк журнала о веб-доступе.
+
+    api живёт и headless-процессом (без настроенного языка): i18n вернёт
+    русский вариант по умолчанию, как и остальным событиям журнала.
+    """
+    from app.core.i18n import tr              # лениво: без цикла импортов
+    return tr(f"srv.op.{key}")
+
+
 def _name_is_allowed(name: str) -> bool:
     """Имя допустимо: непустое, не «.»/«..», без запрещённых в Windows
     символов и управляющих. Один список с программой — предсказуемо везде."""
@@ -184,8 +194,16 @@ class Api:
             raise ValueError("путь вне разрешённых корней")
         return norm
 
-    def _require_write(self) -> None:
+    def _require_write(self, op: str = "") -> None:
+        """Запретить изменение файлов в режиме «только просмотр».
+
+        ``op`` — что пытались сделать (переименование/удаление/…) —
+        попадает в журнал, чтобы по программе было видно, что телефон
+        просил и почему отказано.
+        """
         if self.view_only:
+            if op:
+                applog.event("log.event.srv_denied", op=op)
             raise PermissionError("сервер в режиме «только просмотр»")
 
     # ------------------------------------------------------------- информация
@@ -424,7 +442,7 @@ class Api:
 
     def rename(self, path: str, new_name: str) -> dict:
         """Переименовать файл — по правилам программы (см. модульный докстринг)."""
-        self._require_write()
+        self._require_write(op=tr_label("rename"))
         path = self._check_path(path)
         new_name = _clean_rename_name(new_name)
         if not _name_is_allowed(new_name):
@@ -439,11 +457,13 @@ class Api:
             os.rename(path, target)
         except OSError as exc:
             raise OSError(str(exc)) from exc
+        applog.event("log.event.srv_rename", old=os.path.basename(path),
+                     new=new_name)
         return {"ok": True, "old": path, "new": target}
 
     def delete(self, paths: list[str], permanent: bool = False) -> dict:
         """Удалить файлы: в корзину (по умолчанию) или окончательно."""
-        self._require_write()
+        self._require_write(op=tr_label("delete"))
         results: list[dict] = []
         for raw in paths or []:
             try:
@@ -456,6 +476,10 @@ class Api:
             else:
                 ok, err = _trash_file(path)
             results.append({"path": path, "ok": ok, "error": err})
+        done = [r["path"] for r in results if r["ok"]]
+        if done:
+            applog.event("log.event.srv_delete", n=len(done),
+                         names=os.path.basename(done[0]))
         return {"results": results}
 
     # ------------------------------------------------------------- rembg
@@ -473,7 +497,7 @@ class Api:
         Возвращает ``{"id": …, "total": n}``; статус — :meth:`rembg_status`.
         Результаты — «X_nobg.png» рядом с оригиналами, как в программе.
         """
-        self._require_write()
+        self._require_write(op=tr_label("rembg"))
         if not self.rembg_installed():
             raise RuntimeError("модуль rembg не установлен — установите его в программе")
         jobs: list[tuple[str, str]] = []
@@ -494,6 +518,7 @@ class Api:
         th = threading.Thread(target=self._rembg_run, args=(job, jobs, model),
                               daemon=True, name=f"rembg-{job['id']}")
         th.start()
+        applog.event("log.event.srv_nobg", n=len(jobs), model=model)
         return {"id": job["id"], "total": len(jobs)}
 
     def _rembg_run(self, job: dict, jobs: list[tuple[str, str]], model: str) -> None:
@@ -545,14 +570,29 @@ class Api:
     # ------------------------------------------------------------- интернет-поиск
 
     def web_search(self, engine: str, query: str, offset: int = 0) -> dict:
-        """Поиск картинок в интернете (DuckDuckGo/Bing — без браузера).
+        """Поиск картинок в интернете (Openverse/Wikimedia/DuckDuckGo/Bing/
+        «Программа» — без браузера).
 
         Чтение — доступно и в режиме «только просмотр»: поиск ничего
         не меняет на компьютере. Ошибки поисковика — WebSearchError
         (HTTP-слой отвечает 502), пустой запрос/неизвестный движок —
-        ValueError (400).
+        ValueError (400). Каждый поиск попадает в журнал программы:
+        видно, что искали с телефона и что нашлось.
         """
-        return websearch.search_web(query, engine=engine, offset=offset)
+        name = websearch._engine_name((engine or "").lower())
+        try:
+            res = websearch.search_web(query, engine=engine, offset=offset)
+        except websearch.WebSearchError as exc:
+            applog.event("log.event.srv_search_err",
+                         engine=name, q=(query or "").strip()[:60],
+                         err=str(exc)[:120])
+            raise
+        if engine == "desktop":
+            from app.server import desktop_results    # лениво: модуль лёгкий
+            res["source_engine"] = desktop_results.get()["engine"]
+        applog.event("log.event.srv_search", engine=name,
+                     q=(query or "").strip()[:60], n=len(res["results"]))
+        return res
 
     def web_proxy(self, url: str) -> tuple[bytes, str, str]:
         """Картинка по внешней ссылке: (байты, content-type, имя файла).
@@ -577,7 +617,7 @@ class Api:
         просмотр» запрещает скачивание (оно меняет файлы). Возвращает
         ``{"id": …, "total": n}``; статус — :meth:`job_status`.
         """
-        self._require_write()
+        self._require_write(op=tr_label("download"))
         folder = self._check_path(folder)
         if not os.path.isdir(folder):
             raise FileNotFoundError(folder)
