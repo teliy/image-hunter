@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Image Hunter — поиск картинок, просмотр, удаление фона</title>
+<meta name="description" content="Просмотр локальных изображений + поиск картинок в 13 поисковиках + массовое скачивание по ссылкам + удаление фона (rembg). Windows / Linux. Python + PySide6.">
+<link rel="icon" type="image/png" href="app_icon.png">
+<style>
+:root{
+  --bg:#171a21; --bg2:#232b3a; --card:#1e2430; --line:#2c3546;
+  --text:#e8edf5; --muted:#9aa5b5; --accent:#569cd6; --accent2:#7fb7e8;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+body{background:linear-gradient(180deg,var(--bg),var(--bg2));color:var(--text);
+  font-family:"Segoe UI",system-ui,-apple-system,Roboto,sans-serif;line-height:1.6;min-height:100vh}
+a{color:var(--accent2);text-decoration:none}
+a:hover{text-decoration:underline}
+.wrap{max-width:1060px;margin:0 auto;padding:0 24px}
+header{position:sticky;top:0;z-index:9;background:rgba(23,26,33,.92);backdrop-filter:blur(6px);border-bottom:1px solid var(--line)}
+header .wrap{display:flex;align-items:center;gap:18px;height:60px}
+.logo{display:flex;align-items:center;gap:10px;font-weight:700;font-size:19px;color:var(--text)}
+.logo img{width:30px;height:30px}
+nav{margin-left:auto;display:flex;gap:18px;font-size:14.5px;flex-wrap:wrap}
+nav a{color:var(--muted)}
+nav a:hover{color:var(--text)}
+#langBtn{cursor:pointer;background:none;border:1px solid var(--line);color:var(--muted);
+  border-radius:8px;padding:4px 12px;font-size:13.5px}
+#langBtn:hover{color:var(--text);border-color:var(--accent)}
+.hero{padding:64px 0 28px;text-align:center}
+.hero h1{font-size:52px;letter-spacing:-1px;margin-bottom:10px}
+.hero .sub{font-size:20px;color:var(--muted);max-width:760px;margin:0 auto 22px}
+.badges{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-bottom:26px}
+.badge{border:1px solid var(--line);background:var(--card);border-radius:999px;
+  padding:5px 16px;font-size:13.5px;color:var(--muted)}
+.cta{display:flex;gap:14px;justify-content:center;flex-wrap:wrap}
+.btn{display:inline-block;padding:12px 28px;border-radius:12px;font-weight:600;font-size:16px}
+.btn.primary{background:var(--accent);color:#0d1420}
+.btn.primary:hover{background:var(--accent2);text-decoration:none}
+.btn.ghost{border:1px solid var(--line);color:var(--text)}
+.btn.ghost:hover{border-color:var(--accent)}
+.heroimg{margin:34px auto 0;max-width:960px;border:1px solid var(--line);border-radius:14px;overflow:hidden;box-shadow:0 18px 50px rgba(0,0,0,.45)}
+.heroimg img{display:block;width:100%}
+section{padding:44px 0}
+h2{font-size:30px;margin-bottom:8px}
+.secsub{color:var(--muted);margin-bottom:26px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:22px}
+.card h3{font-size:18px;margin-bottom:8px}
+.card p{color:var(--muted);font-size:14.5px}
+.card .em{font-size:26px;display:block;margin-bottom:10px}
+.news{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px 22px;margin-bottom:14px}
+.news h3{font-size:17px;margin-bottom:6px}
+.news .ver{color:var(--accent2);font-weight:700;margin-right:8px}
+.news p{color:var(--muted);font-size:14.5px}
+pre{background:#12151c;border:1px solid var(--line);border-radius:12px;padding:16px 18px;overflow-x:auto;font-size:14px;position:relative}
+pre code{font-family:Consolas,"Cascadia Code",monospace;color:#cfe3f7}
+.copy{position:absolute;top:10px;right:10px;background:var(--bg2);border:1px solid var(--line);
+  color:var(--muted);border-radius:7px;font-size:12px;padding:4px 10px;cursor:pointer}
+.copy:hover{color:var(--text)}
+.os{font-weight:700;margin:18px 0 8px;color:var(--text)}
+.note{color:var(--muted);font-size:14px;margin-top:14px}
+footer{border-top:1px solid var(--line);padding:26px 0 40px;color:var(--muted);font-size:14px}
+footer .wrap{display:flex;gap:22px;flex-wrap:wrap;justify-content:space-between}
+@media(max-width:640px){.hero h1{font-size:38px}.hero .sub{font-size:17px}}
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <div class="logo"><img src="app_icon.png" alt=""> Image Hunter</div>
+    <nav>
+      <a href="https://github.com/teliy/image-hunter" data-i18n="nav_gh">GitHub</a>
+      <a href="https://github.com/teliy/image-hunter/releases/latest" data-i18n="nav_rel">Релиз</a>
+      <a href="https://github.com/teliy/image-hunter/blob/main/CHANGELOG.md" data-i18n="nav_chg">Изменения</a>
+      <a href="https://github.com/teliy/image-hunter/discussions" data-i18n="nav_disc">Обсуждения</a>
+      <button id="langBtn" onclick="toggleLang()">EN</button>
+    </nav>
+  </div>
+</header>
+
+<div class="wrap">
+  <div class="hero">
+    <h1>Image Hunter</h1>
+    <div class="sub" data-i18n="hero_sub">Просмотр локальных изображений, поиск картинок в 13 поисковиках и массовое скачивание по ссылкам — в одном окне. Плюс удаление фона нейросетью.</div>
+    <div class="badges">
+      <span class="badge">Windows</span><span class="badge">Linux</span>
+      <span class="badge">Python + PySide6</span><span class="badge" data-i18n="b_eng">13 поисковиков</span>
+      <span class="badge">MIT</span><span class="badge" data-i18n="b_i18n">RU / EN / ZH</span>
+    </div>
+    <div class="cta">
+      <a class="btn primary" href="#install" data-i18n="cta_install">⬇️ Установить</a>
+      <a class="btn ghost" href="https://github.com/teliy/image-hunter" data-i18n="cta_src">Исходники</a>
+    </div>
+    <div class="heroimg"><img src="social-preview.png" alt="Image Hunter"></div>
+  </div>
+
+  <section id="features">
+    <h2 data-i18n="feat_h">Возможности</h2>
+    <div class="secsub" data-i18n="feat_sub">Четыре вкладки: «Мои картинки», «Поиск картинок», «Скачивание», «Журнал».</div>
+    <div class="grid">
+      <div class="card"><span class="em">📂</span><h3 data-i18n="f1_h">Просмотр и наведение порядка</h3>
+        <p data-i18n="f1_p">Дерево дисков и папок с избранными папками, лента миниатюр с ленивой загрузкой и дисковым кэшем, поиск по имени, переименование (F2 и двойной клик), удаление в корзину.</p></div>
+      <div class="card"><span class="em">🔎</span><h3 data-i18n="f2_h">Поиск в 13 поисковиках</h3>
+        <p data-i18n="f2_p">Яндекс, Google, DuckDuckGo, Brave, Yahoo, Ecosia, Startpage, Mojeek, Bing, Baidu, Sogou, Naver, Mail.ru. «Найти везде» открывает запрос сразу во всех; чекбоксы на плитках — скачайте отмеченные оригиналы одним кликом.</p></div>
+      <div class="card"><span class="em">⬇️</span><h3 data-i18n="f3_h">Массовое скачивание</h3>
+        <p data-i18n="f3_p">Сохранение по списку ссылок: до 6 файлов параллельно, стриминговая запись на диск, лимиты и таймауты, конвертация в WebP.</p></div>
+      <div class="card"><span class="em">🪄</span><h3 data-i18n="f4_h">Удаление фона (rembg)</h3>
+        <p data-i18n="f4_p">Нейросеть u2netp убирает фон прямо из программы; результат сохраняется как «имя_nobg.png», и его можно вернуть одним кликом. Прозрачность показывается на «шахматке».</p></div>
+      <div class="card"><span class="em">⚡</span><h3 data-i18n="f5_h">Сетевые диски без тормозов</h3>
+        <p data-i18n="f5_p">SMB/NAS и Windows-шары: папка читается одним проходом, миниатюры — только для видимой части списка, готовые превью кэшируются на диске, все сетевые операции — вне интерфейса.</p></div>
+      <div class="card"><span class="em">📱</span><h3 data-i18n="f7_h">Управление с телефона</h3>
+        <p data-i18n="f7_p">Меню «Модули» управляет подключаемыми модулями: 🌐 веб-сервер (порт, токен, QR-код, «только просмотр», автостарт) и 🪄 rembg (установка, удаление, выбор модели). С телефона — лента папок, поиск, просмотр, переименование, удаление, rembg и поиск картинок в интернете (🔎).</p></div>
+      <div class="card"><span class="em">📜</span><h3 data-i18n="f6_h">Журнал и честный статус</h3>
+        <p data-i18n="f6_p">Хроника всей работы с причинами ошибок и таймингами; текущее задание и прогресс скачивания модели — в статусной строке.</p></div>
+    </div>
+  </section>
+
+  <section id="news">
+    <h2 data-i18n="news_h">Что нового</h2>
+    <div class="secsub"><a href="https://github.com/teliy/image-hunter/blob/main/CHANGELOG.md" data-i18n="news_all">Полный журнал изменений →</a></div>
+    <div class="news"><h3><span class="ver">0.8.3</span><span data-i18n="nc_h">Поиск с телефона: Openverse, Wikimedia, мост из программы, журнал сервера</span></h3>
+      <p data-i18n="nc_p">Пять поисковиков: Openverse и Wikimedia (официальные API — работают всюду), DuckDuckGo и Bing с честными ошибками, и «Программа» — телефон показывает выдачу вкладки «Поиск картинок» программы. Вся деятельность веб-сервера — в «Журнале» программы.</p></div>
+    <div class="news"><h3><span class="ver">0.8.1</span><span data-i18n="nb_h">Поиск картинок из интернета — с телефона</span></h3>
+      <p data-i18n="nb_p">Кнопка 🔎 в веб-интерфейсе: выдача поисковиков той же лентой, отметки плюсиком, скачивание в папку на компьютере или на устройство — с правилами и прогрессом настольной программы.</p></div>
+    <div class="news"><h3><span class="ver">0.8.0</span><span data-i18n="n0_h">Веб-сервер: доступ с телефона</span></h3>
+      <p data-i18n="n0_p">QR-код → мобильный интерфейс со всей программой: лента, поиск, просмотр, переименование, удаление, rembg. Токен, режим «только просмотр», headless-процесс.</p></div>
+    <div class="news"><h3><span class="ver">0.7.17</span><span data-i18n="n1_h">Переименование файлов</span></h3>
+      <p data-i18n="n1_p">F2, двойной клик по имени плитки и пункт в правом меню — как в Проводнике, но на сетевом диске окно не замирает.</p></div>
+    <div class="news"><h3><span class="ver">0.7.16</span><span data-i18n="n2_h">Шахматка под прозрачными картинками</span></h3>
+      <p data-i18n="n2_p">Классическая сетка из серых и белых квадратов под PNG/GIF/WebP; размер клетки регулируется ползунком.</p></div>
+    <div class="news"><h3><span class="ver">0.7.15</span><span data-i18n="n3_h">Выбор после удаления фона</span></h3>
+      <p data-i18n="n3_p">«Сохранить результат или вернуть оригиналы?» — с превью на шахматке; статус скачивания модели виден в статусной строке.</p></div>
+  </section>
+
+  <section id="install">
+    <h2 data-i18n="inst_h">Установка</h2>
+    <div class="secsub" data-i18n="inst_sub">Установщик сам поставит Python и зависимости, создаст ярлык и встроенный апдейтер. Требуется Windows 10+ или Linux.</div>
+    <div class="os">Windows (PowerShell)</div>
+    <pre><button class="copy" onclick="cp(this)">📋 Copy</button><code>irm https://codeload.github.com/teliy/image-hunter/zip/refs/heads/main -OutFile "$env:TEMP\ih.zip"; Expand-Archive "$env:TEMP\ih.zip" "$env:TEMP\ih-src" -Force; powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\ih-src\image-hunter-main\install.ps1"</code></pre>
+    <div class="os">Linux / macOS</div>
+    <pre><button class="copy" onclick="cp(this)">📋 Copy</button><code>curl -fsSL https://raw.githubusercontent.com/teliy/image-hunter/main/install.sh | bash</code></pre>
+    <div class="note" data-i18n="inst_note">Обновление уже установленной копии — прямо из программы (кнопка ⟳ в статус-баре).</div>
+  </section>
+</div>
+
+<footer>
+  <div class="wrap">
+    <div>© 2026 Image Hunter · MIT License</div>
+    <div>
+      <a href="https://github.com/teliy/image-hunter/blob/main/README.md">README (RU)</a> ·
+      <a href="https://github.com/teliy/image-hunter/blob/main/README.en.md">README (EN)</a> ·
+      <a href="https://github.com/teliy/image-hunter/blob/main/README.zh.md">README (中文)</a>
+    </div>
+  </div>
+</footer>
+
+<script>
+const I18N = {
+en:{
+ nav_gh:"GitHub",nav_rel:"Release",nav_chg:"Changelog",nav_disc:"Discussions",
+ hero_sub:"Local image browsing, image search across 13 search engines and bulk downloading by links — in one window. Plus neural background removal.",
+ b_eng:"13 search engines",b_i18n:"RU / EN / ZH",
+ cta_install:"⬇️ Install",cta_src:"Source code",
+ feat_h:"Features",feat_sub:"Four tabs: “My pictures”, “Image search”, “Downloads”, “Log”.",
+ f1_h:"Browse and organize",f1_p:"Drive and folder tree with favorite folders, a thumbnail strip with lazy loading and disk cache, name search, renaming (F2 and double-click), delete to recycle bin.",
+ f2_h:"Search in 13 engines",f2_p:"Yandex, Google, DuckDuckGo, Brave, Yahoo, Ecosia, Startpage, Mojeek, Bing, Baidu, Sogou, Naver, Mail.ru. “Find everywhere” runs the query in all tabs at once; checkboxes on result tiles let you download selected originals in one click.",
+ f3_h:"Bulk downloading",f3_p:"Save from a list of links: up to 6 files in parallel, streamed to disk, limits and timeouts, WebP conversion.",
+ f4_h:"Background removal (rembg)",f4_p:"The u2netp neural net removes backgrounds right in the app; the result is saved as “name_nobg.png” and can be reverted with one click. Transparency is shown on a checkerboard.",
+ f5_h:"Network drives without lags",f5_p:"SMB/NAS and Windows shares: a folder is read in one pass, thumbnails are built only for the visible list, ready previews are disk-cached, all network work happens off the UI thread.",
+ f6_h:"Log and honest status",f6_p:"A chronicle of everything the app does, with error causes and timings; the current task and model download progress are always visible in the status bar.",
+ news_h:"What’s new",news_all:"Full changelog →",
+ nc_h:"Web search from your phone: Openverse, Wikimedia, the app bridge, server logging",nc_p:"Five engines: Openverse and Wikimedia (official APIs that work everywhere), DuckDuckGo and Bing with honest errors, and “From program” — the phone shows the app’s “Image search” tab results. All web-server activity lands in the app’s Log.",nb_h:"Web image search — from your phone",nb_p:"The 🔎 button in the web UI: search-engine results in the same feed, mark with “+”, download to a computer folder or to the device — with the desktop app’s rules and progress.", n0_h:"Web server: access from a phone",n0_p:"QR code → a mobile UI with the whole app: folder feed, search, viewer, rename, delete, rembg. Token, view-only mode, headless process.",
+ f7_h:"Control from a phone",f7_p:"The Modules menu manages pluggable modules: 🌐 web server (port, token, QR code, view-only, autostart) and 🪄 rembg (install, uninstall, model choice). From a phone — folder feed, search, viewer, rename, delete, rembg and web image search (🔎).",
+ n1_h:"File renaming",n1_p:"F2, double-click on a tile’s name and a context-menu item — like Explorer, and the window never freezes on network drives.",
+ n2_h:"Checkerboard under transparent images",n2_p:"A classic grey-and-white checkerboard under PNG/GIF/WebP; the cell size is set with a slider.",
+ n3_h:"Choose after background removal",n3_p:"“Keep the result or revert to originals?” — with a checkerboard preview; model download progress is visible in the status bar.",
+ inst_h:"Install",inst_sub:"The installer sets up Python and dependencies, creates a shortcut and a built-in updater. Requires Windows 10+ or Linux.",
+ inst_note:"To update an installed copy, use the ⟳ button in the app’s status bar."
+}};
+function setLang(l){
+  document.documentElement.lang = l;
+  document.getElementById("langBtn").textContent = l==="ru"?"EN":"RU";
+  const d = l==="ru" ? null : I18N.en;
+  document.querySelectorAll("[data-i18n]").forEach(el=>{
+    const k = el.dataset.i18n;
+    if(!d){ if(el.dataset.ru){ el.textContent = el.dataset.ru; } else { el.dataset.ru = el.textContent; } }
+    else { if(!el.dataset.ru) el.dataset.ru = el.textContent; el.textContent = d[k] || el.dataset.ru; }
+  });
+  localStorage.setItem("ih_lang", l);
+}
+function toggleLang(){ setLang(document.documentElement.lang==="ru"?"en":"ru"); }
+setLang(localStorage.getItem("ih_lang")||"ru");
+function cp(b){
+  const t = b.parentElement.querySelector("code").innerText;
+  navigator.clipboard.writeText(t).then(()=>{ b.textContent="✅"; setTimeout(()=>b.textContent="📋 Copy",1200); });
+}
+</script>
+</body>
+</html>
