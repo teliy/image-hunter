@@ -11,10 +11,17 @@ ThreadingHTTPServer (поток на запрос, daemon-потоки) + оди
 * ``GET /api/thumb``     — миниатюра PNG (``?path=&size=``);
 * ``GET /api/image``     — полная картинка, с докачкой Range;
 * ``GET /api/raw``       — файл «скачать на устройство» (attachment);
+* ``GET /api/web/search`` — поиск картинок в интернете (``?engine=&q=&offset=``);
+* ``GET /api/web/proxy`` — картинка по внешней ссылке (``?url=``, ``&dl=1`` —
+  attachment: телефон смотрит оригинал и сохраняет его через сервер, —
+  сайты с проверкой Referer чужие страницы не пускают);
+* ``POST /api/web/download`` — скачать картинки по ссылкам в папку
+  (тело: urls, folder) — фоновое задание;
+* ``GET /api/job/status?id=`` — статус фонового задания (rembg и webdl);
 * ``GET /api/log``       — хвост журнала (``?n=``);
 * ``GET /api/rembg/models`` — доступные модели;
 * ``POST /api/rembg``    — запустить удаление фона (тело: paths, model);
-* ``GET /api/rembg/status?id=`` — статус задания;
+* ``GET /api/rembg/status?id=`` — статус задания (алиас /api/job/status);
 * ``POST /api/rename``   — переименовать (тело: path, name);
 * ``POST /api/delete``   — удалить (тело: paths, permanent).
 
@@ -26,7 +33,8 @@ ThreadingHTTPServer (поток на запрос, daemon-потоки) + оди
 источником утечки.
 
 Ошибки API — JSON ``{"error": "…"}`` с честным кодом: 400 (плохой
-запрос), 403 (только просмотр / вне корней), 404 (не найдено), 500.
+запрос), 403 (только просмотр / вне корней), 404 (не найдено),
+502 (поисковик или сайт с картинкой не ответил), 500.
 """
 
 from __future__ import annotations
@@ -42,6 +50,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from app.core import applog
 from app.server import api as api_mod
+from app.server import websearch
 from app.server import webui
 
 _MAX_JSON = 1 << 20          # тело POST не больше 1 МБ
@@ -212,11 +221,19 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_image(q.get("path", ""), attachment=True)
             elif route == "/api/log":
                 self._json(api.log_tail(_int(q.get("n"), 100)))
+            elif route == "/api/job/status":
+                self._json(api.job_status(q.get("id", "")))
             elif route == "/api/rembg/status":
-                self._json(api.rembg_status(q.get("id", "")))
+                self._json(api.job_status(q.get("id", "")))
             elif route == "/api/rembg/models":
                 self._json({"models": api.rembg_models(),
                             "installed": api.rembg_installed()})
+            elif route == "/api/web/search":
+                self._json(api.web_search(q.get("engine", "ddg"),
+                                          q.get("q", ""),
+                                          _int(q.get("offset"), 0)))
+            elif route == "/api/web/proxy":
+                self._send_web_proxy(q)
             else:
                 self._err(404, f"нет такого маршрута: {route}")
         except PermissionError as exc:
@@ -227,9 +244,22 @@ class _Handler(BaseHTTPRequestHandler):
             self._err(404, f"не найдено: {exc}")
         except ValueError as exc:
             self._err(400, str(exc))
+        except websearch.WebSearchError as exc:
+            self._err(502, str(exc))
         except Exception as exc:               # noqa: BLE001
             applog.error(f"web api {route}: {exc}")
             self._err(500, str(exc))
+
+    def _send_web_proxy(self, q: dict) -> None:
+        """Картинка по внешней ссылке: телефон смотрит оригинал через сервер
+        (сайты с проверкой Referer чужие страницы не пускают) и сохраняет
+        его на устройство (``&dl=1`` — attachment)."""
+        api: api_mod.Api = self.server.ih_api
+        data, ctype, fname = api.web_proxy(q.get("url", ""))
+        extra = {"Cache-Control": "private, max-age=3600"}
+        if q.get("dl") in ("1", "true", "yes"):
+            extra["Content-Disposition"] = f'attachment; filename="{fname}"'
+        self._send(200, data, ctype, extra)
 
     def _send_image(self, path: str, attachment: bool = False) -> None:
         api: api_mod.Api = self.server.ih_api
@@ -317,6 +347,10 @@ class _Handler(BaseHTTPRequestHandler):
             elif route == "/api/delete":
                 self._json(api.delete(payload.get("paths", []),
                                       permanent=bool(payload.get("permanent"))))
+            elif route == "/api/web/download":
+                res = api.web_download_start(payload.get("urls", []),
+                                             payload.get("folder", ""))
+                self._json(res, 202)
             elif route == "/api/rembg":
                 res = api.rembg_start(payload.get("paths", []),
                                       model=payload.get("model", ""))
@@ -332,6 +366,8 @@ class _Handler(BaseHTTPRequestHandler):
         except (ValueError, KeyError, RuntimeError) as exc:
             # RuntimeError — отказ по существу (модуль не установлен и т.п.)
             self._err(400, str(exc))
+        except websearch.WebSearchError as exc:
+            self._err(502, str(exc))
         except Exception as exc:               # noqa: BLE001
             applog.error(f"web api {route}: {exc}")
             self._err(500, str(exc))

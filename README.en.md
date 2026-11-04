@@ -22,6 +22,12 @@ The **🌐** button in the status bar starts a small web server — a pluggable,
 
 Tests: `scripts/test_server.py` — real HTTP requests on a random port: token (header/link/cookie), the UI page, the folder feed, thumbnail cache (including reuse of the app’s cache), Range/206, downloads, rename rules, deletion, view-only, root restriction, search with limits and dash handling, rembg routes, settings manager, CLI process.
 
+## Web image search from your phone (v0.8.1)
+
+The **🔎** button switches the web interface to “Web” mode: the query goes to a search engine (**DuckDuckGo** or **Bing** — pick it in the header) and the result tiles open in the same feed as your files. From there: view the original full-screen (via the server — hotlink-protected sites do not serve images to foreign pages), save the original to the device itself, or save it to a folder on the computer — the one opened in Files mode (remembered between visits). Tiles are marked with a “+” (like the checkboxes in the desktop app); the floating “⬇ N” button downloads all marked images as one background job with progress and log entries. Downloading follows the desktop downloader rules: the Referer attempt ladder, Cloudflare `/cdn-cgi/image/` unwrapping, collision-free names (“name-1.ext”), a 100 MB per-file cap. Search works in view-only mode too — it changes nothing on the computer; saving to a folder does not. The engines work without an embedded browser: the server fetches clean-data endpoints (DuckDuckGo JSON results, Bing server-rendered HTML) — see the new `app/server/websearch.py` module.
+
+Tests: the web-search section of `scripts/test_server.py` — a local mock server pretends to be DuckDuckGo/Bing and an image host (no network needed): tile parsing, dedupe, offset, proxy with attachment, background downloads with name rules, view-only, root restriction.
+
 ## Fast work over the network and with network drives
 
 Image Hunter was written from day one for the scenario “photos live on a network drive (NAS, Windows share, mounted folder) and the pipe is not infinite”. Ordinary viewers die in this scenario: a list of 10 000 files means 10 000 stat calls over the network, and bulk thumbnail loading clogs the pipe. Below is what exactly is done and why it works.

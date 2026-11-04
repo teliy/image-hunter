@@ -1073,6 +1073,18 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ru": "🌐 Веб-сервер остановлен (порт {port})",
         "en": "🌐 Web server stopped (port {port})",
         "zh": "🌐 Web 服务器已停止（端口 {port}）"},
+    "log.event.webdl_start": {
+        "ru": "🛰 Скачивание картинок из интернета: {n} шт. → папка «{folder}»",
+        "en": "🛰 Downloading images from the web: {n} → folder “{folder}”",
+        "zh": "🛰 从网络下载图片：{n} 个 → 文件夹「{folder}」"},
+    "log.event.webdl": {
+        "ru": "🛰 Скачана картинка: {name}",
+        "en": "🛰 Image downloaded: {name}",
+        "zh": "🛰 图片已下载：{name}"},
+    "log.event.webdl_err": {
+        "ru": "🛰 Не удалось скачать {url}: {err}",
+        "en": "🛰 Failed to download {url}: {err}",
+        "zh": "🛰 下载失败 {url}：{err}"},
     # ---------- отладка производительности: тайминги операций в журнале ----------
     "log.event.timing": {
         "ru": "⏱ {op}: {ms} мс{extra}",

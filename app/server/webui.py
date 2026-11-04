@@ -50,6 +50,17 @@ header{position:sticky;top:0;z-index:5;background:rgba(23,26,33,.96);
 .chk{display:flex;align-items:center;gap:5px;font-size:13px;color:var(--muted);
   background:var(--bg2);border:1px solid var(--line);border-radius:10px;padding:0 10px}
 .chk input{accent-color:var(--accent)}
+.sel{background:var(--bg2);border:1px solid var(--line);border-radius:10px;
+  color:var(--text);padding:9px 6px;outline:none;max-width:132px}
+.sel:focus{border-color:var(--accent)}
+.hbtn.on{border-color:var(--accent);color:var(--accent)}
+.ckb{position:absolute;top:4px;left:4px;width:28px;height:28px;border-radius:9px;
+  background:rgba(23,26,33,.85);border:1px solid var(--line);font-size:14px;line-height:1.3}
+.ckb.on{background:var(--accent);color:#0c0e13;border-color:var(--accent)}
+#wfab{position:fixed;right:14px;bottom:calc(env(safe-area-inset-bottom) + 18px);z-index:30;
+  background:var(--accent);color:#0c0e13;border-radius:24px;padding:12px 18px;
+  font-size:15px;font-weight:600;box-shadow:0 6px 20px rgba(0,0,0,.45);display:none}
+#wfab:active{filter:brightness(.9)}
 main{padding:10px 10px calc(env(safe-area-inset-bottom) + 90px)}
 #status{padding:6px 4px;font-size:13px;color:var(--muted);min-height:24px}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:8px}
@@ -128,13 +139,18 @@ dialog.token::backdrop{background:rgba(0,0,0,.6)}
   <div class="hrow">
     <button class="hbtn" id="bdrives" title="Диски">💾</button>
     <h1 id="title">Image Hunter</h1>
+    <button class="hbtn" id="bweb" title="Интернет">🔎</button>
     <button class="hbtn" id="blog" title="Журнал">📜</button>
     <button class="hbtn" id="blang">EN</button>
   </div>
   <div id="crumbs"></div>
   <div class="srow">
+    <select class="sel" id="weng" style="display:none" title="Поисковик">
+      <option value="ddg">DuckDuckGo</option>
+      <option value="bing">Bing</option>
+    </select>
     <input id="q" type="search" placeholder="Поиск по имени…">
-    <label class="chk"><input type="checkbox" id="deep"><span data-t="deep">вглубь</span></label>
+    <label class="chk" id="deepwrap"><input type="checkbox" id="deep"><span data-t="deep">вглубь</span></label>
   </div>
 </header>
 <main>
@@ -157,6 +173,7 @@ dialog.token::backdrop{background:rgba(0,0,0,.6)}
   <div id="vbar">
     <button class="hbtn" id="vclose" data-t="back">← Назад</button>
     <button class="hbtn" id="vdl" data-t="dl">⬇️ Скачать</button>
+    <button class="hbtn" id="vsave" data-t="to_folder_short" style="display:none">💾</button>
     <button class="hbtn" id="vren" data-t="ren">✏️</button>
     <button class="hbtn" id="vnobg" data-t="nobg">🪄</button>
     <button class="hbtn" id="vdel" data-t="del">🗑</button>
@@ -171,6 +188,7 @@ dialog.token::backdrop{background:rgba(0,0,0,.6)}
   <div id="logpre"></div>
 </div>
 
+<button id="wfab">⬇ <span id="wfabn">0</span></button>
 <div id="toasts"></div>
 <div id="needtoken"><div><h2 style="color:var(--text)">Image Hunter</h2>
   <p data-t="needtoken" style="margin-top:8px">Откройте ссылку с токеном — адрес есть в программе: кнопка 🌐 в статус-баре.</p>
@@ -194,7 +212,16 @@ ru:{deep:"вглубь",back:"← Назад",dl:"⬇️ Скачать",ren:"�
  nobg_progress:"Удаление фона: {done}/{total} — {name}",nobg_done:"Удаление фона готово (ok: {ok}, ошибок: {fail})",
  nobg_fail:"Не удалось запустить: {err}",err:"Ошибка: {err}",list_err:"Не удалось открыть папку",
  viewonly:"Сервер в режиме «только просмотр» — действия недоступны",
- langs:"EN",log_empty:"Журнал пуст",thumb_err:"Нет превью"},
+ langs:"EN",log_empty:"Журнал пуст",thumb_err:"Нет превью",
+ web_mode:"Интернет",web_search_ph:"Поиск картинок в интернете…",
+ web_hint:"Введите запрос — найденные картинки можно скачать в папку на компьютере или на устройство",
+ web_no_results:"В интернете ничего не нашлось",web_err:"Поиск не удался: {err}",
+ found_n:"Найдено: {n}",more:"Ещё",no_more:"Больше ничего нет",
+ to_folder:"💾 В папку на компьютере",to_folder_short:"💾 В папку",
+ mark:"Отметить",unmark:"Снять отметку",save_to:"Скачать в папку «{name}»",
+ open_folder_first:"Сначала откройте папку в режиме «Файлы» — картинки сохранятся туда",
+ dl_started:"Скачивание запущено: {n}",dl_progress:"Скачивание: {done}/{total} — {name}",
+ dl_done:"Скачивание готово (скачано: {ok}, ошибок: {fail})"},
 en:{deep:"deep",back:"← Back",dl:"⬇️ Save",ren:"✏️",nobg:"🪄",del:"🗑",
  log:"Log",enter:"Enter",needtoken:"Open the link with the token — the address is in the app: the 🌐 button in the status bar.",
  search_ph:"Search by name…",empty:"Folder is empty — no images",
@@ -208,7 +235,16 @@ en:{deep:"deep",back:"← Back",dl:"⬇️ Save",ren:"✏️",nobg:"🪄",del:"�
  nobg_done:"Background removal finished (ok: {ok}, failed: {fail})",
  nobg_fail:"Could not start: {err}",err:"Error: {err}",list_err:"Could not open folder",
  viewonly:"Server is view-only — actions are disabled",
- langs:"RU",log_empty:"Log is empty",thumb_err:"No preview"}
+ langs:"RU",log_empty:"Log is empty",thumb_err:"No preview",
+ web_mode:"Web",web_search_ph:"Search images on the web…",
+ web_hint:"Type a query — found images can be saved to a computer folder or to this device",
+ web_no_results:"Nothing found on the web",web_err:"Search failed: {err}",
+ found_n:"Found: {n}",more:"More",no_more:"No more results",
+ to_folder:"💾 To a folder on the computer",to_folder_short:"💾 To folder",
+ mark:"Mark",unmark:"Unmark",save_to:"Download to folder “{name}”",
+ open_folder_first:"Open a folder in Files mode first — images will be saved there",
+ dl_started:"Download started: {n}",dl_progress:"Downloading: {done}/{total} — {name}",
+ dl_done:"Download finished (saved: {ok}, failed: {fail})"}
 };
 var lang = (localStorage.getItem("ih_web_lang") ||
             (navigator.language||"").slice(0,2).toLowerCase() === "ru" ? "ru" : "en");
@@ -217,9 +253,11 @@ function t(k, p){ var s = (T[lang][k] || k); if(p) for(var key in p) s = s.split
 function applyLang(){
   document.documentElement.lang = lang;
   document.getElementById("blang").textContent = T[lang].langs;
-  document.getElementById("q").placeholder = t("search_ph");
+  document.getElementById("q").placeholder = t(mode === "web" ? "web_search_ph" : "search_ph");
   document.querySelectorAll("[data-t]").forEach(function(el){ el.textContent = t(el.dataset.t); });
-  document.getElementById("empty").textContent = curQ ? t("empty_q") : t("empty");
+  document.getElementById("empty").textContent =
+    mode === "web" ? (wQuery ? t("web_no_results") : t("web_hint"))
+                   : (curQ ? t("empty_q") : t("empty"));
 }
 
 /* ---------- токен и http ---------- */
@@ -254,6 +292,15 @@ var curPath = "", curQ = "", curDeep = false;
 var files = [];            // картинки текущей папки/поиска
 var listSeq = 0;
 
+/* ---------- режимы: «Файлы» и «Интернет» (кнопка 🔎) ---------- */
+var mode = localStorage.getItem("ih_web_mode") === "web" ? "web" : "files";
+var wResults = [];         // результаты интернет-поиска
+var wQuery = "";
+var wsel = {};             // отмеченные плитки выдачи: url -> результат
+var webSeq = 0;
+var webView = false;       // открыт просмотр результата из интернета
+var lastFolder = localStorage.getItem("ih_web_folder") || "";  // куда «В папку»
+
 /* ---------- crumbs ---------- */
 function crumbs(path){
   var box = document.getElementById("crumbs");
@@ -280,6 +327,13 @@ function crumbs(path){
   });
   box.scrollLeft = box.scrollWidth;
 }
+function crumbsWeb(){
+  var box = document.getElementById("crumbs");
+  box.innerHTML = "";
+  var s = document.createElement("span"); s.className = "here";
+  s.textContent = "🔎 " + (wQuery || t("web_mode"));
+  box.appendChild(s);
+}
 
 /* ---------- лента ---------- */
 function setStatus(s){ document.getElementById("status").textContent = s || ""; }
@@ -305,6 +359,9 @@ function loadFolder(path){
 }
 function render(j){
   curPath = j.path;
+  lastFolder = j.path;
+  try{ localStorage.setItem("ih_web_folder", j.path); }catch(e){}
+  if(mode === "web") return;   // телефон в интернете: папка грузится лишь для «В папку»
   files = j.files;
   var fbox = document.getElementById("folders");
   var grid = document.getElementById("grid");
@@ -356,10 +413,17 @@ function baseName(p){ return p.split(/[\\/]/).filter(Boolean).pop() || p; }
 var qTimer = null;
 document.getElementById("q").addEventListener("input", function(){
   clearTimeout(qTimer);
-  qTimer = setTimeout(runSearch, 350);
+  qTimer = setTimeout(mode === "web" ? webSearch : runSearch, mode === "web" ? 600 : 350);
+});
+document.getElementById("q").addEventListener("keydown", function(ev){
+  if(ev.key === "Enter"){ ev.preventDefault(); clearTimeout(qTimer);
+    if(mode === "web") webSearch(); else runSearch(); }
+});
+document.getElementById("weng").addEventListener("change", function(){
+  if(mode === "web" && wQuery) webSearch();
 });
 document.getElementById("deep").addEventListener("change", function(){
-  if(document.getElementById("q").value.trim()) runSearch();
+  if(mode === "files" && document.getElementById("q").value.trim()) runSearch();
 });
 function runSearch(){
   var q = document.getElementById("q").value.trim();
@@ -386,6 +450,200 @@ function runSearch(){
       empty.textContent = t("empty_q");
     });
 }
+
+/* ---------- интернет-поиск ---------- */
+function setMode(m, skipLoad){
+  mode = m;
+  try{ localStorage.setItem("ih_web_mode", m); }catch(e){}
+  document.getElementById("bweb").classList.toggle("on", m === "web");
+  document.getElementById("weng").style.display = m === "web" ? "" : "none";
+  document.getElementById("deepwrap").style.display = m === "web" ? "none" : "";
+  document.getElementById("bdrives").style.display = m === "web" ? "none" : "";
+  document.getElementById("folders").style.display = m === "web" ? "none" : "";
+  document.getElementById("q").placeholder = t(m === "web" ? "web_search_ph" : "search_ph");
+  document.getElementById("q").value = m === "web" ? wQuery : "";
+  if(m === "web"){
+    files = [];                       // плитки файлов больше не видны
+    if(wQuery) webSearch();
+    else { renderWeb(); setStatus(""); }
+  } else {
+    wsel = {};
+    updWfab();
+    crumbs(curPath);
+    if(!skipLoad){ if(curQ) runSearch(); else loadFolder(curPath || ""); }
+  }
+}
+document.getElementById("bweb").onclick = function(){
+  setMode(mode === "web" ? "files" : "web");
+};
+function webSearch(){
+  var q = document.getElementById("q").value.trim();
+  wQuery = q;
+  if(!q){ wResults = []; renderWeb(); return; }
+  var seq = ++webSeq;
+  setStatus(t("searching"));
+  document.getElementById("empty").style.display = "none";
+  api("/api/web/search?engine=" + encodeURIComponent(document.getElementById("weng").value)
+      + "&q=" + encodeURIComponent(q))
+    .then(function(r){ return r.json().then(function(j){ return {ok: r.ok, code: r.status, j: j}; }); })
+    .then(function(res){
+      if(seq !== webSeq) return;
+      if(!res.ok){ wResults = []; renderWeb(); setStatus("");
+                   toast(t("web_err", {err: res.j.error || res.code}), "err"); return; }
+      wResults = res.j.results || [];
+      renderWeb();
+      setStatus(t("found_n", {n: wResults.length}));
+    })
+    .catch(function(e){ if(seq === webSeq){ setStatus(""); toast(t("err", {err: e}), "err"); } });
+}
+function webMore(){
+  if(!wQuery) return;
+  var seq = ++webSeq;
+  setStatus(t("searching"));
+  api("/api/web/search?engine=" + encodeURIComponent(document.getElementById("weng").value)
+      + "&q=" + encodeURIComponent(wQuery) + "&offset=" + wResults.length)
+    .then(function(r){ return r.json().then(function(j){ return {ok: r.ok, code: r.status, j: j}; }); })
+    .then(function(res){
+      if(seq !== webSeq) return;
+      setStatus("");
+      if(!res.ok){ toast(t("web_err", {err: res.j.error || res.code}), "err"); return; }
+      var add = (res.j.results || []).filter(function(x){
+        return !wResults.some(function(y){ return y.url === x.url; });
+      });
+      if(!add.length){ toast(t("no_more")); return; }
+      wResults = wResults.concat(add);
+      renderWeb();
+      setStatus(t("found_n", {n: wResults.length}));
+    })
+    .catch(function(e){ setStatus(""); toast(t("err", {err: e}), "err"); });
+}
+function renderWeb(){
+  var fbox = document.getElementById("folders"); fbox.innerHTML = "";
+  var grid = document.getElementById("grid"); grid.innerHTML = "";
+  wResults.forEach(function(f, i){ grid.appendChild(wtile(f, i)); });
+  if(wResults.length && wQuery){
+    var more = document.createElement("button");
+    more.className = "tile fold";
+    more.innerHTML = "<span class='fi'>⏬</span><span class='nm'>" + esc(t("more")) + "</span>";
+    more.onclick = webMore;
+    grid.appendChild(more);
+  }
+  crumbsWeb();
+  var empty = document.getElementById("empty");
+  empty.style.display = wResults.length ? "none" : "block";
+  empty.textContent = wQuery ? t("web_no_results") : t("web_hint");
+  document.title = "Image Hunter — 🔎 " + (wQuery || t("web_mode"));
+  updWfab();
+}
+function baseNameUrl(u){
+  var b = String(u).split("?")[0].split("/").pop() || u;
+  try{ return decodeURIComponent(b); }catch(e){ return b; }
+}
+function wtile(f, i){
+  var el = document.createElement("div");
+  el.className = "tile";
+  var box = document.createElement("div"); box.className = "imgbox";
+  var img = document.createElement("img");
+  img.loading = "lazy"; img.decoding = "async";
+  img.src = f.thumb || f.url;
+  img.onerror = function(){
+    if(img.dataset.px){ img.replaceWith(Object.assign(document.createElement("div"),
+        {textContent: "🖼", style: "font-size:26px;opacity:.5"})); return; }
+    img.dataset.px = "1";   // CDN не отдал превью — попробуем через сервер
+    img.src = apiUrl("/api/web/proxy", "&url=" + encodeURIComponent(f.thumb || f.url));
+  };
+  box.appendChild(img);
+  var nm = document.createElement("div"); nm.className = "nm";
+  var dim = (f.w && f.h) ? (f.w + "×" + f.h) : "";
+  nm.innerHTML = esc(f.title || baseNameUrl(f.url))
+               + (dim ? "<span class='sz'>" + dim + "</span>" : "");
+  var cb = document.createElement("button");
+  cb.className = "ckb" + (wsel[f.url] ? " on" : "");
+  cb.textContent = wsel[f.url] ? "✓" : "+";
+  cb.onclick = function(ev){ ev.stopPropagation(); toggleSel(f);
+    cb.className = "ckb" + (wsel[f.url] ? " on" : "");
+    cb.textContent = wsel[f.url] ? "✓" : "+"; };
+  var mb = document.createElement("button"); mb.className = "menu"; mb.textContent = "⋮";
+  mb.onclick = function(ev){ ev.stopPropagation(); wsheet(f, i); };
+  el.appendChild(box); el.appendChild(nm); el.appendChild(cb); el.appendChild(mb);
+  el.onclick = function(){ openWebViewer(i); };
+  return el;
+}
+function wsheet(f, i){
+  sheetItem = {f: f, i: i, web: true};
+  var box = document.getElementById("sheetbox");
+  box.innerHTML = "<div class='st'>" + esc(f.title || baseNameUrl(f.url))
+                + "</div><div class='st' style='opacity:.7'>" + esc(f.url) + "</div>";
+  addAct(box, "↗️ " + t("open"), function(){ closeSheet(); openWebViewer(i); });
+  addAct(box, "⬇️ " + t("download"), function(){ closeSheet();
+      location.href = apiUrl("/api/web/proxy", "&dl=1&url=" + encodeURIComponent(f.url)); });
+  if(!VIEW_ONLY) addAct(box, "💾 " + t("to_folder"), function(){ closeSheet(); webDownload([f.url]); });
+  addAct(box, (wsel[f.url] ? "✕ " : "✓ ") + (wsel[f.url] ? t("unmark") : t("mark")),
+         function(){ closeSheet(); toggleSel(f); renderWeb(); });
+  var cancel = document.createElement("button");
+  cancel.textContent = "✕"; cancel.onclick = closeSheet;
+  box.appendChild(cancel);
+  document.getElementById("sheet").classList.add("on");
+}
+function toggleSel(f){
+  if(wsel[f.url]) delete wsel[f.url]; else wsel[f.url] = f;
+  updWfab();
+}
+function updWfab(){
+  var n = Object.keys(wsel).length;
+  document.getElementById("wfabn").textContent = n;
+  var show = mode === "web" && n > 0 && !VIEW_ONLY && !!lastFolder;
+  document.getElementById("wfab").style.display = show ? "block" : "none";
+  document.getElementById("wfab").title = t("save_to", {name: baseName(lastFolder) || lastFolder});
+}
+document.getElementById("wfab").onclick = function(){
+  var urls = Object.keys(wsel);
+  if(urls.length) webDownload(urls);
+};
+function webDownload(urls){
+  if(VIEW_ONLY){ toast(t("viewonly"), "err"); return; }
+  if(!lastFolder){ toast(t("open_folder_first"), "err"); return; }
+  api("/api/web/download", {method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({urls: urls, folder: lastFolder})})
+    .then(function(r){ return r.json().then(function(j){ return {ok: r.ok, code: r.status, j: j}; }); })
+    .then(function(res){
+      if(res.ok || res.code === 202){
+        toast(t("dl_started", {n: res.j.total}) + " → " + (baseName(lastFolder) || lastFolder), "ok");
+        pollJob(res.j.id);
+      } else toast(t("nobg_fail", {err: res.j.error || res.code}), "err");
+    });
+}
+function openWebViewer(i){
+  vIndex = i;
+  var f = wResults[i];
+  if(!f) return;
+  webView = true;
+  setWebBar(true);
+  document.getElementById("viewer").classList.add("on");
+  document.getElementById("vname").textContent = f.title || baseNameUrl(f.url);
+  var img = document.getElementById("vimg");
+  document.getElementById("spin").textContent = "…";
+  img.style.display = "none";
+  img.onload = function(){ img.style.display = "block";
+                           document.getElementById("spin").textContent = ""; };
+  img.onerror = function(){ document.getElementById("spin").textContent = t("thumb_err"); };
+  // оригинал — через сервер: сайты с проверкой Referer не отдают картинку
+  // странице телефона напрямую
+  img.src = apiUrl("/api/web/proxy", "&url=" + encodeURIComponent(f.url));
+  document.getElementById("vnav").style.display = wResults.length > 1 ? "flex" : "none";
+}
+function setWebBar(web){
+  document.getElementById("vsave").style.display = (web && !VIEW_ONLY) ? "" : "none";
+  document.getElementById("vren").style.display = web ? "none" : "";
+  document.getElementById("vnobg").style.display = web ? "none" : "";
+  document.getElementById("vdel").style.display = web ? "none" : "";
+}
+document.getElementById("vsave").onclick = function(){
+  if(mode === "web" && !VIEW_ONLY){
+    var f = wResults[vIndex];
+    if(f) webDownload([f.url]);
+  }
+};
 
 /* ---------- меню действий ---------- */
 var sheetItem = null;
@@ -460,19 +718,28 @@ function doNobg(paths){
 var jobTimer = null;
 function pollJob(id){
   clearTimeout(jobTimer);
-  api("/api/rembg/status?id=" + encodeURIComponent(id))
+  api("/api/job/status?id=" + encodeURIComponent(id))
     .then(function(r){ return r.json(); })
     .then(function(j){
       if(j.state === "running"){
-        setStatus(t("nobg_progress", {done: j.done, total: j.total, name: j.current||""}));
+        setStatus(j.kind === "webdl"
+          ? t("dl_progress", {done: j.done, total: j.total, name: j.current || ""})
+          : t("nobg_progress", {done: j.done, total: j.total, name: j.current || ""}));
         jobTimer = setTimeout(function(){ pollJob(id); }, 1000);
       } else if(j.state === "done"){
         setStatus("");
-        toast(t("nobg_done", {ok: j.ok, fail: j.fail}), j.fail ? "" : "ok");
-        refresh();
+        if(j.kind === "webdl"){
+          toast(t("dl_done", {ok: j.ok, fail: j.fail}), j.fail ? "" : "ok");
+          wsel = {};
+          updWfab();
+          if(mode === "web") renderWeb();
+        } else {
+          toast(t("nobg_done", {ok: j.ok, fail: j.fail}), j.fail ? "" : "ok");
+          refresh();
+        }
       } else {
         setStatus("");
-        toast(t("nobg_fail", {err: j.error||""}), "err");
+        toast(t("nobg_fail", {err: j.error || ""}), "err");
       }
     })
     .catch(function(){});
@@ -485,6 +752,8 @@ function refresh(){
 var vIndex = -1;
 function openViewer(i){
   vIndex = i;
+  webView = false;
+  setWebBar(false);
   var f = files[i];
   if(!f) return;
   document.getElementById("viewer").classList.add("on");
@@ -499,8 +768,14 @@ function openViewer(i){
   document.getElementById("vnav").style.display = files.length > 1 ? "flex" : "none";
 }
 function closeViewer(){ document.getElementById("viewer").classList.remove("on");
-                        document.getElementById("vimg").src = ""; }
+                        document.getElementById("vimg").src = "";
+                        webView = false; setWebBar(false); }
 function vStep(d){
+  if(webView){
+    if(!wResults.length) return;
+    openWebViewer((vIndex + d + wResults.length) % wResults.length);
+    return;
+  }
   if(!files.length) return;
   openViewer((vIndex + d + files.length) % files.length);
 }
@@ -595,7 +870,8 @@ function boot(){
       (j.version ? " " + j.version : "");
     applyLang();
     // стартовая папка: ?path= из ссылки, иначе первый разрешённый корень
-    // (режим ограничения), иначе — первый диск из списка
+    // (режим ограничения), иначе — первый диск из списка; грузится всегда,
+    // даже в режиме «Интернет»: оттуда берётся папка для «💾 В папку»
     var start = params.get("path") || j.root || "";
     if(start) loadFolder(start);
     else api("/api/drives").then(function(r){ return r.json(); }).then(function(j2){
@@ -603,6 +879,7 @@ function boot(){
               || (j2.drives||[])[0];
       loadFolder(d ? d.path : "");
     }).catch(function(){ loadFolder(""); });
+    setMode(mode, true);   // вернуть сохранённый режим; «Файлы» уже грузятся выше
   }).catch(function(){
     localStorage.removeItem("ih_web_token");
     document.getElementById("needtoken").style.display = "flex";

@@ -10,8 +10,14 @@
 окончательное), «только просмотр», ограничение корней, поиск (вглубь,
 игнор дефиса, предел), диски, журнал, rembg-маршруты, менеджер
 настроек и запуск отдельным процессом (python -m app.server).
+
+С v0.8.1 — ещё и интернет-поиск со скачиванием: локальный мок-сервер
+изображает DuckDuckGo (страница с vqd + JSON i.js), Bing (HTML с m="…")
+и сайт с картинками (PNG/JPEG/не-картинка/403/404); адреса движков
+подменяются на мок, поэтому сеть не нужна.
 """
 
+import html as html_mod
 import io
 import json
 import logging
@@ -19,9 +25,12 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -33,6 +42,8 @@ from PIL import Image
 
 from app.core import i18n
 from app.server import api as api_mod
+from app.server import websearch
+from app.server import webui as webui_mod
 from app.server.api import Api
 from app.server.httpd import IHServer, lan_addresses
 from app.server.manager import ServerManager, generate_token
@@ -91,6 +102,134 @@ def make_server(view_only: bool = False, restrict=None, favorites=None):
     port = srv.start()
     assert srv.wait_ready(5), "сервер не поднялся"
     return api, srv, f"http://127.0.0.1:{port}"
+
+
+# ---------------------------------------------------------------- мок-сервер
+# изображает DuckDuckGo, Bing и сайт с картинками — вместо живой сети
+
+_MOCK_VQD = "4-9876543210"
+
+
+class _Upstream(BaseHTTPRequestHandler):
+    """Выдача и картинки по фиксированным адресам (см. карту в do_GET)."""
+
+    def log_message(self, *args):          # noqa: N802
+        pass
+
+    def _send(self, code: int, body: bytes, ctype: str) -> None:
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):                      # noqa: N802
+        u = urllib.parse.urlsplit(self.path)
+        q = {k: v[0] for k, v in urllib.parse.parse_qs(u.query).items()}
+        host = f"http://127.0.0.1:{self.server.server_address[1]}"
+        if u.path.rstrip("/") == "/ddg":   # страница выдачи: из неё берём vqd
+            if q.get("q") == "fail":
+                self._send(500, b"boom", "text/plain")
+                return
+            page = f"<html><head><title>ddg</title>"
+            page += f"<script>window.vqd='{_MOCK_VQD}';</script></head>"
+            page += "<body>серверная выдача</body></html>"
+            self._send(200, page.encode(), "text/html")
+        elif u.path == "/ijs":             # JSON-выдача картинок
+            if q.get("vqd") != _MOCK_VQD:
+                self._send(403, b"bad vqd", "text/plain")
+                return
+            rows = [
+                {"title": "Cat &amp; dog", "image": host + "/img/cat.png",
+                 "thumbnail": host + "/img/thumb1.png", "url": host + "/page/1",
+                 "width": 800, "height": 600, "source": "cats.example"},
+                # дубликат первой ссылки — выкинется дедупликацией
+                {"title": "dup", "image": host + "/img/cat.png",
+                 "thumbnail": host + "/img/thumb1.png", "url": host + "/page/1",
+                 "width": 800, "height": 600},
+                # не-http ссылка — выкинется проверкой схемы
+                {"title": "bad", "image": "ftp://bad/x.png",
+                 "thumbnail": "", "url": host + "/page/3", "width": 10, "height": 10},
+                {"title": "", "image": host + "/img/photo.jpeg",
+                 "thumbnail": "", "url": host + "/page/4"},
+            ]
+            # как настоящая выдача: сначала чистим (дедуп + схема),
+            # потом отступаем s валидных результатов (параметр s)
+            seen_img, clean = set(), []
+            for row in rows:
+                img = row.get("image") or ""
+                if not img.startswith(("http://", "https://")) or img in seen_img:
+                    continue
+                seen_img.add(img)
+                clean.append(row)
+            s = int(q.get("s") or 0)
+            clean = clean[s:]
+            self._send(200, json.dumps({"results": clean}).encode(),
+                       "application/json")
+        elif u.path == "/bing":            # серверная HTML-выдача с атрибутом m=
+            tiles = [
+                {"murl": host + "/img/noext", "turl": host + "/img/thumb2.png",
+                 "t": "Bing & tile", "w": 640, "h": 480,
+                 "purl": host + "/page/b1"},
+                {"murl": "", "turl": "", "t": "пустая"},
+            ]
+            body = "<html><body>"
+            for meta in tiles:
+                attr = html_mod.escape(json.dumps(meta), quote=True)
+                body += f'<a class="iusc" m="{attr}"></a>'
+            body += '<a class="iusc" m="{битый json"></a>'
+            body += "</body></html>"
+            self._send(200, body.encode(), "text/html")
+        elif u.path == "/img/cat.png":
+            self._send(200, _IMG_PNG, "image/png")
+        elif u.path == "/img/photo.jpeg":
+            self._send(200, _IMG_JPG, "image/jpeg")
+        elif u.path == "/img/noext":       # без расширения — имя из Content-Type
+            self._send(200, _IMG_PNG, "image/png")
+        elif u.path == "/img/notimage":
+            self._send(200, "<html>это не картинка</html>".encode(), "text/html")
+        elif u.path == "/img/denied":
+            self._send(403, b"forbidden", "text/plain")
+        elif u.path == "/img/404":
+            self._send(404, b"nope", "text/plain")
+        else:
+            self._send(404, b"?", "text/plain")
+
+
+def _make_png() -> bytes:
+    buf = io.BytesIO()
+    Image.new("RGB", (60, 40), (10, 120, 200)).save(buf, "PNG")
+    return buf.getvalue()
+
+
+def _make_jpg() -> bytes:
+    buf = io.BytesIO()
+    Image.new("RGB", (30, 20), (200, 120, 10)).save(buf, "JPEG")
+    return buf.getvalue()
+
+
+_IMG_PNG = _make_png()
+_IMG_JPG = _make_jpg()
+
+
+def make_upstream() -> tuple[str, ThreadingHTTPServer]:
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), _Upstream)
+    threading.Thread(target=srv.serve_forever, daemon=True,
+                     name="mock-upstream").start()
+    return f"http://127.0.0.1:{srv.server_address[1]}", srv
+
+
+def wait_job(base: str, jid: str, timeout: float = 20) -> dict:
+    """Дождаться завершения фонового задания (rembg/webdl)."""
+    deadline = time.monotonic() + timeout
+    js = {}
+    while time.monotonic() < deadline:
+        st, body, _ = http(base, "/api/job/status?id=" + urllib.parse.quote(jid))
+        js = json.loads(body)
+        if js.get("state") in ("done", "error"):
+            return js
+        time.sleep(0.1)
+    return js
 
 
 def main() -> int:
@@ -321,6 +460,146 @@ def main() -> int:
         check("rembg: пустой список — 400", st == 400)
         st, body, _ = http(base, "/api/rembg/status?id=none")
         check("rembg/status: неизвестное задание — 404", st == 404)
+
+        # ---------- интернет-поиск и скачивание (мок вместо сети) ----------
+        up, up_srv = make_upstream()
+        saved_urls = (websearch.DDG_BASE, websearch.DDG_IJS, websearch.BING_URL)
+        websearch.DDG_BASE, websearch.DDG_IJS, websearch.BING_URL = \
+            up + "/ddg", up + "/ijs", up + "/bing"
+        try:
+            st, body, _ = http(base, "/api/web/search?engine=ddg&q=cat")
+            j = json.loads(body)
+            check("web/search ddg: 200, дубликат и ftp выкинуты",
+                  st == 200 and len(j["results"]) == 2, str(len(j.get("results", []))))
+            r0 = j["results"][0]
+            check("web/search ddg: поля плитки",
+                  r0["url"] == up + "/img/cat.png"
+                  and r0["thumb"] == up + "/img/thumb1.png"
+                  and r0["title"] == "Cat & dog"      # html-сущности раскрыты
+                  and r0["w"] == 800 and r0["h"] == 600
+                  and r0["source"] == up + "/page/1",   # страница-источник
+                  str(r0))
+            check("web/search ddg: пустой thumb → оригинал",
+                  j["results"][1]["thumb"] == j["results"][1]["url"])
+            st, body, _ = http(base, "/api/web/search?engine=ddg&q=cat&offset=1")
+            j = json.loads(body)
+            check("web/search ddg: offset (для кнопки «Ещё»)",
+                  st == 200 and len(j["results"]) == 1
+                  and j["results"][0]["url"] == up + "/img/photo.jpeg",
+                  str(len(j.get("results", []))))
+            st, body, _ = http(base, "/api/web/search?engine=bing&q=cat")
+            j = json.loads(body)
+            check("web/search bing: m= разобран, битая плитка не мешает",
+                  st == 200 and len(j["results"]) == 1
+                  and j["results"][0]["title"] == "Bing & tile"
+                  and j["results"][0]["w"] == 640 and j["results"][0]["h"] == 480
+                  and j["results"][0]["url"] == up + "/img/noext",
+                  str(j.get("results")))
+            st, body, _ = http(base, "/api/web/search?engine=ddg&q=")
+            check("web/search: пустой запрос — 400", st == 400)
+            st, body, _ = http(base, "/api/web/search?engine=altavista&q=cat")
+            check("web/search: неизвестный движок — 400", st == 400)
+            st, body, _ = http(base, "/api/web/search?engine=ddg&q=fail")
+            check("web/search: поисковик не ответил — 502", st == 502,
+                  str(st) + " " + json.loads(body).get("error", "")[:60])
+
+            # прокси: просмотр и «скачать на устройство»
+            st, body, hdrs = http(base, "/api/web/proxy?url=" + q(up + "/img/cat.png"))
+            check("web/proxy: картинка честная", st == 200 and body == _IMG_PNG
+                  and hdrs.get("Content-Type", "").startswith("image/png"), str(st))
+            st, body, hdrs = http(base, "/api/web/proxy?url=" + q(up + "/img/cat.png")
+                                  + "&dl=1")
+            check("web/proxy: dl=1 — attachment с именем файла",
+                  st == 200 and 'attachment; filename="cat.png"'
+                  in (hdrs.get("Content-Disposition") or ""),
+                  hdrs.get("Content-Disposition") or "")
+            st, body, _ = http(base, "/api/web/proxy?url=ftp://bad/x")
+            check("web/proxy: не http(s) — 400", st == 400)
+            st, body, _ = http(base, "/api/web/proxy?url=" + q(up + "/img/404"))
+            check("web/proxy: HTTP 404 — 502", st == 502)
+            st, body, _ = http(base, "/api/web/proxy?url=" + q(up + "/img/notimage"))
+            check("web/proxy: не-картинка — 502 с причиной",
+                  st == 502 and "не картинка" in json.loads(body).get("error", ""))
+            st, body, _ = http(base, "/api/web/proxy?url=" + q(up + "/img/denied"))
+            check("web/proxy: 403 после лестницы попыток — 502", st == 502)
+
+            # скачивание в папку на компьютере — фоновым заданием
+            dl_urls = [up + "/img/cat.png", up + "/img/photo.jpeg", up + "/img/noext",
+                       up + "/img/notimage", up + "/img/denied", "ftp://bad/x",
+                       up + "/img/cat.png"]   # дубликат — выкинется
+            st, body, _ = http(base, "/api/web/download",
+                               data={"urls": dl_urls, "folder": tmp}, method="POST")
+            j = json.loads(body)
+            check("web/download: 202, дедупликация ссылок",
+                  st == 202 and j.get("total") == 5, str(j))
+            js = wait_job(base, j["id"])
+            check("web/download: задание завершено, kind=webdl",
+                  js.get("state") == "done" and js.get("kind") == "webdl", str(js)[:120])
+            check("web/download: скачано 3, ошибок 2",
+                  js.get("ok") == 3 and js.get("fail") == 2,
+                  f"ok={js.get('ok')} fail={js.get('fail')}")
+            check("web/download: файлы на диске",
+                  os.path.isfile(os.path.join(tmp, "cat.png"))
+                  and os.path.isfile(os.path.join(tmp, "photo.jpg"))    # .jpeg → .jpg, как у программы
+                  and os.path.isfile(os.path.join(tmp, "noext.png")),   # имя из Content-Type
+                  str(sorted(os.listdir(tmp))))
+            errs = {e["url"].rsplit("/", 1)[-1]: e["error"] for e in js.get("errors", [])}
+            check("web/download: ошибки с причинами",
+                  "notimage" in errs and "denied" in errs, str(errs)[:120])
+            # имя из Content-Type: ссылка без расширения
+            check("filename_from_url: подмена расширения",
+                  websearch.filename_from_url(up + "/img/noext", "image/png") == "noext.png"
+                  and websearch.filename_from_url(up + "/img/noext", "") == "noext.jpg")
+
+            # повторное скачивание того же имени — «cat-1.png», не затирание
+            st, body, _ = http(base, "/api/web/download",
+                               data={"urls": [up + "/img/cat.png"], "folder": tmp},
+                               method="POST")
+            j = json.loads(body)
+            js = wait_job(base, j["id"])
+            check("web/download: совпадение имени → cat-1.png",
+                  js.get("ok") == 1 and os.path.isfile(os.path.join(tmp, "cat-1.png")),
+                  str(sorted(os.listdir(tmp))))
+
+            # «только просмотр»: поиск работает, скачивание в папку запрещено
+            api.view_only = True
+            st, _, _ = http(base, "/api/web/download",
+                            data={"urls": [up + "/img/cat.png"], "folder": tmp},
+                            method="POST")
+            check("view_only: web/download — 403", st == 403)
+            st, _, _ = http(base, "/api/web/search?engine=ddg&q=cat")
+            check("view_only: web/search работает (чтение)", st == 200)
+            api.view_only = False
+
+            # ограничение корней: папка вне корней — отказ, внутри — работает
+            api3, srv3, base3 = make_server(restrict=[tmp])
+            try:
+                st, _, _ = http(base3, "/api/web/download",
+                                data={"urls": [up + "/img/cat.png"],
+                                      "folder": tempfile.gettempdir()}, method="POST")
+                check("restrict: web/download вне корней — 400", st == 400)
+                st, body, _ = http(base3, "/api/web/download",
+                                   data={"urls": [up + "/img/cat.png"], "folder": tmp},
+                                   method="POST")
+                check("restrict: web/download в разрешённый корень — 202", st == 202)
+                if st == 202:
+                    js = wait_job(base3, json.loads(body)["id"])
+                    check("restrict: файл скачался в разрешённый корень",
+                          js.get("ok") == 1 and os.path.isfile(
+                              os.path.join(tmp, "cat-2.png")), str(js)[:100])
+            finally:
+                srv3.stop()
+            st, _, _ = http(base, "/api/job/status?id=none")
+            check("job/status: неизвестное задание — 404", st == 404)
+
+            # интерфейс: кнопка 🔎, выбор поисковика, маршруты
+            for needle in ('id="bweb"', 'id="weng"', "/api/web/search",
+                           "/api/web/proxy", "/api/web/download", "id=\"wfab\"",
+                           "web_search_ph", "dl_done"):
+                check(f"UI: страница содержит {needle}", needle in webui_mod.PAGE)
+        finally:
+            websearch.DDG_BASE, websearch.DDG_IJS, websearch.BING_URL = saved_urls
+            up_srv.shutdown()
 
         # ---------- «только просмотр» ----------
         api.view_only = True

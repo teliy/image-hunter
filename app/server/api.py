@@ -17,7 +17,12 @@
 * поиск по имени — однопроходный ``os.scandir`` (как в программе), с
   опциями «вглубь подпапок» и «игнорировать дефис», с пределом результатов;
 * удаление фона — тот же формат результата «X_nobg.png», тот же перехват
-  скачивания модели; работа идёт фоновым заданием с опросом статуса.
+  скачивания модели; работа идёт фоновым заданием с опросом статуса;
+* поиск картинок в интернете и их скачивание — те же правила имён и
+  лестница Referer, что у загрузчика программы (копии правил живут в
+  ``app/server/websearch.py``, чтобы пакет не тянул PySide6); скачивание
+  в папку — тоже фоновое задание с опросом статуса (общий механизм с
+  rembg, статус по обоим видам заданий — :meth:`job_status`).
 
 Всё потокобезопасно: ThreadingHTTPServer зовёт методы из разных потоков.
 """
@@ -36,6 +41,9 @@ import threading
 
 from PIL import Image, ImageOps
 
+from app.core import applog
+from app.server import websearch
+
 try:                                   # AVIF-кодек ставится вместе с программой
     import pillow_avif  # noqa: F401
 except Exception:                      # noqa: BLE001 — AVIF просто не откроется
@@ -46,6 +54,7 @@ IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".avif", ".avifs
 
 THUMB_SIZE_DEFAULT = 320          # размер миниатюры для телефона (px, большая сторона)
 SEARCH_MAX = 2000                 # предел результатов поиска (дальше — флаг truncated)
+WEBDL_MAX = 40                    # ссылок за одно задание скачивания из интернета
 _LOG_RING_MAX = 400               # строк журнала в кольцевом буфере
 _TRASH_CACHE: dict[str, bool] = {}  # корень диска -> есть ли корзина (как в программе)
 
@@ -480,17 +489,12 @@ class Api:
         if not jobs:
             raise ValueError("нет файлов для обработки (или это уже результаты *_nobg)")
         model = model or "u2netp"
-        with self._lock:
-            self._job_seq += 1
-            job_id = f"j{self._job_seq}-{secrets.token_hex(3)}"
-            job = {"id": job_id, "state": "running", "done": 0, "total": len(jobs),
-                   "current": os.path.basename(jobs[0][0]), "ok": 0, "fail": 0,
-                   "errors": [], "model": model}
-            self._jobs[job_id] = job
+        job = self._job_start("rembg", {"total": len(jobs), "model": model,
+                                         "current": os.path.basename(jobs[0][0])})
         th = threading.Thread(target=self._rembg_run, args=(job, jobs, model),
-                              daemon=True, name=f"rembg-{job_id}")
+                              daemon=True, name=f"rembg-{job['id']}")
         th.start()
-        return {"id": job_id, "total": len(jobs)}
+        return {"id": job["id"], "total": len(jobs)}
 
     def _rembg_run(self, job: dict, jobs: list[tuple[str, str]], model: str) -> None:
         from app.ui import rembg_manager
@@ -521,11 +525,15 @@ class Api:
             job["done"] += 1
         job["state"] = "done"
 
-    def rembg_status(self, job_id: str) -> dict:
+    def job_status(self, job_id: str) -> dict:
+        """Статус фонового задания (rembg или скачивание из интернета)."""
         job = self._jobs.get(job_id)
         if job is None:
             raise KeyError(job_id)
         return {k: v for k, v in job.items()}
+
+    def rembg_status(self, job_id: str) -> dict:
+        return self.job_status(job_id)
 
     def rembg_models(self) -> list[str]:
         try:
@@ -534,10 +542,106 @@ class Api:
         except Exception:                      # noqa: BLE001
             return ["u2netp"]
 
+    # ------------------------------------------------------------- интернет-поиск
+
+    def web_search(self, engine: str, query: str, offset: int = 0) -> dict:
+        """Поиск картинок в интернете (DuckDuckGo/Bing — без браузера).
+
+        Чтение — доступно и в режиме «только просмотр»: поиск ничего
+        не меняет на компьютере. Ошибки поисковика — WebSearchError
+        (HTTP-слой отвечает 502), пустой запрос/неизвестный движок —
+        ValueError (400).
+        """
+        return websearch.search_web(query, engine=engine, offset=offset)
+
+    def web_proxy(self, url: str) -> tuple[bytes, str, str]:
+        """Картинка по внешней ссылке: (байты, content-type, имя файла).
+
+        Через сервер телефон смотрит оригинал и сохраняет его на устройство:
+        многие сайты не отдают картинки «чужим» страницам (проверка
+        Referer) — лестница попыток из :mod:`app.server.websearch` это
+        обходит, как у загрузчика программы.
+        """
+        url = (url or "").strip()
+        if not url.startswith(("http://", "https://")):
+            raise ValueError("поддерживаются только http/https-ссылки")
+        data, ctype, final = websearch.fetch_image(url)
+        return data, ctype or "application/octet-stream", \
+            websearch.filename_from_url(final, ctype)
+
+    def web_download_start(self, urls: list[str], folder: str) -> dict:
+        """Скачать картинки по ссылкам в папку на компьютере — фоновым заданием.
+
+        Ссылки дедуплицируются и ограничиваются WEBDL_MAX; папка должна
+        быть существующей и внутри разрешённых корней; режим «только
+        просмотр» запрещает скачивание (оно меняет файлы). Возвращает
+        ``{"id": …, "total": n}``; статус — :meth:`job_status`.
+        """
+        self._require_write()
+        folder = self._check_path(folder)
+        if not os.path.isdir(folder):
+            raise FileNotFoundError(folder)
+        seen: set[str] = set()
+        items: list[str] = []
+        for raw in urls or []:               # дедупликация — как Downloader.add
+            url = (raw or "").strip()
+            if not url or not url.startswith(("http://", "https://")):
+                continue
+            if url in seen:
+                continue
+            seen.add(url)
+            items.append(url)
+            if len(items) >= WEBDL_MAX:
+                break
+        if not items:
+            raise ValueError("нет ссылок для скачивания")
+        job = self._job_start("webdl", {"total": len(items), "folder": folder,
+                                        "current": ""})
+        th = threading.Thread(target=self._webdl_run, args=(job, items, folder),
+                              daemon=True, name=f"webdl-{job['id']}")
+        th.start()
+        applog.event("log.event.webdl_start", n=len(items),
+                     folder=os.path.basename(folder) or folder)
+        return {"id": job["id"], "total": len(items)}
+
+    def _webdl_run(self, job: dict, urls: list[str], folder: str) -> None:
+        """Рабочий поток скачивания: лестница Referer, правила имён программы."""
+        for url in urls:
+            job["current"] = url.rsplit("/", 1)[-1][:80] or url
+            try:
+                data, ctype, final = websearch.fetch_image(url)
+                fname = websearch.filename_from_url(final, ctype)
+                fd, path = websearch.create_exclusive(folder, fname)
+                with os.fdopen(fd, "wb") as f:
+                    f.write(data)
+                job["ok"] += 1
+                applog.event("log.event.webdl", name=os.path.basename(path))
+            except Exception as exc:           # noqa: BLE001 — ошибка ссылки не роняет пачку
+                job["fail"] += 1
+                job["errors"].append({"url": url, "error": str(exc)[:200]})
+                applog.event("log.event.webdl_err",
+                             url=url.rsplit("/", 1)[-1][:80] or url,
+                             err=str(exc)[:120])
+            job["done"] += 1
+        job["state"] = "done"
+
     # ------------------------------------------------------------- журнал
 
     def log_tail(self, n: int = 100) -> dict:
         return {"lines": self.ring.tail(n)}
+
+    # ------------------------------------------------------------- задания
+
+    def _job_start(self, kind: str, fields: dict) -> dict:
+        """Завести карточку фонового задания (общий механизм rembg/webdl)."""
+        with self._lock:
+            self._job_seq += 1
+            job_id = f"j{self._job_seq}-{secrets.token_hex(3)}"
+            job = {"id": job_id, "kind": kind, "state": "running", "done": 0,
+                   "ok": 0, "fail": 0, "errors": []}
+            job.update(fields)
+            self._jobs[job_id] = job
+        return job
 
 
 # ---------------------------------------------------------------- помощники
