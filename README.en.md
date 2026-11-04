@@ -10,6 +10,18 @@ Written in Python + PySide6 (Qt6): heavy operations (rendering, network, image d
 
 > **⚡ Special focus — fast work over the network and with network drives** (SMB/NAS, mounted shares): a folder is read in one request, thumbnails are built only for the visible part of the list, ready previews are cached on disk. A network folder with thousands of photos opens without lags — neither in the app nor on the network. Details in [“Fast work over the network and with network drives”](#fast-work-over-the-network-and-with-network-drives).
 
+## Web server: control the app from your phone (v0.8.0)
+
+The **🌐** button in the status bar starts a small web server — a pluggable, fully removable module (`app/server/`): a phone on the same network opens the address from the QR code and gets almost the whole app in a mobile-friendly interface.
+
+**Available from the phone:** folder feed with thumbnails (the same disk cache the app uses), name search (deep into subfolders, “ignore dash”), full-screen viewing with swipes, renaming, delete to recycle bin or permanently, rembg background removal with progress, drives and favorite folders, the log.
+
+**Security:** access by token (part of the address, generated automatically; a cookie remembers it after the first visit), a “view only” mode blocks remote changes, and root restriction is available for headless runs. The server lives while the app is open and dies with it; autostart is optional. Nothing is listening until you press “Start”.
+
+**Standalone process** (headless, for a folder without a GUI): `python -m app.server --port 8477 --token MY-TOKEN` — the same API without the GUI.
+
+Tests: `scripts/test_server.py` — real HTTP requests on a random port: token (header/link/cookie), the UI page, the folder feed, thumbnail cache (including reuse of the app’s cache), Range/206, downloads, rename rules, deletion, view-only, root restriction, search with limits and dash handling, rembg routes, settings manager, CLI process.
+
 ## Fast work over the network and with network drives
 
 Image Hunter was written from day one for the scenario “photos live on a network drive (NAS, Windows share, mounted folder) and the pipe is not infinite”. Ordinary viewers die in this scenario: a list of 10 000 files means 10 000 stat calls over the network, and bulk thumbnail loading clogs the pipe. Below is what exactly is done and why it works.

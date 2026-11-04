@@ -975,6 +975,104 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ru": "Доступна новая версия: {remote}",
         "en": "New version available: {remote}",
         "zh": "发现新版本：{remote}"},
+
+    # ---------- веб-сервер: удалённый доступ с телефона (v0.8.0) ----------
+    "server.title": {
+        "ru": "🌐 Веб-сервер — доступ с телефона",
+        "en": "🌐 Web server — phone access",
+        "zh": "🌐 Web 服务器 — 手机访问"},
+    "server.tip": {
+        "ru": "Веб-сервер: открыть программу с телефона (адрес и QR-код)",
+        "en": "Web server: open the app from your phone (address and QR code)",
+        "zh": "Web 服务器：从手机访问程序（地址和二维码）"},
+    "server.run": {
+        "ru": "▶ Запустить сервер",
+        "en": "▶ Start the server",
+        "zh": "▶ 启动服务器"},
+    "server.stop": {
+        "ru": "⏹ Остановить сервер",
+        "en": "⏹ Stop the server",
+        "zh": "⏹ 停止服务器"},
+    "server.running": {
+        "ru": "Сервер работает — порт {port}",
+        "en": "Server is running — port {port}",
+        "zh": "服务器运行中 — 端口 {port}"},
+    "server.stopped": {
+        "ru": "Сервер остановлен (порт {port} сохранён)",
+        "en": "Server stopped (port {port} saved)",
+        "zh": "服务器已停止（端口 {port} 已保存）"},
+    "server.port_lbl": {
+        "ru": "Порт:",
+        "en": "Port:",
+        "zh": "端口："},
+    "server.token_lbl": {
+        "ru": "Токен доступа (часть адреса):",
+        "en": "Access token (part of the address):",
+        "zh": "访问令牌（地址的一部分）："},
+    "server.token_gen": {
+        "ru": "Сгенерировать новый токен",
+        "en": "Generate a new token",
+        "zh": "生成新令牌"},
+    "server.token_copy": {
+        "ru": "Скопировать адрес с токеном",
+        "en": "Copy the address with the token",
+        "zh": "复制带令牌的地址"},
+    "server.view_only": {
+        "ru": "Только просмотр — без переименования, удаления и удаления фона",
+        "en": "View only — no rename, delete or background removal",
+        "zh": "仅查看 — 禁止重命名、删除和背景移除"},
+    "server.autostart": {
+        "ru": "Запускать сервер вместе с программой",
+        "en": "Start the server together with the app",
+        "zh": "随程序一起启动服务器"},
+    "server.apply": {
+        "ru": "Применить (и перезапустить сервер, если он работал)",
+        "en": "Apply (and restart the server if it was running)",
+        "zh": "应用（如服务器在运行则重启）"},
+    "server.open_browser": {
+        "ru": "🖥 Открыть в браузере на этом компьютере",
+        "en": "🖥 Open in the browser on this computer",
+        "zh": "🖥 在本机浏览器中打开"},
+    "server.urls_lbl": {
+        "ru": "Откройте на телефоне (устройства — в одной сети):",
+        "en": "Open on your phone (same network):",
+        "zh": "在手机上打开（需同一网络）："},
+    "server.qr_none": {
+        "ru": "QR-код недоступен: библиотека qrcode не установлена",
+        "en": "QR code unavailable: the qrcode library is not installed",
+        "zh": "二维码不可用：未安装 qrcode 库"},
+    "server.qr_install": {
+        "ru": "📦 Установить поддержку QR-кода (qrcode)",
+        "en": "📦 Install QR support (qrcode)",
+        "zh": "📦 安装二维码支持（qrcode）"},
+    "server.qr_installing": {
+        "ru": "Устанавливаю qrcode…",
+        "en": "Installing qrcode…",
+        "zh": "正在安装 qrcode…"},
+    "server.qr_fail": {
+        "ru": "Не удалось установить qrcode: {tail}",
+        "en": "Could not install qrcode: {tail}",
+        "zh": "无法安装 qrcode：{tail}"},
+    "server.firewall": {
+        "ru": "Совет: телефон должен быть в той же сети, что и компьютер. Если не подключается — разрешите Image Hunter доступ к частным сетям в брандмауэре.",
+        "en": "Tip: the phone must be on the same network as the computer. If it will not connect — allow Image Hunter through the firewall for private networks.",
+        "zh": "提示：手机需与电脑在同一网络。如果连不上，请在防火墙中允许 Image Hunter 访问专用网络。"},
+    "server.mode_rw": {
+        "ru": "полный доступ",
+        "en": "full access",
+        "zh": "完全访问"},
+    "server.mode_ro": {
+        "ru": "только просмотр",
+        "en": "view only",
+        "zh": "仅查看"},
+    "log.event.server_start": {
+        "ru": "🌐 Веб-сервер запущен: порт {port}, режим: {mode}",
+        "en": "🌐 Web server started: port {port}, mode: {mode}",
+        "zh": "🌐 Web 服务器已启动：端口 {port}，模式：{mode}"},
+    "log.event.server_stop": {
+        "ru": "🌐 Веб-сервер остановлен (порт {port})",
+        "en": "🌐 Web server stopped (port {port})",
+        "zh": "🌐 Web 服务器已停止（端口 {port}）"},
     # ---------- отладка производительности: тайминги операций в журнале ----------
     "log.event.timing": {
         "ru": "⏱ {op}: {ms} мс{extra}",

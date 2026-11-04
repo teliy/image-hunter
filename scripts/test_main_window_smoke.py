@@ -1,7 +1,7 @@
-"""Оффлайн-смоук главного окна целиком (v0.7.17).
+"""Оффлайн-смоук главного окна целиком (v0.8.0).
 
 Проверяется: MainWindow собирается со всеми вкладками (включая новые
-мультивкладки поиска), заголовок содержит версию 0.7.17, наружные сигналы
+мультивкладки поиска), заголовок содержит версию 0.8.0, наружные сигналы
 мультивкладок подключены (теперь с именем поисковика), кнопки сохранения
 живы, статус «Моих картинок» — в строке статуса внизу окна.
 
@@ -45,8 +45,8 @@ def main() -> int:
     win.show()
     app.processEvents()
 
-    check("версия 0.7.17", __version__ == "0.7.17", __version__)
-    check("в заголовке версия", "0.7.17" in win.windowTitle(), win.windowTitle())
+    check("версия 0.8.0", __version__ == "0.8.0", __version__)
+    check("в заголовке версия", "0.8.0" in win.windowTitle(), win.windowTitle())
     # сигналы поиска несут имя поисковика (v0.7.8): emit с 3 аргументами
     # через релей SearchTabs доходит до приёмника MainWindow
     got_engines: list[str] = []
@@ -80,6 +80,19 @@ def main() -> int:
           win.lang_box.geometry().x() < win.btn_upd.geometry().x(),
           f"{win.lang_box.geometry().x()} vs {win.btn_upd.geometry().x()}")
     check("текст статуса вьюера виден", bool(st.text()), st.text())
+
+    # веб-сервер (v0.8.0): кнопка «🌐» в статус-баре, модуль ленивый
+    check("кнопка веб-сервера на месте",
+          hasattr(win, "btn_server") and "🌐" in win.btn_server.text(),
+          win.btn_server.text() if hasattr(win, "btn_server") else "?")
+    check("кнопка веб-сервера левее языка",
+          win.btn_server.geometry().x() < win.lang_box.geometry().x(),
+          f"{win.btn_server.geometry().x()} vs {win.lang_box.geometry().x()}")
+    check("менеджер сервера ленивый (не создан)",
+          getattr(win, "_server_mgr", "no-attr") is None)
+    check("список импортированных модулей без app.server",
+          not any(m == "app.server" or m.startswith("app.server.")
+                  for m in list(sys.modules)))
 
     print()
     if FAILURES:

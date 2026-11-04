@@ -77,6 +77,19 @@ class MainWindow(QMainWindow):
         # теперь живёт здесь, внизу: слева от языка и кнопки обновления (v0.7.7)
         self._status.addPermanentWidget(self.local.status)
 
+        # веб-сервер (v0.8.0): кнопка «🌐» открывает окно удалённого доступа.
+        # Модуль app/server ленивый: до первого клика не импортируется и не
+        # занимает ни портов, ни потоков — удаление папки app/server и этой
+        # кнопки полностью убирает модуль из программы
+        self._server_mgr = None          # app.server.manager.ServerManager
+        self._server_dlg = None          # app.server.dialog.ServerDialog
+        self.btn_server = QToolButton()
+        self.btn_server.setText("🌐")
+        self.btn_server.setToolTip(tr("server.tip"))
+        self.btn_server.setAutoRaise(True)
+        self.btn_server.clicked.connect(self.show_server_dialog)
+        self._status.addPermanentWidget(self.btn_server)
+
         # выбор языка интерфейса: Русский / English / 中文 (запоминается)
         self.lang_box = QComboBox()
         for _code, name in i18n.LANG_ITEMS:
@@ -100,6 +113,13 @@ class MainWindow(QMainWindow):
         self.act_upd.setShortcut(QKeySequence("Ctrl+U"))
         self.act_about = self._help_menu.addAction(tr("main.about_action"), self._about)
 
+        # автостарт веб-сервера (v0.8.0): настройки мог включить заранее;
+        # поднимаем чуть позже показа окна — старт программы не ждёт сеть
+        from PySide6.QtCore import QSettings
+        if QSettings("ImageHunter", "ImageHunter").value(
+                "server/autostart", False, type=bool):
+            QTimer.singleShot(1200, self._server_autostart)
+
         # найденные на странице выдачи ссылки → сразу в загрузки;
         # отмеченные плитки → сохранение в выбранном формате
         self.web.images_found.connect(self._on_images_found)
@@ -110,9 +130,41 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:  # noqa: N802 (Qt API)
         """При закрытии запомнить последнюю папку и запрос поиска —
-        оба восстановятся при следующем запуске."""
+        оба восстановятся при следующем запуске. Веб-сервер, если работал,
+        останавливается: после выхода программы доступ с телефона закрыт."""
         self.local.save_state()
+        if self._server_mgr is not None:
+            self._server_mgr.stop()
         super().closeEvent(event)
+
+    # ---------- веб-сервер (удалённый доступ, v0.8.0) ----------
+
+    def show_server_dialog(self) -> None:
+        """Окно веб-сервера — лениво: ни импорта, ни объектов до первого клика."""
+        if self._server_mgr is None:
+            from app.server.manager import ServerManager
+            self._server_mgr = ServerManager()
+            self._server_mgr.state_changed.connect(self._on_server_state)
+        if self._server_dlg is None:
+            from app.server.dialog import ServerDialog
+            self._server_dlg = ServerDialog(self._server_mgr, self)
+        self._server_dlg.show()
+        self._server_dlg.raise_()
+        self._server_dlg.activateWindow()
+
+    def _server_autostart(self) -> None:
+        if self._server_mgr is None:
+            from app.server.manager import ServerManager
+            self._server_mgr = ServerManager()
+            self._server_mgr.state_changed.connect(self._on_server_state)
+        self._server_mgr.start()
+
+    def _on_server_state(self, running: bool) -> None:
+        """Кнопка «🌐» подсвечена, пока сервер работает, — состояние видно
+        из любой вкладки без открывания окна настроек."""
+        self.btn_server.setText("🌐◀" if running else "🌐")
+        self.btn_server.setStyleSheet(
+            "color:#569cd6; font-weight:bold;" if running else "")
 
     # ---------- язык интерфейса ----------
 
@@ -135,6 +187,7 @@ class MainWindow(QMainWindow):
         self.log_view.retranslate()
         self.btn_upd.setText("🔄 " + tr("main.update"))
         self.btn_upd.setToolTip(tr("main.update_tip"))
+        self.btn_server.setToolTip(tr("server.tip"))
         self.lang_box.setToolTip(tr("main.lang_tip"))
         self._help_menu.setTitle(tr("menu.help"))
         self.act_upd.setText(tr("main.check_updates"))
