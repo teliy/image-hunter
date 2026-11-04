@@ -1,9 +1,10 @@
-"""Оффлайн-смоук главного окна целиком (v0.8.1).
+"""Оффлайн-смоук главного окна целиком (v0.8.2).
 
 Проверяется: MainWindow собирается со всеми вкладками (включая новые
-мультивкладки поиска), заголовок содержит версию 0.8.1, наружные сигналы
+мультивкладки поиска), заголовок содержит версию 0.8.2, наружные сигналы
 мультивкладок подключены (теперь с именем поисковика), кнопки сохранения
-живы, статус «Моих картинок» — в строке статуса внизу окна.
+живы, статус «Моих картинок» — в строке статуса внизу окна, меню «Модули»
+на месте слева от «Справки».
 
 Запуск: QT_QPA_PLATFORM=offscreen QTWEBENGINE_CHROMIUM_FLAGS="--no-sandbox --disable-gpu" \
         python scripts/test_main_window_smoke.py
@@ -45,8 +46,8 @@ def main() -> int:
     win.show()
     app.processEvents()
 
-    check("версия 0.8.1", __version__ == "0.8.1", __version__)
-    check("в заголовке версия", "0.8.1" in win.windowTitle(), win.windowTitle())
+    check("версия 0.8.2", __version__ == "0.8.2", __version__)
+    check("в заголовке версия", "0.8.2" in win.windowTitle(), win.windowTitle())
     # сигналы поиска несут имя поисковика (v0.7.8): emit с 3 аргументами
     # через релей SearchTabs доходит до приёмника MainWindow
     got_engines: list[str] = []
@@ -81,13 +82,15 @@ def main() -> int:
           f"{win.lang_box.geometry().x()} vs {win.btn_upd.geometry().x()}")
     check("текст статуса вьюера виден", bool(st.text()), st.text())
 
-    # веб-сервер (v0.8.1): кнопка «🌐» в статус-баре, модуль ленивый
-    check("кнопка веб-сервера на месте",
-          hasattr(win, "btn_server") and "🌐" in win.btn_server.text(),
-          win.btn_server.text() if hasattr(win, "btn_server") else "?")
-    check("кнопка веб-сервера левее языка",
-          win.btn_server.geometry().x() < win.lang_box.geometry().x(),
-          f"{win.btn_server.geometry().x()} vs {win.lang_box.geometry().x()}")
+    # меню «Модули» (v0.8.2): слева от «Справки», модуль сервера ленивый
+    top = win.menuBar().actions()
+    check("меню «Модули» в строке меню",
+          len(top) >= 2 and top[-2].text() == i18n.tr("menu.modules"),
+          str([a.text() for a in top]))
+    check("«Справка» правее «Модулей»",
+          top[-1].text() == i18n.tr("menu.help"), top[-1].text())
+    check("кнопки веб-сервера в статус-баре больше нет",
+          not hasattr(win, "btn_server"))
     check("менеджер сервера ленивый (не создан)",
           getattr(win, "_server_mgr", "no-attr") is None)
     check("список импортированных модулей без app.server",

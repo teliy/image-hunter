@@ -216,24 +216,18 @@ def main() -> int:
     st.setValue("viewer/rembg_model", "")
 
     # ---------- контекстное меню ----------
+    # (v0.8.2: установка/удаление/модель переехали в меню «Модули» главного
+    # окна — их состав проверяет scripts/test_modules_menu.py; в меню ленты
+    # осталась только файловая операция «Удалить фон»)
     menu, acts = viewer._build_list_menu()
     texts = [a.text() for a in menu.actions()]
     check("меню: «Удалить фон» в меню",
           i18n.tr("viewer.rembg") in texts, str(texts))
-    check("меню: подменю «Модель»",
-          i18n.tr("viewer.rembg_model_menu") in texts)
-    model_menu = next((a.menu() for a in menu.actions()
-                       if a.menu()
-                       and a.text() == i18n.tr("viewer.rembg_model_menu")), None)
-    got_models = [a.text() for a in model_menu.actions()] if model_menu else []
-    check("меню: три модели",
-          len(got_models) == len(rembg_manager.REMBG_MODELS), str(got_models))
-    if rembg_manager.is_installed():
-        check("меню: пункт удаления модуля",
-              "uninst" in acts and "inst" not in acts, str(list(acts)))
-    else:
-        check("меню: пункт установки модуля",
-              "inst" in acts and "uninst" not in acts, str(list(acts)))
+    check("меню: без подменю «Модель»",
+          not any(a.menu() for a in menu.actions()), str(texts))
+    check("меню: без пунктов установки/удаления модуля",
+          i18n.tr("viewer.rembg_menu_install") not in texts
+          and i18n.tr("viewer.rembg_menu_uninstall") not in texts, str(texts))
     menu.close()
 
     # ---------- InstallTask: аргументы pip и доставка сигнала ----------

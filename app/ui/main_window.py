@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 import os
 
-from PySide6.QtCore import QSize, QThreadPool, QTimer
+from PySide6.QtCore import QSettings, QSize, QThreadPool, QTimer
 from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
@@ -31,6 +31,7 @@ from app.ui.app_icon import icon as app_icon
 from app.ui.downloads import DownloadsView
 from app.ui.local_viewer import LocalViewer
 from app.ui.log_view import LogView
+from app.ui.modules_menu import ModulesMenu
 from app.ui.search_tabs import SearchTabs
 
 
@@ -77,18 +78,12 @@ class MainWindow(QMainWindow):
         # теперь живёт здесь, внизу: слева от языка и кнопки обновления (v0.7.7)
         self._status.addPermanentWidget(self.local.status)
 
-        # веб-сервер (v0.8.0): кнопка «🌐» открывает окно удалённого доступа.
-        # Модуль app/server ленивый: до первого клика не импортируется и не
-        # занимает ни портов, ни потоков — удаление папки app/server и этой
-        # кнопки полностью убирает модуль из программы
+        # веб-сервер (v0.8.0): модуль app/server ленивый — до первого
+        # действия (пункт меню «Модули», автостарт) не импортируется и не
+        # занимает ни портов, ни потоков; удаление папки app/server и
+        # раздела меню полностью убирает модуль из программы
         self._server_mgr = None          # app.server.manager.ServerManager
         self._server_dlg = None          # app.server.dialog.ServerDialog
-        self.btn_server = QToolButton()
-        self.btn_server.setText("🌐")
-        self.btn_server.setToolTip(tr("server.tip"))
-        self.btn_server.setAutoRaise(True)
-        self.btn_server.clicked.connect(self.show_server_dialog)
-        self._status.addPermanentWidget(self.btn_server)
 
         # выбор языка интерфейса: Русский / English / 中文 (запоминается)
         self.lang_box = QComboBox()
@@ -108,6 +103,11 @@ class MainWindow(QMainWindow):
         self.btn_upd.clicked.connect(self.check_updates)
         self._status.addPermanentWidget(self.btn_upd)
 
+        # меню «Модули» (v0.8.2) — слева от «Справки»: установка, удаление
+        # и настройки всех подключаемых модулей в одном месте
+        self._modules_menu = ModulesMenu(self)
+        self.menuBar().addMenu(self._modules_menu)
+
         self._help_menu = self.menuBar().addMenu(tr("menu.help"))
         self.act_upd = self._help_menu.addAction(tr("main.check_updates"), self.check_updates)
         self.act_upd.setShortcut(QKeySequence("Ctrl+U"))
@@ -115,7 +115,6 @@ class MainWindow(QMainWindow):
 
         # автостарт веб-сервера (v0.8.0): настройки мог включить заранее;
         # поднимаем чуть позже показа окна — старт программы не ждёт сеть
-        from PySide6.QtCore import QSettings
         if QSettings("ImageHunter", "ImageHunter").value(
                 "server/autostart", False, type=bool):
             QTimer.singleShot(1200, self._server_autostart)
@@ -139,12 +138,16 @@ class MainWindow(QMainWindow):
 
     # ---------- веб-сервер (удалённый доступ, v0.8.0) ----------
 
-    def show_server_dialog(self) -> None:
-        """Окно веб-сервера — лениво: ни импорта, ни объектов до первого клика."""
+    def _ensure_server_manager(self):
+        """Менеджер сервера — лениво: ни импорта, ни объектов до действия."""
         if self._server_mgr is None:
             from app.server.manager import ServerManager
             self._server_mgr = ServerManager()
-            self._server_mgr.state_changed.connect(self._on_server_state)
+        return self._server_mgr
+
+    def show_server_dialog(self) -> None:
+        """Окно веб-сервера — лениво: ни импорта, ни объектов до первого клика."""
+        self._ensure_server_manager()
         if self._server_dlg is None:
             from app.server.dialog import ServerDialog
             self._server_dlg = ServerDialog(self._server_mgr, self)
@@ -152,19 +155,43 @@ class MainWindow(QMainWindow):
         self._server_dlg.raise_()
         self._server_dlg.activateWindow()
 
-    def _server_autostart(self) -> None:
-        if self._server_mgr is None:
-            from app.server.manager import ServerManager
-            self._server_mgr = ServerManager()
-            self._server_mgr.state_changed.connect(self._on_server_state)
-        self._server_mgr.start()
+    def server_running(self) -> bool:
+        """Работает ли сервер (без создания менеджера — для меню «Модули»)."""
+        return self._server_mgr is not None and self._server_mgr.is_running()
 
-    def _on_server_state(self, running: bool) -> None:
-        """Кнопка «🌐» подсвечена, пока сервер работает, — состояние видно
-        из любой вкладки без открывания окна настроек."""
-        self.btn_server.setText("🌐◀" if running else "🌐")
-        self.btn_server.setStyleSheet(
-            "color:#569cd6; font-weight:bold;" if running else "")
+    def server_port(self) -> int:
+        """Порт работающего сервера (0 — не запущен/менеджер не создан)."""
+        return self._server_mgr.port() if self._server_mgr is not None else 0
+
+    def server_toggle(self) -> None:
+        """Запустить или остановить сервер — пункт меню «Модули» (v0.8.2)."""
+        mgr = self._ensure_server_manager()
+        if mgr.is_running():
+            mgr.stop()
+        else:
+            mgr.start()
+
+    def server_set_autostart(self, on: bool) -> None:
+        """Галочка «Автостарт с программой» из меню «Модули».
+
+        Это чистая настройка: сервер сам не стартует — запустить можно
+        пунктом «Запустить сервер» или в панели (её «Применить» при
+        включённом автостарте запускает, как в v0.8.0). Открытая панель
+        синхронизируется, чтобы её «Применить» не откатил выбор из меню."""
+        QSettings("ImageHunter", "ImageHunter").setValue(
+            "server/autostart", bool(on))
+        applog.event("log.event.server_autostart", state=tr(
+            "modules.state_on" if on else "modules.state_off"))
+        if self._server_dlg is not None:
+            chk = self._server_dlg.chk_auto
+            if chk.isChecked() != bool(on):
+                chk.blockSignals(True)
+                chk.setChecked(bool(on))
+                chk.blockSignals(False)
+
+    def _server_autostart(self) -> None:
+        self._ensure_server_manager()
+        self._server_mgr.start()
 
     # ---------- язык интерфейса ----------
 
@@ -187,8 +214,8 @@ class MainWindow(QMainWindow):
         self.log_view.retranslate()
         self.btn_upd.setText("🔄 " + tr("main.update"))
         self.btn_upd.setToolTip(tr("main.update_tip"))
-        self.btn_server.setToolTip(tr("server.tip"))
         self.lang_box.setToolTip(tr("main.lang_tip"))
+        self._modules_menu.retranslate()
         self._help_menu.setTitle(tr("menu.help"))
         self.act_upd.setText(tr("main.check_updates"))
         self.act_about.setText(tr("main.about_action"))

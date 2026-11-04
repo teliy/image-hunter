@@ -981,10 +981,6 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ru": "🌐 Веб-сервер — доступ с телефона",
         "en": "🌐 Web server — phone access",
         "zh": "🌐 Web 服务器 — 手机访问"},
-    "server.tip": {
-        "ru": "Веб-сервер: открыть программу с телефона (адрес и QR-код)",
-        "en": "Web server: open the app from your phone (address and QR code)",
-        "zh": "Web 服务器：从手机访问程序（地址和二维码）"},
     "server.run": {
         "ru": "▶ Запустить сервер",
         "en": "▶ Start the server",
@@ -1065,6 +1061,32 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ru": "только просмотр",
         "en": "view only",
         "zh": "仅查看"},
+
+    # ---------- меню «Модули»: настройка, установка и удаление (v0.8.2) ----------
+    "menu.modules": {
+        "ru": "&Модули", "en": "&Modules", "zh": "模块(&M)"},
+    "modules.panel": {
+        "ru": "🌐 Панель веб-сервера (порт, токен, QR-код)…",
+        "en": "🌐 Web server panel (port, token, QR code)…",
+        "zh": "🌐 Web 服务器面板（端口、令牌、二维码）…"},
+    "modules.model_menu": {
+        "ru": "Модель rembg", "en": "rembg model", "zh": "rembg 模型"},
+    "modules.rembg_header": {
+        "ru": "🪄 Удаление фона (rembg): {state}",
+        "en": "🪄 Background removal (rembg): {state}",
+        "zh": "🪄 删除背景（rembg）：{state}"},
+    "modules.installed": {
+        "ru": "установлен", "en": "installed", "zh": "已安装"},
+    "modules.not_installed": {
+        "ru": "не установлен", "en": "not installed", "zh": "未安装"},
+    "modules.state_on": {
+        "ru": "включён", "en": "on", "zh": "开"},
+    "modules.state_off": {
+        "ru": "выключен", "en": "off", "zh": "关"},
+    "log.event.server_autostart": {
+        "ru": "🌐 Автостарт веб-сервера: {state}",
+        "en": "🌐 Web server autostart: {state}",
+        "zh": "🌐 Web 服务器自启动：{state}"},
     "log.event.server_start": {
         "ru": "🌐 Веб-сервер запущен: порт {port}, режим: {mode}",
         "en": "🌐 Web server started: port {port}, mode: {mode}",

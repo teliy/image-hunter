@@ -10,9 +10,16 @@ Written in Python + PySide6 (Qt6): heavy operations (rendering, network, image d
 
 > **⚡ Special focus — fast work over the network and with network drives** (SMB/NAS, mounted shares): a folder is read in one request, thumbnails are built only for the visible part of the list, ready previews are cached on disk. A network folder with thousands of photos opens without lags — neither in the app nor on the network. Details in [“Fast work over the network and with network drives”](#fast-work-over-the-network-and-with-network-drives).
 
+## Modules menu: install, removal and settings (v0.8.2)
+
+The **Modules** item in the menu bar (next to Help) gathers the management of all pluggable modules in one place. The menu is rebuilt every time it opens, so its items and checkmarks always show the current state.
+
+- **Background removal (rembg):** install or remove the module with one item (removal asks for confirmation and shows how much space the downloaded models take), the “rembg model” submenu with a checkmark on the chosen model (u2netp / u2net / isnet-general-use). The section header shows whether the module is installed. These items are gone from the “My pictures” strip context menu — only the “🪄 Remove background” action remains there.
+- **Web server:** “▶ Start” / “⏹ Stop” right in the menu, the “Start with the app” checkbox and the “🌐 Web server panel…” item (port, token, QR code, “view only”). The section header shows the state: “Server is running — port N” or “stopped”.
+
 ## Web server: control the app from your phone (v0.8.0)
 
-The **🌐** button in the status bar starts a small web server — a pluggable, fully removable module (`app/server/`): a phone on the same network opens the address from the QR code and gets almost the whole app in a mobile-friendly interface.
+The **“🌐 Web server panel…”** item in the Modules menu opens the window of a small web server — a pluggable, fully removable module (`app/server/`): a phone on the same network opens the address from the QR code and gets almost the whole app in a mobile-friendly interface. The server can also be started right from the Modules menu.
 
 **Available from the phone:** folder feed with thumbnails (the same disk cache the app uses), name search (deep into subfolders, “ignore dash”), full-screen viewing with swipes, renaming, delete to recycle bin or permanently, rembg background removal with progress, drives and favorite folders, the log.
 

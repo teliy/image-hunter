@@ -1954,7 +1954,12 @@ class LocalViewer(QWidget):
         self._rename_inflight = False
 
     def _build_list_menu(self) -> tuple[QMenu, dict[str, object]]:
-        """Собрать меню ленты (без exec — тест проверяет состав напрямую)."""
+        """Собрать меню ленты (без exec — тест проверяет состав напрямую).
+
+        Управление самим модулем rembg (установка, удаление, выбор модели)
+        с v0.8.2 живёт в меню «Модули» главного окна; здесь осталась только
+        файловая операция «Удалить фон» (с установкой «на ходу», если
+        модуля ещё нет)."""
         menu = QMenu(self)
         acts: dict[str, object] = {}
         acts["open"] = menu.addAction(tr("viewer.ctx_open"))
@@ -1966,26 +1971,6 @@ class LocalViewer(QWidget):
         acts["bg"].setToolTip(tr("viewer.rembg_tip"))
         acts["del"] = menu.addAction(tr("viewer.ctx_delete"))
         acts["del"].setToolTip(tr("viewer.ctx_delete_tip"))
-        menu.addSeparator()
-        # модель rembg: выбор запоминается, размер/качество на любой вкус (v0.7.12)
-        # Подменю создаётся с явным C++-родителем: обёртка от menu.addMenu(строка)
-        # в части версий PySide6 помечена «владеет Python», и сборщик мусора
-        # удаляет C++-объект вместе с ней — подменю исчезает из меню, а
-        # a.menu() падает с RuntimeError (воспроизведено на 6.8–6.11; v0.7.16).
-        m_model = QMenu(menu)
-        m_model.setTitle(tr("viewer.rembg_model_menu"))
-        menu.addMenu(m_model)
-        for model_id, key in rembg_manager.REMBG_MODELS:
-            a = m_model.addAction(tr(key))
-            a.setCheckable(True)
-            a.setChecked(model_id == self._rembg_model)
-            a.triggered.connect(lambda _=False, mid=model_id:
-                                self._on_rembg_model(mid))
-        # установка/удаление модуля — прямо из программы, без терминала
-        if rembg_manager.is_installed():
-            acts["uninst"] = menu.addAction(tr("viewer.rembg_menu_uninstall"))
-        else:
-            acts["inst"] = menu.addAction(tr("viewer.rembg_menu_install"))
         return menu, acts
 
     def _list_context_menu(self, pos) -> None:
@@ -2004,10 +1989,32 @@ class LocalViewer(QWidget):
             self._on_rembg_button()
         elif chosen is acts.get("del"):
             self.delete_selected_files()
-        elif chosen is acts.get("inst"):
-            self._rembg_start_install(pending=self._rembg_targets())
-        elif chosen is acts.get("uninst"):
-            self._rembg_start_uninstall()
+
+    # ---------- модуль rembg: публичный доступ для меню «Модули» (v0.8.2) ----------
+
+    def rembg_is_installed(self) -> bool:
+        """Установлен ли модуль (меню «Модули» строит по этому пункты)."""
+        return rembg_manager.is_installed()
+
+    def rembg_is_busy(self) -> bool:
+        """Идёт ли pip-установка/удаление или обработка пачки (guard меню)."""
+        return self._rembg_busy
+
+    def rembg_current_model(self) -> str:
+        """Выбранная модель — для галочки в меню «Модули»."""
+        return self._rembg_model
+
+    def rembg_install(self) -> None:
+        """Установить модуль из меню «Модули» (без отложенной пачки файлов)."""
+        self._rembg_start_install()
+
+    def rembg_uninstall(self) -> None:
+        """Удалить модуль и модели из меню «Модули» (с подтверждением)."""
+        self._rembg_start_uninstall()
+
+    def rembg_set_model(self, model_id: str) -> None:
+        """Выбрать модель из меню «Модули» (запоминается в настройках)."""
+        self._on_rembg_model(model_id)
 
     # ---------- удаление фона (rembg, v0.7.12) ----------
 
