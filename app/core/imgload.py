@@ -105,34 +105,59 @@ def read_file_bytes(path: str) -> tuple[bytes | None, str]:
     return data, ""
 
 
-def load_bytes(data: bytes, max_side: int = 0) -> tuple[QImage, str]:
-    """Декодировать картинку из памяти (любой формат Qt + AVIF).
+def load_bytes_ex(data: bytes, max_side: int = 0) -> tuple[QImage, str, int, int]:
+    """Декодировать картинку из памяти и попутно вернуть её исходное разрешение.
 
-    ``max_side`` — уменьшить до указанной стороны (для миниатюр: Qt
-    декодирует со сжатием на лету, Pillow — через thumbnail), 0 — как есть.
+    То же, что ``load_bytes``, но возвращает ``(QImage, "", ширина, высота)``,
+    где ширина/высота — размер ПОЛНОЙ картинки (до уменьшения до ``max_side``),
+    уже с учётом EXIF-поворота (autoTransform). Если разрешение узнать не
+    удалось — ``(0, 0)``: единственный потребитель (подпись плитки с
+    разрешением, v0.8.4) просто не показывает вторую строку.
+
+    Размер берётся из заголовка (reader.size() ДО чтения — для этого он и
+    вызывается при ``max_side > 0``), а не из уменьшенной миниатюры: из
+    160×90 не восстановить, была ли исходная картинка 1920×1080 или 1280×720.
     """
     buf = QBuffer()
     buf.setData(QByteArray(data))
     buf.open(QBuffer.OpenModeFlag.ReadOnly)
     reader = QImageReader(buf)
     reader.setAutoTransform(True)
+    orig_w = orig_h = 0
     if max_side > 0:
         size = reader.size()
         if size.isValid() and size.width() > 0 and size.height() > 0:
+            orig_w, orig_h = size.width(), size.height()
             reader.setScaledSize(size.scaled(max_side, max_side, Qt.KeepAspectRatio))
     img = reader.read()
     if not img.isNull():
-        return img, ""
+        if orig_w == 0:
+            # заголовок размер не дал — но и сжатие не включалось,
+            # значит декодированная картинка и есть полноразмерная
+            orig_w, orig_h = img.width(), img.height()
+        return img, "", orig_w, orig_h
     qt_err = reader.errorString() or "неизвестная ошибка"
     if looks_like_avif(data):
         if not AVIF_OK:
             _warn_no_codec_once()
-            return QImage(), qt_err
+            return QImage(), qt_err, 0, 0
         try:
-            return _pil_to_qimage(_PilImage.open(io.BytesIO(data)), max_side), ""
+            im = _PilImage.open(io.BytesIO(data))
+            orig_w, orig_h = int(im.width), int(im.height)
+            return _pil_to_qimage(im, max_side), "", orig_w, orig_h
         except Exception as exc:                        # noqa: BLE001
-            return QImage(), f"AVIF: {exc}"
-    return QImage(), qt_err
+            return QImage(), f"AVIF: {exc}", 0, 0
+    return QImage(), qt_err, 0, 0
+
+
+def load_bytes(data: bytes, max_side: int = 0) -> tuple[QImage, str]:
+    """Декодировать картинку из памяти (любой формат Qt + AVIF).
+
+    ``max_side`` — уменьшить до указанной стороны (для миниатюр: Qt
+    декодирует со сжатием на лету, Pillow — через thumbnail), 0 — как есть.
+    """
+    img, err, _w, _h = load_bytes_ex(data, max_side)
+    return img, err
 
 
 def load_file(path: str, max_side: int = 0) -> tuple[QImage, str]:
@@ -149,3 +174,15 @@ def load_file(path: str, max_side: int = 0) -> tuple[QImage, str]:
     if data is None:
         return QImage(), err
     return load_bytes(data, max_side)
+
+
+def load_file_ex(path: str, max_side: int = 0) -> tuple[QImage, str, int, int]:
+    """То же, что ``load_file``, плюс исходное разрешение (см. load_bytes_ex).
+
+    Возвращает ``(QImage, "", ширина, высота)`` при успехе или
+    ``(QImage(), причина, 0, 0)`` при неудаче.
+    """
+    data, err = read_file_bytes(path)
+    if data is None:
+        return QImage(), err, 0, 0
+    return load_bytes_ex(data, max_side)

@@ -10,6 +10,12 @@ Written in Python + PySide6 (Qt6): heavy operations (rendering, network, image d
 
 > **⚡ Special focus — fast work over the network and with network drives** (SMB/NAS, mounted shares): a folder is read in one request, thumbnails are built only for the visible part of the list, ready previews are cached on disk. A network folder with thousands of photos opens without lags — neither in the app nor on the network. Details in [“Fast work over the network and with network drives”](#fast-work-over-the-network-and-with-network-drives).
 
+## Image resolution in the tile caption (v0.8.4)
+
+Under the file name on every tile of the “My Pictures” strip the app now shows the image’s original resolution — the same “1920×1080” format the full-screen viewer uses; the font is one step smaller and gray, so it does not compete with the name. The resolution is read from the file header in a background thread, together with the thumbnail (EXIF rotation respected), and is stored right inside the cached thumbnail — reopening a folder stays instant and does not read files again. The tile text remains the plain file name: renaming and name search work exactly as before.
+
+Tests: new `scripts/test_thumb_caption.py`.
+
 ## Web search from your phone: new engines, the app bridge and server logging (v0.8.3)
 
 **Five engines instead of two.** The “Web” mode header now offers: **Openverse** — the official JSON API of the open-image aggregator (Flickr, Wikimedia, NASA and hundreds more sources: no key, no scraping, ready-made previews), **Wikimedia** — the official Commons API, **DuckDuckGo** and **Bing** — server-side scraping where it still works (Bing increasingly serves an empty JS shell — now that is an honest error suggesting another engine, not a silent “nothing found”), and **“From program”** — a bridge from the app’s “Image search” tab: the app searches with a real browser that network blocks, captchas and changed result formats cannot scare, and automatically hands the phone the cleaned-up, lightweight tiles — only the original URL, preview, title and source page. The engine choice is remembered; requests time out after 60 s — the endless “Searching…” is gone.
@@ -228,6 +234,7 @@ The whole codebase was re-reviewed for freezes, races and slow spots. Eight narr
   (300 folders or 1.5 s at a time), so even a huge or network disk cannot freeze the window;
   case-insensitive, a click opens the folder, Enter opens the first match, Esc resets; hidden folders are not shown;
 - **lazy thumbnails** (see the network section above) and the “🖼 Thumbnails” on/off toggle;
+  the tile caption shows the file name plus the image resolution (“1920×1080”);
 - **multi-select and drag'n'drop**: select images in the strip (Ctrl/Shift, like in Explorer) and drag them into Explorer, e-mail or any other application — the original files are passed on (`text/uri-list`); the drag start is backed by three independent paths (event filter, own mouse-move tracking, built-in Qt mechanics) and every step is written to the Log; **if dragging does not work — a no-drag fallback:** `Ctrl+C` (or right-click → “Copy selected files”), then paste them wherever needed — `Ctrl+V` into Explorer or a browser;
 - **search by file name**: type part of the name — all images in the current folder and all subfolders are found; no masks or stars, case-insensitive, results appear as the scan goes; the **“ignore hyphens”** checkbox matches without hyphens — the query “23542-23523” finds “2354223523” and “23542-23523” alike (part numbers are written with the hyphen elsewhere or not at all); the checkbox state is remembered;
 - **deleting files**: press `Delete` or right-click → “🗑 Delete” — the selected images are moved to the Recycle Bin (restorable from Explorer); a confirmation shows the number of files, every failure is logged with its reason. On drives without a Recycle Bin (network drives, some removable ones) ImageHunter offers to delete files permanently — after a separate confirmation;

@@ -68,7 +68,7 @@ i18n.set_lang("ru", persist=False)   # проверки текста — на р
 applog.setup()
 logging.getLogger("app").addHandler(capture)
 
-check("версия 0.8.3", __version__ == "0.8.3", __version__)
+check("версия 0.8.4", __version__ == "0.8.4", __version__)
 check("setup подключил хендлер", applog._handler is not None)
 check("сторож запущен после setup", applog._watchdog is not None)
 

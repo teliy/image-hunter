@@ -41,6 +41,8 @@ from PySide6.QtGui import (
     QBrush,
     QDesktopServices,
     QDrag,
+    QFont,
+    QFontMetrics,
     QIcon,
     QImage,
     QKeySequence,
@@ -69,6 +71,7 @@ from PySide6.QtWidgets import (
     QSlider,
     QSplitter,
     QStyle,
+    QStyleOptionViewItem,
     QStyledItemDelegate,
     QToolButton,
     QTreeWidget,
@@ -94,6 +97,32 @@ _TREE_SYNC_SEQ_ROLE = Qt.ItemDataRole.UserRole + 4  # поколение про�
 _FAV_ROLE = Qt.ItemDataRole.UserRole + 5          # узел — избранная папка (v0.7.9)
 _DRIVE_ROLE = Qt.ItemDataRole.UserRole + 6        # узел — диск (v0.7.14)
 _FAV_KEY = "viewer/favorites"                     # где лежат избранные папки
+_RES_ROLE = Qt.ItemDataRole.UserRole + 10   # подпись плитки: разрешение картинки (v0.8.4)
+# tEXt-ключ внутри PNG кэша миниатюр, в котором хранится исходное разрешение:
+# при попадании в кэш оригинал не читается вовсе, а подписи разрешение нужно
+_DIMS_TEXT_KEY = "ih-dims"
+
+
+def _dims_text(w: int, h: int) -> str:
+    """Разрешение в виде для подписи плитки и для хранения в кэше.
+
+    В кэше — с латинским «x» (1920x1080, парсится одним регэкспом),
+    в подписи — с типографским «×», как в статусе просмотра (v0.8.4)."""
+    return f"{w}×{h}"
+
+
+def _dims_from_cache(img: QImage) -> tuple[int, int]:
+    """Достать разрешение из tEXt-чанка кэшированной миниатюры (см. _store).
+
+    Чанка нет (старые записи кэша) или он битый — ``(0, 0)``: плитка просто
+    рисуется без второй строки, а при следующем декоде чанк появится."""
+    try:
+        raw = img.text(_DIMS_TEXT_KEY)
+    except Exception:                     # noqa: BLE001 — чанк не должен ронять ленту
+        return 0, 0
+    m = re.fullmatch(r"(\d+)x(\d+)", (raw or "").strip())
+    return (int(m.group(1)), int(m.group(2))) if m else (0, 0)
+
 
 # сетевость дисков уже выясненное (кэш): буква диска -> DRIVE_REMOTE
 _REMOTE_DRIVE_CACHE: dict[str, bool] = {}
@@ -409,7 +438,9 @@ def _trash_file(path: str) -> tuple[bool, str]:
 # ---------- фоновые миниатюры с постоянным кэшем на диске ----------
 
 class _ThumbSignals(QObject):
-    ready = Signal(int, int, QImage)  # поколение папки, строка списка, готовая миниатюра
+    # поколение папки, строка списка, готовая миниатюра,
+    # исходное разрешение картинки (0, 0 — если узнать не удалось, v0.8.4)
+    ready = Signal(int, int, QImage, int, int)
 
 
 def _thumb_cache_dir() -> str:
@@ -423,12 +454,17 @@ def _thumb_cache_dir() -> str:
 
 
 def _thumb_cache_key(path: str, size: int, mtime: float) -> str:
-    # путь + размер + mtime: ключ меняется, когда файл перезаписан
+    # путь + размер + mtime: ключ меняется, когда файл перезаписан.
+    # v2 (0.8.4): внутри кэшированного PNG теперь хранится исходное
+    # разрешение (tEXt-чанк, см. _ThumbTask._store). Старые записи его не
+    # содержат — смена ключа один раз перекодирует кэш, и подписи с
+    # разрешением появляются у всех; записи до v2 доочистятся сами:
+    # они самые старые, их первой косит _prune_thumb_cache.
     try:
         norm = os.path.normcase(os.path.abspath(path))
     except OSError:
         norm = path
-    raw = f"{norm}|{size}|{mtime:.0f}".encode("utf-8", "surrogateescape")
+    raw = f"v2|{norm}|{size}|{mtime:.0f}".encode("utf-8", "surrogateescape")
     return hashlib.sha1(raw).hexdigest()
 
 
@@ -481,6 +517,7 @@ class _ThumbTask(QRunnable):
         t0 = time.perf_counter()
         cache_hit = False
         img = None
+        w = h = 0
         cache_path = ""
         if self.cache_dir:
             key = _thumb_cache_key(self.path, self.size, self.mtime)
@@ -489,20 +526,25 @@ class _ThumbTask(QRunnable):
             if not cached.isNull():
                 cache_hit = True
                 img = cached
+                w, h = _dims_from_cache(cached)   # разрешение едет в самом PNG
         if img is None:
-            loaded, _err = imgload.load_file(self.path, max_side=THUMB)
+            loaded, _err, w, h = imgload.load_file_ex(self.path, max_side=THUMB)
             img = loaded
             if not img.isNull() and cache_path:
-                self._store(cache_path, img)
+                self._store(cache_path, img, w, h)
         if img.isNull():
             return
-        self.signals.ready.emit(self.gen, self.row, img)
+        self.signals.ready.emit(self.gen, self.row, img, w, h)
         ms = round((time.perf_counter() - t0) * 1000)
         if ms >= 400:   # долгое чтение/декодирование файла (сеть, большой файл) — в журнал
             applog.slow_event(tr("perf.op.thumb_decode", name=os.path.basename(self.path)),
                               ms, source="cache" if cache_hit else "decode")
 
-    def _store(self, cache_path: str, img: QImage) -> None:
+    def _store(self, cache_path: str, img: QImage, w: int = 0, h: int = 0) -> None:
+        if w > 0 and h > 0:
+            # исходное разрешение сохраняем в самом PNG (tEXt-чанк):
+            # попадание в кэш не читает оригинал, а подписи плитки оно нужно
+            img.setText(_DIMS_TEXT_KEY, f"{w}x{h}")
         tmp = f"{cache_path}.{os.getpid()}.tmp"
         if not img.save(tmp, "PNG"):
             try:
@@ -916,6 +958,78 @@ class _RenameDelegate(QStyledItemDelegate):
             editor.arm_base_selection()
 
 
+class _ThumbDelegate(_RenameDelegate):
+    """Плитка ленты: подпись в две строки — имя файла и разрешение (v0.8.4).
+
+    Разрешение узнаётся позже имени (вместе с миниатюрой, из фонового
+    потока) и живёт в отдельной роли плитки (_RES_ROLE): сам текст плитки
+    остаётся чистым именем файла — на него завязаны переименование, поиск
+    и восстановление после удаления. Высота плитки всегда с запасом под
+    вторую строку, чтобы лента не «прыгала», когда разрешение доезжает.
+
+    Рисуется всё вручную: QStyledItemDelegate::paint заново читает
+    DisplayRole из модели и затёр бы пустой текст, которым мы гасим
+    стандартную однострочную подпись. Фон/выделение/фокус и прямоугольники
+    иконки и подписи берутся у стиля — раскладка совпадает со штатной."""
+
+    def sizeHint(self, option, index):  # noqa: N802 (Qt API)
+        sz = super().sizeHint(option, index)
+        extra = option.fontMetrics.height()
+        return QSize(sz.width(), sz.height() + extra)
+
+    def paint(self, painter, option, index) -> None:  # noqa: N802 (Qt API)
+        opt = QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        name = opt.text
+        res = str(index.data(_RES_ROLE) or "")
+        widget = opt.widget
+        style = widget.style() if widget is not None else QApplication.style()
+
+        # фон, выделение, фокус — как у обычной плитки
+        style.drawPrimitive(
+            QStyle.PrimitiveElement.PE_PanelItemViewItem, opt, painter, widget)
+        if opt.state & QStyle.StateFlag.State_HasFocus:
+            style.drawPrimitive(
+                QStyle.PrimitiveElement.PE_FrameFocusRect, opt, painter, widget)
+
+        # миниатюра — в ровно том же прямоугольнике, что у штатного делегата
+        if not opt.icon.isNull():
+            icon_rect = style.subElementRect(
+                QStyle.SubElement.SE_ItemViewItemDecoration, opt, widget)
+            if not icon_rect.isEmpty():
+                opt.icon.paint(painter, icon_rect)
+
+        # подпись: имя, под ним разрешение — меньшим серым шрифтом
+        rect = style.subElementRect(
+            QStyle.SubElement.SE_ItemViewItemText, opt, widget)
+        fm = opt.fontMetrics
+        painter.save()
+        selected = bool(opt.state & QStyle.StateFlag.State_Selected)
+        painter.setFont(opt.font)
+        painter.setPen(opt.palette.color(
+            QPalette.ColorRole.HighlightedText if selected
+            else QPalette.ColorRole.Text))
+        elided = fm.elidedText(name, Qt.TextElideMode.ElideRight, rect.width())
+        painter.drawText(QRect(rect.x(), rect.y(), rect.width(), fm.height()),
+                         Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop,
+                         elided)
+        if res and rect.height() >= 2 * fm.height():
+            f = QFont(opt.font)
+            if opt.font.pointSizeF() > 0:
+                f.setPointSizeF(max(7.0, opt.font.pointSizeF() - 1.0))
+            elif opt.font.pixelSize() > 0:
+                f.setPixelSize(max(9, opt.font.pixelSize() - 1))
+            fm2 = QFontMetrics(f)
+            painter.setFont(f)
+            painter.setPen(opt.palette.color(
+                QPalette.ColorRole.PlaceholderText))
+            painter.drawText(
+                QRect(rect.x(), rect.y() + fm.height(), rect.width(), fm2.height()),
+                Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop,
+                res)
+        painter.restore()
+
+
 class _ThumbList(QListWidget):
     """Список миниатюр: перетаскивание выделенных файлов мышью в другие приложения.
 
@@ -1264,6 +1378,9 @@ class LocalViewer(QWidget):
         self._rename_inflight = False
         self._rename_signals = _RenameSignals()
         self._rename_signals.done.connect(self._on_rename_done)
+        # разрешение картинок для подписи плиток: приходит вместе с миниатюрой
+        # (v0.8.4), ключ — номер строки, значение — готовая строка «Ш×В»
+        self._pending_dims: dict[int, str] = {}
 
         # --- верхняя панель ---
         bar = QHBoxLayout()
@@ -1361,7 +1478,7 @@ class LocalViewer(QWidget):
         self.list.setUniformItemSizes(True)
         self.list.setMinimumWidth(THUMB + 34)  # ширина задаётся сплиттером — панель растягивается мышью
         # редактор переименования: поле с выделением имени без расширения (v0.7.17)
-        self.list.setItemDelegate(_RenameDelegate(self.list))
+        self.list.setItemDelegate(_ThumbDelegate(self.list))
         # drag'n'drop: выделенные файлы перетаскиваются мышью в другие приложения
         self.list.setSelectionMode(QListWidget.ExtendedSelection)
         self.list.setDragEnabled(True)
@@ -1792,6 +1909,7 @@ class LocalViewer(QWidget):
                              folder=self._folder or "—")
             # строки сместились — кэш миниатюр по номерам строк больше не верен
             self._pending_thumbs.clear()
+            self._pending_dims.clear()
             self._thumb_queued.clear()
             self._thumb_done_rows.clear()
             self._schedule_visible_thumbs()
@@ -2158,6 +2276,7 @@ class LocalViewer(QWidget):
         if removed:
             # строки сместились — кэш миниатюр по номерам строк больше не верен
             self._pending_thumbs.clear()
+            self._pending_dims.clear()
             self._thumb_queued.clear()
             self._thumb_done_rows.clear()
             self._schedule_visible_thumbs()
@@ -2302,6 +2421,7 @@ class LocalViewer(QWidget):
         self._meta = []
         self.list.clear()
         self._pending_thumbs.clear()
+        self._pending_dims.clear()
         self._thumb_queued.clear()
         self._thumb_done_rows.clear()
         self._thumbs_done = 0
@@ -2397,6 +2517,7 @@ class LocalViewer(QWidget):
         self._search_count = 0
         self.list.clear()
         self._pending_thumbs.clear()
+        self._pending_dims.clear()
         self._thumb_queued.clear()
         self._thumb_done_rows.clear()
         self._thumbs_done = 0
@@ -2670,6 +2791,7 @@ class LocalViewer(QWidget):
             self._pool.clear()            # не начатые задачи больше не нужны
             self._net_pool.clear()
             self._pending_thumbs.clear()
+            self._pending_dims.clear()
             self._thumb_queued.clear()    # при повторном включении их можно повторить
             self._thumb_timer.stop()
 
@@ -3417,10 +3539,13 @@ class LocalViewer(QWidget):
 
     # ---------- служебное ----------
 
-    def _on_thumb_ready(self, gen: int, row: int, img: QImage) -> None:
+    def _on_thumb_ready(self, gen: int, row: int, img: QImage,
+                        w: int = 0, h: int = 0) -> None:
         if gen != self._gen:
             return  # миниатюра из предыдущей папки — папка уже сменилась
         self._pending_thumbs[row] = img
+        if w > 0 and h > 0:
+            self._pending_dims[row] = _dims_text(w, h)
         if not self._thumb_timer.isActive():
             self._thumb_timer.start()
 
@@ -3428,10 +3553,16 @@ class LocalViewer(QWidget):
         with applog.timed(tr("perf.op.thumbs_batch"),
                           always=False, slow_ms=400) as t:
             pending, self._pending_thumbs = self._pending_thumbs, {}
+            dims, self._pending_dims = self._pending_dims, {}
             for row, img in pending.items():
                 item = self.list.item(row)
                 if item is not None:
                     item.setIcon(QIcon(QPixmap.fromImage(img)))
+                    res = dims.get(row)
+                    if res:
+                        # отдельная роль: текст плитки остаётся чистым именем
+                        # файла — на нём завязаны rename/search/тесты
+                        item.setData(_RES_ROLE, res)
             self._thumbs_done += len(pending)
             self._thumb_done_rows.update(pending.keys())
             self._thumb_timer.stop()
