@@ -10,6 +10,12 @@ Written in Python + PySide6 (Qt6): heavy operations (rendering, network, image d
 
 > **⚡ Special focus — fast work over the network and with network drives** (SMB/NAS, mounted shares): a folder is read in one request, thumbnails are built only for the visible part of the list, ready previews are cached on disk. A network folder with thousands of photos opens without lags — neither in the app nor on the network. Details in [“Fast work over the network and with network drives”](#fast-work-over-the-network-and-with-network-drives).
 
+## Dragging selected files onto folders in the tree (v0.8.5)
+
+Selected tiles in “My Pictures” (Ctrl/Shift) can now be grabbed and dropped onto any folder in the “Disks and folders” tree — a nested folder, a drive, “Home” or a favorite: the files are moved there (hold Ctrl to copy, just like in Explorer). The folder under the cursor is highlighted, and a collapsed one expands itself after 0.7 s. The transfer runs in a worker thread: the window never freezes even on a network drive; moved tiles disappear from the strip, files dropped into the open folder appear in it; names are never overwritten (on a clash — “name-1.ext”), everything is reported in the status bar and the “Log”. It works the other way too: files from Explorer can be dropped onto a folder in the app’s tree.
+
+Tests: new `scripts/test_dnd_tree.py`.
+
 ## Image resolution in the tile caption (v0.8.4)
 
 Under the file name on every tile of the “My Pictures” strip the app now shows the image’s original resolution — the same “1920×1080” format the full-screen viewer uses; the font is one step smaller and gray, so it does not compete with the name. The resolution is read from the file header in a background thread, together with the thumbnail (EXIF rotation respected), and is stored right inside the cached thumbnail — reopening a folder stays instant and does not read files again. The tile text remains the plain file name: renaming and name search work exactly as before.

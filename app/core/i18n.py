@@ -172,24 +172,26 @@ _STRINGS: dict[str, dict[str, str]] = {
               "及所有子文件夹中的图片。无需通配符，不区分大小写。Esc — 重置。\n"
               "拖动输入框的左或右边缘，可以调宽或调窄。"},
     "viewer.dnd_tip": {
-        "ru": "Выделите картинки (Ctrl/Shift) и перетащите их мышью в Проводник,\n"
-              "почту или другое приложение — передаются оригинальные файлы.\n"
+        "ru": "Выделите картинки (Ctrl/Shift) и перетащите их мышью в папку дерева\n"
+              "слева — они переедут туда (Ctrl — скопируются), в Проводник, почту\n"
+              "или другое приложение — передаются оригинальные файлы.\n"
               "Если тянуть не получается: Ctrl+C (или правый клик → «Копировать\n"
               "выделенные файлы»), затем вставьте их там, где нужно (Ctrl+V).\n"
               "Двойной клик по имени файла — переименовать его, по самой\n"
               "картинке — открыть в системном просмотрщике.",
-        "en": "Select images (Ctrl/Shift) and drag them into Explorer,\n"
+        "en": "Select images (Ctrl/Shift) and drag them onto a folder in the tree\n"
+              "on the left — the files will move there (Ctrl — copy), into Explorer,\n"
               "e-mail or any other app — the original files are passed on.\n"
               "If dragging does not work: Ctrl+C (or right-click → “Copy\n"
               "selected files”), then paste them where needed (Ctrl+V).\n"
               "Double-click a file's name to rename it; double-click the\n"
               "picture itself to open it in the system viewer.",
-        "zh": "选中图片（Ctrl/Shift）后拖动到文件管理器、\n"
-              "邮件或其他应用程序 — 传递的是原始文件。\n"
+        "zh": "选中图片（Ctrl/Shift）后拖到左侧目录树中的文件夹——文件将移动\n"
+              "到该文件夹（Ctrl — 复制），也可拖到文件管理器、邮件或其他应用\n"
+              "程序——传递的是原始文件。\n"
               "如果无法拖动：Ctrl+C（或右键 →“复制所选文件”），\n"
               "然后在需要的地方粘贴 (Ctrl+V)。\n"
-              "双击文件名可重命名；双击图片本身\n"
-              "将在系统查看器中打开。"},
+              "双击文件名可重命名；双击图片本身将在系统查看器中打开。"},
     "viewer.ctx_open": {
         "ru": "Открыть", "en": "Open", "zh": "打开"},
     "viewer.ctx_copy": {
@@ -931,6 +933,42 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ru": "отменено (файл не брошен)",
         "en": "cancelled (nothing dropped)",
         "zh": "已取消（未放下文件）"},
+    "log.op.move": {
+        "ru": "Перемещение", "en": "Move", "zh": "移动"},
+    "log.op.copy": {
+        "ru": "Копирование", "en": "Copy", "zh": "复制"},
+    "viewer.transfer_busy": {
+        "ru": "{op} {n} файлов…",
+        "en": "{op} {n} files…",
+        "zh": "{op} {n} 个文件…"},
+    "viewer.transfer_done": {
+        "ru": "{op}: {n} → {folder}",
+        "en": "{op}: {n} → {folder}",
+        "zh": "{op}：{n} 个 → {folder}"},
+    "viewer.transfer_done_err": {
+        "ru": "{op}: успешно {ok}, ошибок {fail}",
+        "en": "{op}: {ok} ok, {fail} errors",
+        "zh": "{op}：成功 {ok} 个，失败 {fail} 个"},
+    "viewer.transfer_same": {
+        "ru": "Эти файлы уже в этой папке",
+        "en": "These files are already in this folder",
+        "zh": "这些文件已在此文件夹中"},
+    "log.event.transfer_start": {
+        "ru": "{op}: {n} файлов → {folder}",
+        "en": "{op}: {n} files → {folder}",
+        "zh": "{op}：{n} 个文件 → {folder}"},
+    "log.event.transfer_end": {
+        "ru": "{op} завершено: успешно {ok}, ошибок {fail}",
+        "en": "{op} finished: {ok} ok, {fail} errors",
+        "zh": "{op}完成：成功 {ok} 个，失败 {fail} 个"},
+    "log.event.transfer_err": {
+        "ru": "ОШИБКА {op}: {path} — {err}",
+        "en": "{op} ERROR: {path} — {err}",
+        "zh": "{op}错误：{path} — {err}"},
+    "log.event.transfer_renamed": {
+        "ru": "Имя занято — файл сохранён как: {old} → {new}",
+        "en": "Name taken — file saved as: {old} → {new}",
+        "zh": "名称被占用——文件已保存为：{old} → {new}"},
     "log.event.copy_files": {
         "ru": "Скопировано в буфер обмена: {n} файлов",
         "en": "Copied to clipboard: {n} files",
@@ -1208,6 +1246,8 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ru": "пакет сохранения", "en": "save batch", "zh": "保存批次"},
     "perf.op.delete_files": {
         "ru": "удаление файлов", "en": "delete files", "zh": "删除文件"},
+    "perf.op.transfer_files": {
+        "ru": "перенос файлов в папку", "en": "move files to folder", "zh": "移动文件到文件夹"},
 }
 
 # кэш текущего языка: читается на каждый tr() — QSettings трогаем один раз

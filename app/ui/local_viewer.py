@@ -8,6 +8,7 @@ import os
 import random
 import re
 import shiboken6
+import shutil
 import stat
 import sys
 import tempfile
@@ -41,6 +42,10 @@ from PySide6.QtGui import (
     QBrush,
     QDesktopServices,
     QDrag,
+    QDragEnterEvent,
+    QDragLeaveEvent,
+    QDragMoveEvent,
+    QDropEvent,
     QFont,
     QFontMetrics,
     QIcon,
@@ -98,6 +103,9 @@ _FAV_ROLE = Qt.ItemDataRole.UserRole + 5          # узел — избранн�
 _DRIVE_ROLE = Qt.ItemDataRole.UserRole + 6        # узел — диск (v0.7.14)
 _FAV_KEY = "viewer/favorites"                     # где лежат избранные папки
 _RES_ROLE = Qt.ItemDataRole.UserRole + 10   # подпись плитки: разрешение картинки (v0.8.4)
+# маркер собственного перетаскивания (v0.8.5): лента кладёт его в MIME рядом
+# с text/uri-list — по нему дерево отличает свой драг от чужого (Проводник и пр.)
+_IH_MIME = "application/x-imagehunter-files"
 # tEXt-ключ внутри PNG кэша миниатюр, в котором хранится исходное разрешение:
 # при попадании в кэш оригинал не читается вовсе, а подписи разрешение нужно
 _DIMS_TEXT_KEY = "ih-dims"
@@ -782,6 +790,67 @@ class _RenameTask(QRunnable):
         self.signals.done.emit(self.old, self.new, ok, err)
 
 
+# ---------- перенос/копирование файлов в папку дерева (drop, v0.8.5) ----------
+
+def _unique_destination(folder: str, name: str) -> str:
+    """Свободное имя в folder: «name.ext», «name-1.ext», «name-2.ext»…
+
+    Файл с тем же именем уже лежит в папке-получателе — затирать его нельзя,
+    и спрашивать по каждому файлу диалогом тоже плохо (переносят пачками).
+    Как в Проводнике при «копии», так и здесь: занятое имя получает суффикс
+    «-1», «-2»… — ничего не пропадает, о каждой замене пишет журнал.
+    Схема совпадает с unique_path в downloader.py (v0.7.11)."""
+    stem, ext = os.path.splitext(name)
+    candidate = os.path.join(folder, name)
+    counter = 1
+    while os.path.lexists(candidate):
+        candidate = os.path.join(folder, f"{stem}-{counter}{ext}")
+        counter += 1
+    return candidate
+
+
+class _MoveSignals(QObject):
+    done = Signal(list)   # [(старый путь, новый путь ("" — не переехал), ok, ошибка)]
+
+
+class _MoveTask(QRunnable):
+    """Перемещение/копирование файлов в папку в рабочем потоке (см. _start_transfer).
+
+    По сети (WebDAV, SMB) каждый файл может ехать секунды, а на подвисшем
+    сервере — сетевой тайм-аут целиком; в GUI-потоке окно замерло бы
+    «Не отвечает» посреди перетаскивания (принцип v0.7.2). Файлы с занятыми
+    именами не затираются и не отбрасываются — получают свободное имя
+    «имя-1.ext» (см. _unique_destination), о каждой такой замене сообщит
+    журнал. Перемещение — shutil.move: на одном томе это переименование,
+    между дисками — копия с удалением оригинала; копирование — copy2
+    (содержимое + время/права)."""
+
+    def __init__(self, paths: list[str], folder: str, copy: bool,
+                 signals: _MoveSignals):
+        super().__init__()
+        self.paths, self.folder, self.copy = paths, folder, copy
+        self.signals = signals
+
+    def run(self) -> None:
+        results: list[tuple[str, str, bool, str]] = []
+        for p in self.paths:
+            name = os.path.basename(p)
+            dst = os.path.join(self.folder, name)
+            renamed = ""
+            try:
+                if os.path.lexists(dst):
+                    dst = _unique_destination(self.folder, name)
+                    renamed = dst
+                if self.copy:
+                    shutil.copy2(p, dst)
+                else:
+                    shutil.move(p, dst)
+                results.append((p, (renamed or dst), True, ""))
+            except OSError as e:
+                results.append((p, "", False, str(e)))
+        self.signals.done.emit(results)
+
+
 # ---------- фоновый поиск по имени ----------
 
 class _SearchSignals(QObject):
@@ -1118,6 +1187,9 @@ class _ThumbList(QListWidget):
         mime = make_file_urls_mime(paths)
         # запасной формат для программ, которые не понимают uri-list
         mime.setText("\n".join(paths))
+        # маркер «свой» драг: по нему дерево папок узнаёт перетаскивание
+        # из ленты (v0.8.5); чужие приложения маркер просто игнорируют
+        mime.setData(_IH_MIME, QByteArray("1"))
         drag.setMimeData(mime)
         # за курсором едет миниатюра первого выбранного файла
         items = self.selectedItems()
@@ -1129,7 +1201,10 @@ class _ThumbList(QListWidget):
         self._dragging = True
         applog.event("log.event.drag_start", n=len(paths),
                      names=", ".join(os.path.basename(p) for p in paths[:3]))
-        action = drag.exec(Qt.CopyAction, Qt.CopyAction)
+        # MoveAction разрешён для приёмников, которые понимают перемещение:
+        # в дереве программы файлы так и переносятся (v0.8.5), Проводник
+        # без модификаторов остаётся при копировании (действие по умолчанию)
+        action = drag.exec(Qt.CopyAction | Qt.MoveAction, Qt.CopyAction)
         applog.event("log.event.drag_end", action=_drag_action_name(action))
         return True
 
@@ -1214,6 +1289,154 @@ class _ThumbList(QListWidget):
                             ev.accept()
                             return True      # драг начался — движение обработано
         return super().eventFilter(obj, ev)
+
+
+class _FolderTree(QTreeWidget):
+    """Дерево дисков и папок: принимает файлы, брошенные мышью (v0.8.5).
+
+    Над папкой в дереве можно отпустить выделенные плитки ленты «Моих
+    картинок» (или файлы из Проводника) — файлы переедут в эту папку;
+    с зажатым Ctrl — скопируются. Подходит ЛЮБАЯ папка дерева: диски,
+    избранное, «Домой» и вложенные подпапки — цель выбирается по данным
+    узла (UserRole), заглушки без пути пустой отпуск не ловят.
+
+    Штатный drag-drop QTreeWidget не используется (он умеет вставлять узлы
+    в модель, а нам нужны файловые операции), поэтому события драка
+    обрабатываются целиком здесь:
+
+      * dragEnterEvent/dragMoveEvent — пускаем только MIME с локальными
+        файлами (text/uri-list); над подходящей папкой она подсвечивается
+        фоновой заливкой, как в Проводнике;
+      * наведение на свёрнутую папку раскрывает её через AUTO_EXPAND_MS —
+        уровень читается штатным ленивым загрузчиком (expand_hook →
+        _populate_children), по сети интерфейс не заминает;
+      * dropEvent собирает пути из MIME и отдаёт вьюеру сигналом
+        filesDropped — вьюер запускает фоновый перенос (_MoveTask).
+
+    Подсветка и таймер честно снимаются в dragLeaveEvent и при смене
+    цели, чтобы дерево не осталось «закрашенным» после отмены драка."""
+
+    AUTO_EXPAND_MS = 700     # задержка раскрытия папки под курсором, как в Проводнике
+    HIGHLIGHT = QColor(21, 101, 216, 70)   # та же синь, что у выделения (style.py)
+
+    # пути файлов, папка-цель (данные узла), зажат Ctrl — копировать вместо переноса
+    filesDropped = Signal(list, str, bool)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.expand_hook = None          # выставляет вьюер: ленивое чтение подпапок
+        self._drop_item: QTreeWidgetItem | None = None
+        self._expand_item: QTreeWidgetItem | None = None   # с чем стартовал таймер
+        self._expand_timer = QTimer(self)
+        self._expand_timer.setSingleShot(True)
+        self._expand_timer.setInterval(self.AUTO_EXPAND_MS)
+        self._expand_timer.timeout.connect(self._expand_hovered)
+        self.setAcceptDrops(True)
+        self.viewport().setAcceptDrops(True)
+        self.setDragDropMode(QAbstractItemView.DragDropMode.DropOnly)
+        self.setDropIndicatorShown(False)   # рисуем подсветку сами (фон узла)
+
+    # ---------- цель драка ----------
+
+    def _drop_folder(self, pos: QPoint) -> tuple[QTreeWidgetItem | None, str]:
+        """Узел и папка под курсором; заглушки и пустые места — (None, "")."""
+        item = self.itemAt(pos)
+        if item is None:
+            return None, ""
+        path = item.data(0, Qt.ItemDataRole.UserRole)
+        if not path or not os.path.isdir(path):
+            return None, ""   # заглушка фоновой догрузки или ещё не примонтировано
+        return item, path
+
+    def _set_highlight(self, item: QTreeWidgetItem | None) -> None:
+        """Подсветить узел-цель (и снять подсветку с прежнего)."""
+        if item is self._drop_item:
+            return
+        if self._drop_item is not None:
+            try:
+                self._drop_item.setBackground(0, QBrush())   # обратно к обычному
+            except RuntimeError:
+                pass    # дерево уже перестроено (refresh_drives) — узла больше нет
+        self._drop_item = item
+        if item is not None:
+            item.setBackground(0, QBrush(self.HIGHLIGHT))
+
+    def _reset_drop_state(self) -> None:
+        """Конец драка (отпуск, уход, отмена): подсветка и таймер — долой."""
+        self._expand_timer.stop()
+        self._expand_item = None
+        self._set_highlight(None)
+
+    def _expand_hovered(self) -> None:
+        """Папка под курсором ждала достаточно долго — раскрыть её."""
+        item = self._expand_item
+        if item is None:
+            return
+        try:
+            if shiboken6.isValid(item) and not item.isExpanded():
+                if self.expand_hook is not None:
+                    self.expand_hook(item)   # ленивое чтение подпапок (может быть сетевым)
+                item.setExpanded(True)
+        except RuntimeError:
+            pass
+
+    # ---------- события перетаскивания ----------
+
+    def _accept_if_files(self, ev) -> QTreeWidgetItem | None:
+        """Общий вход dragEnterEvent/dragMoveEvent: MIME с локальными файлами?
+
+        Принимаем и свой драг (маркер _IH_MIME), и чужой (Проводник, рабочий
+        стол) — у обоих пути лежат в text/uri-list. Цель — только узел с
+        путём существующей папки; над пустым местом и заглушками драг не
+        принимается (курсор «нельзя»), подсветка снимается.
+        Возвращает узел-цель (или None)."""
+        mime = ev.mimeData()
+        ok = mime.hasFormat(_IH_MIME) or mime.hasUrls()
+        item, _folder = (self._drop_folder(ev.position().toPoint())
+                         if ok else (None, ""))
+        if item is None:
+            ev.ignore()
+            self._reset_drop_state()
+            return None
+        ev.acceptProposedAction()
+        # навели на другую свёрнутую папку — таймер раскрытия заново;
+        # на ту же самую — не трогаем (иначе под курсором он никогда не истечёт)
+        if item is not self._expand_item:
+            self._expand_timer.stop()
+            self._expand_item = item
+            if not item.isExpanded():
+                self._expand_timer.start()
+        self._set_highlight(item)
+        return item
+
+    def dragEnterEvent(self, ev: QDragEnterEvent) -> None:  # noqa: N802 (Qt API)
+        self._accept_if_files(ev)
+
+    def dragMoveEvent(self, ev: QDragMoveEvent) -> None:  # noqa: N802 (Qt API)
+        self._accept_if_files(ev)
+
+    def dragLeaveEvent(self, ev: QDragLeaveEvent) -> None:  # noqa: N802 (Qt API)
+        self._reset_drop_state()
+        super().dragLeaveEvent(ev)
+
+    def dropEvent(self, ev: QDropEvent) -> None:  # noqa: N802 (Qt API)
+        """Файлы брошены: собрать пути и отдать вьюеру (диск не блокируем)."""
+        item, folder = self._drop_folder(ev.position().toPoint())
+        paths: list[str] = []
+        if item is not None:
+            mime = ev.mimeData()
+            for url in (mime.urls() if mime.hasUrls() else []):
+                p = url.toLocalFile()
+                if p:
+                    paths.append(p)
+        self._reset_drop_state()
+        if item is None or not paths:
+            ev.ignore()
+            return
+        # Ctrl (Cmd на macOS) — копировать, иначе — перенести (как в Проводнике)
+        copy = bool(ev.keyboardModifiers() & Qt.KeyboardModifier.ControlModifier)
+        ev.acceptProposedAction()
+        self.filesDropped.emit(paths, folder, copy)
 
 
 class _GripEdit(QLineEdit):
@@ -1521,7 +1744,11 @@ class LocalViewer(QWidget):
         self.list.verticalScrollBar().valueChanged.connect(self._schedule_visible_thumbs)
 
         # --- дерево дисков и папок (левая панель) ---
-        self.tree = QTreeWidget()
+        # _FolderTree принимает файлы, брошенные мышью (v0.8.5):
+        # выделенные плитки ленты переезжают в папку узла (Ctrl — копия)
+        self.tree = _FolderTree()
+        self.tree.expand_hook = self._populate_children   # ленивое чтение при авто-раскрытии
+        self.tree.filesDropped.connect(self._on_tree_files_dropped)
         self.tree.setHeaderHidden(True)
         self.tree.setUniformRowHeights(True)
         self.tree.itemExpanded.connect(self._populate_children)
@@ -1668,6 +1895,12 @@ class LocalViewer(QWidget):
         self._drives_cache: list[tuple[str, str, int, int]] = []
         self._delete_signals = _DeleteSignals()
         self._delete_signals.done.connect(self._on_delete_done)
+        # перенос/копирование файлов в папку дерева перетаскиванием (v0.8.5)
+        self._move_signals = _MoveSignals()
+        self._move_signals.done.connect(self._on_transfer_done)
+        self._transfer_copy = False
+        self._transfer_target = ""
+        self._transfer_t0 = 0.0
         # узкий пул для сетевых файлов: пока сервер подвис, ждут одна-две
         # задачи — локальные миниатюры продолжают грузиться (v0.7.2)
         self._net_pool = QThreadPool(self)
@@ -1947,6 +2180,111 @@ class LocalViewer(QWidget):
                 if os.path.normcase(os.path.normpath(p)) != norm]
         self._paths = [self._paths[i] for i in keep]
         self._meta = [self._meta[i] for i in keep]
+
+    # ---------- перенос/копирование файлов в папку дерева (drop, v0.8.5) ----------
+
+    def _on_tree_files_dropped(self, paths: list[str], folder: str,
+                               copy: bool) -> None:
+        """Из дерева пришёл drop: файлы по путям нужно переместить (скопировать).
+
+        Сюда попадает и драг из ленты «Моих картинок», и файлы из Проводника —
+        обработка одинаковая: фильтр несуществующих и уже лежащих в папке,
+        затем фоновая задача _MoveTask (по сети файл едет секунды — GUI не
+        блокируем, принцип v0.7.2)."""
+        self._start_transfer(paths, folder, copy)
+
+    def _start_transfer(self, paths: list[str], folder: str, copy: bool) -> None:
+        """Запустить фоновый перенос/копирование файлов в папку folder.
+
+        Путь-цель должен быть существующей папкой, файлы — существующими;
+        то, что уже лежит в этой папке, не переносится второй раз (иначе
+        получили бы бессмысленные «имя-1.ext» у собственных файлов)."""
+        if not folder or not os.path.isdir(folder):
+            return
+        folder_n = os.path.normcase(os.path.normpath(folder))
+        existing = [p for p in paths if p and os.path.isfile(p)]
+        if not existing:
+            return   # в MIME не оказалось реальных файлов — делать нечего
+        todo = [p for p in existing
+                if os.path.normcase(os.path.normpath(os.path.dirname(p)))
+                != folder_n]
+        if not todo:
+            self.status.setText(tr("viewer.transfer_same"))
+            return   # все файлы уже лежат в этой папке
+        self._transfer_target = folder
+        self._transfer_copy = copy
+        self._transfer_t0 = time.perf_counter()
+        self._set_view_busy(True)
+        op = tr("log.op.copy" if copy else "log.op.move")
+        self.status.setText(tr("viewer.transfer_busy", op=op, n=len(todo)))
+        applog.event("log.event.transfer_start", op=op, n=len(todo),
+                     folder=os.path.basename(folder) or folder)
+        QThreadPool.globalInstance().start(
+            _MoveTask(todo, folder, copy, self._move_signals))
+
+    def _on_transfer_done(self, results: list) -> None:
+        """Файлы переехали в фоне — обновить ленту, статус и журнал.
+
+        Перемещённые файлы исчезают из открытой ленты (как после удаления);
+        если файлы везли В открытую папку — она перечитывается, чтобы новые
+        плитки появились. Копирование ленту с исходной папкой не трогает."""
+        copy = self._transfer_copy
+        target = self._transfer_target
+        self._transfer_target = ""
+        ok_n = fail_n = 0
+        moved_into_current = False
+        target_n = os.path.normcase(os.path.normpath(target))
+        current_n = (os.path.normcase(os.path.normpath(self._folder))
+                     if self._folder else "")
+        for old, new, ok, err in results:
+            if ok:
+                ok_n += 1
+                if new != old and os.path.basename(old) != os.path.basename(new):
+                    applog.event("log.event.transfer_renamed",
+                                 old=os.path.basename(old),
+                                 new=os.path.basename(new))
+                if not copy:
+                    self._remove_row_by_path(old)   # был в ленте — уехал
+                if target_n == current_n:
+                    moved_into_current = True
+            else:
+                applog.error(tr("log.event.transfer_err",
+                                op=tr("log.op.copy" if copy else "log.op.move"),
+                                path=old, err=err))
+                fail_n += 1
+        op = tr("log.op.copy" if copy else "log.op.move")
+        folder_name = os.path.basename(target) or target
+        if fail_n:
+            self.status.setText(tr("viewer.transfer_done_err",
+                                   op=op, ok=ok_n, fail=fail_n))
+        elif ok_n:
+            self.status.setText(tr("viewer.transfer_done",
+                                   op=op, n=ok_n, folder=folder_name))
+        if ok_n:
+            applog.event("log.event.transfer_end", op=op, ok=ok_n, fail=fail_n)
+            applog.event("log.event.timing", op=tr("perf.op.transfer_files"),
+                         ms=round((time.perf_counter() - self._transfer_t0) * 1000),
+                         extra=applog.extra(ok=ok_n, fail=fail_n, copy=copy))
+            if moved_into_current:
+                # файлы доехали в открытую папку — перечитать её (поиск тоже заново)
+                if self.search_edit.text().strip():
+                    self._start_search_now()
+                else:
+                    self.load_folder(self._folder)
+            elif not copy:
+                # строки сместились — кэш миниатюр по номерам строк больше не верен
+                self._pending_thumbs.clear()
+                self._pending_dims.clear()
+                self._thumb_queued.clear()
+                self._thumb_done_rows.clear()
+                self._schedule_visible_thumbs()
+                if self.list.currentItem() is None and self.list.count():
+                    self.list.setCurrentRow(0)
+                elif not self.list.count():
+                    self._pixmap = None
+                    self._movie = None
+                    self._view_text(tr("viewer.no_images"))
+        self._set_view_busy(False)
 
     # ---------- переименование файла (F2, двойной клик по имени, меню; v0.7.17) ----------
 
