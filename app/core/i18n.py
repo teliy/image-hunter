@@ -839,6 +839,20 @@ _STRINGS: dict[str, dict[str, str]] = {
         "zh": "无法填充 {name}：{err}"},
     "perf.op.fill": {
         "ru": "fill: {name}", "en": "fill: {name}", "zh": "fill：{name}"},
+    # ---------- панель инструментов картинки под верхней панелью (v0.8.9) ----------
+    "viewer.tools_title": {
+        "ru": "Инструменты картинки:",
+        "en": "Image tools:",
+        "zh": "图片工具："},
+    "viewer.tools_tip": {
+        "ru": "Панель инструментов картинки: «⇲ Размер», «✂ Обрезать»,\n"
+              "«💧 Пипетка», «🪣 Закрасить» и сопутствующие кнопки —\n"
+              "всё работает с картинкой, открытой в просмотре справа.",
+        "en": "Image tools panel: “⇲ Resize”, “✂ Crop”, “💧 Eyedropper”,\n"
+              "“🪣 Fill” and related buttons — everything works on the\n"
+              "image open in the preview on the right.",
+        "zh": "图片工具面板：“⇲ 大小”“✂ 裁剪”“💧 吸管”“🪣 填充”\n"
+              "及相关按钮 — 全部作用于右侧预览中打开的图片。"},
     "viewer.home": {
         "ru": "🏠 Домой", "en": "🏠 Home", "zh": "🏠 主目录"},
     "viewer.pictures": {

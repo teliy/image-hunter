@@ -60,6 +60,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
     QFileDialog,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -2386,7 +2387,8 @@ class LocalViewer(QWidget):
         self._i18n_buttons: list[tuple[QToolButton, str | None, str]] = []
 
         def btn(text_key: str | None, tip_key: str, slot, shortcut=None,
-                literal: str | None = None) -> QToolButton:
+                literal: str | None = None,
+                lay: QHBoxLayout | None = None) -> QToolButton:
             b = QToolButton()
             if text_key is not None:
                 b.setText(tr(text_key))
@@ -2397,7 +2399,7 @@ class LocalViewer(QWidget):
             if shortcut:
                 sc = QShortcut(QKeySequence(shortcut), self)
                 sc.activated.connect(slot)
-            bar.addWidget(b)
+            (lay or bar).addWidget(b)
             self._i18n_buttons.append((b, text_key, tip_key))
             return b
 
@@ -2419,69 +2421,6 @@ class LocalViewer(QWidget):
         btn(None, "viewer.actual_tip", lambda: self.set_manual_zoom(1.0), literal="100%")
         btn(None, "viewer.fit_tip", self.fit_to_window, literal="◱")
         btn(None, "viewer.zoom_in_tip", lambda: self.zoom(1.25), literal="+")
-        bar.addSpacing(8)
-        # ⇲ Размер: мышью задать размер картинки в окне предпросмотра (v0.8.6)
-        self.btn_resize = QToolButton()
-        self.btn_resize.setText(tr("viewer.resize"))
-        self.btn_resize.setCheckable(True)
-        self.btn_resize.setToolTip(tr("viewer.resize_tip"))
-        self.btn_resize.setEnabled(False)   # включится, когда картинка показана
-        self.btn_resize.toggled.connect(self._on_resize_toggled)
-        bar.addWidget(self.btn_resize)
-        self._i18n_buttons.append((self.btn_resize, "viewer.resize", "viewer.resize_tip"))
-        # 💾 Сохранить: появляется только в режиме изменения размера (v0.8.6)
-        self.btn_resize_save = btn("viewer.resize_save", "viewer.resize_save_tip",
-                                   self._on_resize_save)
-        self.btn_resize_save.setVisible(False)
-        bar.addSpacing(8)
-        # ✂ Обрезать: выделение мышью по картинке, как в XnView (v0.8.7)
-        self.btn_crop = QToolButton()
-        self.btn_crop.setText(tr("viewer.crop"))
-        self.btn_crop.setCheckable(True)
-        self.btn_crop.setToolTip(tr("viewer.crop_tip"))
-        self.btn_crop.setEnabled(False)   # включится, когда картинка показана
-        self.btn_crop.toggled.connect(self._on_crop_toggled)
-        bar.addWidget(self.btn_crop)
-        self._i18n_buttons.append((self.btn_crop, "viewer.crop", "viewer.crop_tip"))
-        # три кнопки режима обрезки — видны только в режиме (v0.8.7):
-        # как в XnView — «Обрезать», «Сохранить выделенную область как…»
-        # и «Обрезать, Сохранить и перейти к следующему»
-        self.btn_crop_save = btn("viewer.crop_save", "viewer.crop_save_tip",
-                                 self._on_crop_apply)
-        self.btn_crop_save.setVisible(False)
-        self.btn_crop_saveas = btn("viewer.crop_saveas", "viewer.crop_saveas_tip",
-                                   self._on_crop_save_as)
-        self.btn_crop_saveas.setVisible(False)
-        # 🪣 Закрасить: залить выделенное цветом пипетки (v0.8.8) — четвёртая
-        # кнопка режима обрезки, видна только в режиме
-        self.btn_fill = btn("viewer.fill", "viewer.fill_tip", self._on_fill_apply)
-        self.btn_fill.setVisible(False)
-        self.btn_crop_next = btn("viewer.crop_next", "viewer.crop_next_tip",
-                                 self._on_crop_apply_next)
-        self.btn_crop_next.setVisible(False)
-        bar.addSpacing(8)
-        # 💧 Пипетка: цвет пикселя по клику (v0.8.8); правый клик по картинке
-        # берёт цвет в ЛЮБОМ режиме — образец нужен кнопке «🪣 Закрасить»
-        self.btn_picker = QToolButton()
-        self.btn_picker.setText(tr("viewer.picker"))
-        self.btn_picker.setCheckable(True)
-        self.btn_picker.setToolTip(tr("viewer.picker_tip"))
-        self.btn_picker.setEnabled(False)   # включится, когда картинка показана
-        self.btn_picker.toggled.connect(self._on_picker_toggled)
-        bar.addWidget(self.btn_picker)
-        self._i18n_buttons.append((self.btn_picker, "viewer.picker", "viewer.picker_tip"))
-        # образец взятого цвета: цветной квадрат + HEX — появляется
-        # после первого взятого цвета и живёт до конца сессии
-        self.picker_swatch = QLabel()
-        self.picker_swatch.setFixedSize(18, 18)
-        self.picker_swatch.setVisible(False)
-        bar.addWidget(self.picker_swatch)
-        self.picker_hex = QLabel("")
-        self.picker_hex.setStyleSheet("color: #666;")
-        self.picker_hex.setVisible(False)
-        bar.addWidget(self.picker_hex)
-        self._i18n_buttons.append((self.picker_swatch, None, "viewer.picker_chip_tip"))
-        self._i18n_buttons.append((self.picker_hex, None, "viewer.picker_chip_tip"))
         bar.addSpacing(8)
         # фон-«шахматка» под прозрачными картинками: размер клетки — ползунком
         # (v0.7.16). Иконка-шахматка подсказывает, что регулирует ползунок.
@@ -2526,6 +2465,100 @@ class LocalViewer(QWidget):
         # её к статус-бару через addPermanentWidget.
         self.status = QLabel(tr("viewer.pick"))
         self.status.setStyleSheet("color: #666;")
+
+        # --- панель инструментов картинки (v0.8.9) ---
+        # «⇲ Размер», «✂ Обрезать», «💧 Пипетка» и все сопутствующие элементы
+        # переехали из верхней панели на ОТДЕЛЬНУЮ ПАНЕЛЬ ПОД НЕЙ (пожелание:
+        # «изменение размера, обрезания, пипетку и все сопутствующие элементы
+        # перенеси на новую панель ниже»): верхняя панель осталась про
+        # навигацию — папки, лента, зум, поиск; редактирование живёт своей
+        # строкой и заметно сразу.
+        self.tools_panel = QFrame()
+        self.tools_panel.setObjectName("toolsPanel")
+        self.tools_panel.setStyleSheet(
+            "QFrame#toolsPanel { background: rgba(21, 101, 216, 0.05);"
+            " border-top: 1px solid #d6dce6; border-bottom: 1px solid #d6dce6; }")
+        tools_lay = QHBoxLayout(self.tools_panel)
+        tools_lay.setContentsMargins(8, 4, 6, 5)
+        tools_lay.setSpacing(4)
+
+        # подсказка-разделитель между группами инструментов
+        def vline() -> QFrame:
+            ln = QFrame()
+            ln.setFrameShape(QFrame.Shape.VLine)
+            ln.setFrameShadow(QFrame.Shadow.Sunken)
+            return ln
+
+        self.tools_title = QLabel(tr("viewer.tools_title"))
+        self.tools_title.setStyleSheet("color: #666;")
+        tools_lay.addWidget(self.tools_title)
+        self._i18n_buttons.append((self.tools_title, "viewer.tools_title",
+                                   "viewer.tools_tip"))
+
+        # ⇲ Размер: мышью задать размер картинки в окне предпросмотра (v0.8.6)
+        self.btn_resize = QToolButton()
+        self.btn_resize.setText(tr("viewer.resize"))
+        self.btn_resize.setCheckable(True)
+        self.btn_resize.setToolTip(tr("viewer.resize_tip"))
+        self.btn_resize.setEnabled(False)   # включится, когда картинка показана
+        self.btn_resize.toggled.connect(self._on_resize_toggled)
+        tools_lay.addWidget(self.btn_resize)
+        self._i18n_buttons.append((self.btn_resize, "viewer.resize", "viewer.resize_tip"))
+        # 💾 Сохранить: появляется только в режиме изменения размера (v0.8.6)
+        self.btn_resize_save = btn("viewer.resize_save", "viewer.resize_save_tip",
+                                   self._on_resize_save, lay=tools_lay)
+        self.btn_resize_save.setVisible(False)
+        tools_lay.addWidget(vline())
+        # ✂ Обрезать: выделение мышью по картинке, как в XnView (v0.8.7)
+        self.btn_crop = QToolButton()
+        self.btn_crop.setText(tr("viewer.crop"))
+        self.btn_crop.setCheckable(True)
+        self.btn_crop.setToolTip(tr("viewer.crop_tip"))
+        self.btn_crop.setEnabled(False)   # включится, когда картинка показана
+        self.btn_crop.toggled.connect(self._on_crop_toggled)
+        tools_lay.addWidget(self.btn_crop)
+        self._i18n_buttons.append((self.btn_crop, "viewer.crop", "viewer.crop_tip"))
+        # три кнопки режима обрезки — видны только в режиме (v0.8.7):
+        # как в XnView — «Обрезать», «Сохранить выделенную область как…»
+        # и «Обрезать, Сохранить и перейти к следующему»
+        self.btn_crop_save = btn("viewer.crop_save", "viewer.crop_save_tip",
+                                 self._on_crop_apply, lay=tools_lay)
+        self.btn_crop_save.setVisible(False)
+        self.btn_crop_saveas = btn("viewer.crop_saveas", "viewer.crop_saveas_tip",
+                                   self._on_crop_save_as, lay=tools_lay)
+        self.btn_crop_saveas.setVisible(False)
+        # 🪣 Закрасить: залить выделенное цветом пипетки (v0.8.8) — четвёртая
+        # кнопка режима обрезки, видна только в режиме
+        self.btn_fill = btn("viewer.fill", "viewer.fill_tip", self._on_fill_apply,
+                            lay=tools_lay)
+        self.btn_fill.setVisible(False)
+        self.btn_crop_next = btn("viewer.crop_next", "viewer.crop_next_tip",
+                                 self._on_crop_apply_next, lay=tools_lay)
+        self.btn_crop_next.setVisible(False)
+        tools_lay.addWidget(vline())
+        # 💧 Пипетка: цвет пикселя по клику (v0.8.8); правый клик по картинке
+        # берёт цвет в ЛЮБОМ режиме — образец нужен кнопке «🪣 Закрасить»
+        self.btn_picker = QToolButton()
+        self.btn_picker.setText(tr("viewer.picker"))
+        self.btn_picker.setCheckable(True)
+        self.btn_picker.setToolTip(tr("viewer.picker_tip"))
+        self.btn_picker.setEnabled(False)   # включится, когда картинка показана
+        self.btn_picker.toggled.connect(self._on_picker_toggled)
+        tools_lay.addWidget(self.btn_picker)
+        self._i18n_buttons.append((self.btn_picker, "viewer.picker", "viewer.picker_tip"))
+        # образец взятого цвета: цветной квадрат + HEX — появляется
+        # после первого взятого цвета и живёт до конца сессии
+        self.picker_swatch = QLabel()
+        self.picker_swatch.setFixedSize(18, 18)
+        self.picker_swatch.setVisible(False)
+        tools_lay.addWidget(self.picker_swatch)
+        self.picker_hex = QLabel("")
+        self.picker_hex.setStyleSheet("color: #666;")
+        self.picker_hex.setVisible(False)
+        tools_lay.addWidget(self.picker_hex)
+        self._i18n_buttons.append((self.picker_swatch, None, "viewer.picker_chip_tip"))
+        self._i18n_buttons.append((self.picker_hex, None, "viewer.picker_chip_tip"))
+        tools_lay.addStretch(1)
 
         # --- список миниатюр ---
         self.list = _ThumbList()
@@ -2663,6 +2696,8 @@ class LocalViewer(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         layout.addLayout(bar)
+        # панель инструментов картинки — сразу под верхней панелью (v0.8.9)
+        layout.addWidget(self.tools_panel)
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
         self.splitter.addWidget(tree_panel)   # 0: дерево дисков/папок
         self.splitter.addWidget(self.list)    # 1: лента миниатюр
