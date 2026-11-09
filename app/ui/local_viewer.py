@@ -120,6 +120,10 @@ _RESIZE_SAVE_FORMATS = {
 }
 _RESIZE_DEFAULT_FMT = ("PNG", None)
 
+# ---------- обрезка картинки мышью, как в XnView (v0.8.7) ----------
+_CROP_MIN_DRAG = 4            # движение мыши короче (px виджета) — случайный клик
+_CROP_SUFFIX = "crop"         # имя результата: «имя_crop.ext», конфликт → «-1»
+
 
 def _resize_save_ext(ext: str) -> str:
     """Расширение файла-результата по расширению оригинала (AVIF → .png)."""
@@ -172,6 +176,21 @@ def _free_resize_name(folder: str, stem: str, w: int, h: int, ext: str) -> str:
     если файл с таким именем появился между кликом «Сохранить» и записью,
     результат получает следующий свободный номер — чужой файл не тронут."""
     base = f"{stem}_{w}x{h}"
+    candidate = f"{base}{ext}"
+    n = 0
+    while os.path.lexists(os.path.join(folder, candidate)):
+        n += 1
+        candidate = f"{base}-{n}{ext}"
+    return candidate
+
+
+def _free_crop_name(folder: str, stem: str, ext: str) -> str:
+    """Свободное имя «stem_crop.ext», затем «stem_crop-1.ext»… — без затираний.
+
+    Вызывается из рабочего потока непосредственно перед записью (v0.8.7):
+    если файл с таким именем появился между кликом и записью, результат
+    получает следующий свободный номер — чужой файл не тронут."""
+    base = f"{stem}_{_CROP_SUFFIX}"
     candidate = f"{base}{ext}"
     n = 0
     while os.path.lexists(os.path.join(folder, candidate)):
@@ -413,9 +432,24 @@ class _ResizeView(_CheckerView):
     HANDLE_RIGHT = 2     # правый край: только ширина
     HANDLE_BOTTOM = 3    # нижний край: только высота
 
+    # рукоятки выделения обрезки (v0.8.7): четыре угла, четыре края,
+    # перенос рамки и рисование новой — что под курсором при нажатии
+    CROP_NONE = 0
+    CROP_TL = 1
+    CROP_TR = 2
+    CROP_BR = 3
+    CROP_BL = 4
+    CROP_L = 5
+    CROP_R = 6
+    CROP_T = 7
+    CROP_B = 8
+    CROP_MOVE = 9
+    CROP_DRAW = 10
+
     resize_started = Signal(int)        # рукоятка захвачена (номер рукоятки)
     resize_dragged = Signal(int, int)   # смещение мыши от точки захвата, px
     resize_finished = Signal()          # кнопка отпущена
+    crop_selection_changed = Signal()   # выделение обрезки изменилось (v0.8.7)
 
     def __init__(self, text: str = "") -> None:
         super().__init__(text)
@@ -423,6 +457,15 @@ class _ResizeView(_CheckerView):
         self._drag_handle = self.HANDLE_NONE
         self._press_pos = QPointF()
         self._badge = ""
+        # обрезка (v0.8.7): выделение хранится в КООРДИНАТАХ КАРТИНКИ —
+        # не зависит ни от зума, ни от размера окна; None — выделения нет
+        self._crop_on = False
+        self._crop_sel: QRect | None = None
+        self._crop_img = QSize(0, 0)      # размер картинки в пикселях
+        self._crop_drag = self.CROP_NONE
+        self._crop_anchor = QPoint()      # якорь резинки/переноса (картинка)
+        self._crop_sel0 = QRect()         # выделение на момент захвата
+        self._crop_press_w = QPointF()    # точка нажатия (виджет) — отсчёт драга
         # mouseTracking: курсор-подсказка «за что тянуть» без зажатой кнопки
         self.setMouseTracking(True)
 
@@ -440,6 +483,29 @@ class _ResizeView(_CheckerView):
         if text != self._badge:
             self._badge = text
             self.update()
+
+    # ---------- режим обрезки (v0.8.7) ----------
+
+    def set_crop_mode(self, on: bool, img_size: QSize | None = None) -> None:
+        self._crop_on = bool(on)
+        self._crop_drag = self.CROP_NONE
+        self._crop_sel = None
+        if img_size is not None:
+            self._crop_img = QSize(img_size)
+        if not on:
+            self.unsetCursor()
+        self.update()
+
+    def has_selection(self) -> bool:
+        """Есть ли выделенная область обрезки."""
+        return self._crop_sel is not None and not self._crop_sel.isNull()
+
+    def selection(self) -> QRect:
+        """Выделенная область в координатах КАРТИНКИ (QRect() — нет выделения).
+
+        Именно этот прямоугольник уходит в _CropSaveTask: координаты
+        картинки не зависят от зума показа — что выделено, то и запишется."""
+        return QRect(self._crop_sel) if self._crop_sel else QRect()
 
     # ---------- геометрия ----------
 
@@ -489,9 +555,122 @@ class _ResizeView(_CheckerView):
             return Qt.CursorShape.SizeVerCursor
         return Qt.CursorShape.ArrowCursor
 
+    # ---------- геометрия обрезки (v0.8.7) ----------
+
+    def _to_img(self, p: QPointF) -> QPoint:
+        """Точка виджета → пиксель картинки, зажатый в пределы картинки."""
+        r = self.pixmap_rect()
+        if r.isNull() or self._crop_img.isEmpty():
+            return QPoint(0, 0)
+        x = (p.x() - r.x()) * self._crop_img.width() / max(1, r.width())
+        y = (p.y() - r.y()) * self._crop_img.height() / max(1, r.height())
+        return QPoint(max(0, min(self._crop_img.width() - 1, int(round(x)))),
+                      max(0, min(self._crop_img.height() - 1, int(round(y)))))
+
+    def _sel_widget(self) -> QRect:
+        """Выделение в координатах виджета — для рисования и попаданий мыши."""
+        r = self.pixmap_rect()
+        if r.isNull() or not self._crop_sel:
+            return QRect()
+        fx = r.width() / max(1, self._crop_img.width())
+        fy = r.height() / max(1, self._crop_img.height())
+        return QRect(r.x() + int(round(self._crop_sel.x() * fx)),
+                     r.y() + int(round(self._crop_sel.y() * fy)),
+                     max(1, int(round(self._crop_sel.width() * fx))),
+                     max(1, int(round(self._crop_sel.height() * fy))))
+
+    def _clamp_sel(self, sel: QRect) -> QRect:
+        """Зажать выделение в пределы картинки, минимум 1×1 пиксель."""
+        iw, ih = max(1, self._crop_img.width()), max(1, self._crop_img.height())
+        w = max(1, min(iw, sel.width()))
+        h = max(1, min(ih, sel.height()))
+        x = max(0, min(iw - w, sel.x()))
+        y = max(0, min(ih - h, sel.y()))
+        return QRect(x, y, w, h)
+
+    def _crop_handle_rect(self, handle: int, s: QRect) -> QRect:
+        """Прямоугольник рукоятки выделения в координатах виджета."""
+        k = _RESIZE_HANDLE
+        mid_x, mid_y = (s.left() + s.right()) // 2, (s.top() + s.bottom()) // 2
+        if handle == self.CROP_TL:
+            return QRect(s.left() - k // 2, s.top() - k // 2, k, k)
+        if handle == self.CROP_TR:
+            return QRect(s.right() - k // 2, s.top() - k // 2, k, k)
+        if handle == self.CROP_BR:
+            return QRect(s.right() - k // 2, s.bottom() - k // 2, k, k)
+        if handle == self.CROP_BL:
+            return QRect(s.left() - k // 2, s.bottom() - k // 2, k, k)
+        if handle == self.CROP_L:
+            return QRect(s.left() - k // 2, mid_y - k // 2, k, k)
+        if handle == self.CROP_R:
+            return QRect(s.right() - k // 2, mid_y - k // 2, k, k)
+        if handle == self.CROP_T:
+            return QRect(mid_x - k // 2, s.top() - k // 2, k, k)
+        return QRect(mid_x - k // 2, s.bottom() - k // 2, k, k)   # CROP_B
+
+    def crop_handle_at(self, pos) -> int:
+        """Какая рукоятка выделения под точкой (с запасом _RESIZE_SLOP)."""
+        s = self._sel_widget()
+        if s.isNull():
+            return self.CROP_NONE
+        slop = _RESIZE_SLOP
+        for h in (self.CROP_TL, self.CROP_TR, self.CROP_BR, self.CROP_BL,
+                  self.CROP_L, self.CROP_R, self.CROP_T, self.CROP_B):
+            if self._crop_handle_rect(h, s).adjusted(-slop, -slop, slop, slop).contains(pos):
+                return h
+        return self.CROP_NONE
+
+    def _crop_cursor_for(self, handle: int) -> Qt.CursorShape:
+        m = {self.CROP_TL: Qt.CursorShape.SizeFDiagCursor,
+             self.CROP_BR: Qt.CursorShape.SizeFDiagCursor,
+             self.CROP_TR: Qt.CursorShape.SizeBDiagCursor,
+             self.CROP_BL: Qt.CursorShape.SizeBDiagCursor,
+             self.CROP_L: Qt.CursorShape.SizeHorCursor,
+             self.CROP_R: Qt.CursorShape.SizeHorCursor,
+             self.CROP_T: Qt.CursorShape.SizeVerCursor,
+             self.CROP_B: Qt.CursorShape.SizeVerCursor,
+             self.CROP_MOVE: Qt.CursorShape.SizeAllCursor,
+             self.CROP_DRAW: Qt.CursorShape.CrossCursor}
+        return m.get(handle, Qt.CursorShape.ArrowCursor)
+
+    def _crop_hover_cursor(self, pos) -> None:
+        """Курсор-подсказка без зажатой кнопки: тяни / переноси / рисуй."""
+        if self._crop_drag:
+            return
+        h = self.crop_handle_at(pos)
+        if h:
+            self.setCursor(self._crop_cursor_for(h))
+        elif self._crop_sel and self._sel_widget().contains(pos):
+            self.setCursor(self._crop_cursor_for(self.CROP_MOVE))
+        elif self.pixmap_rect().contains(pos):
+            self.setCursor(self._crop_cursor_for(self.CROP_DRAW))
+        else:
+            self.unsetCursor()
+
     # ---------- мышь ----------
 
     def mousePressEvent(self, ev) -> None:  # noqa: N802 (Qt API)
+        if self._crop_on and ev.button() == Qt.MouseButton.LeftButton:
+            pr = self.pixmap_rect()
+            if not pr.isNull() and pr.contains(ev.position().toPoint()):
+                had_sel = self.has_selection()
+                h = self.crop_handle_at(ev.position().toPoint())
+                if h:
+                    self._crop_drag = h          # тянем рукоятку
+                elif had_sel and self._sel_widget().contains(ev.position().toPoint()):
+                    self._crop_drag = self.CROP_MOVE   # переносим рамку
+                else:
+                    self._crop_drag = self.CROP_DRAW   # рисуем новую рамку
+                    self._crop_sel = None
+                self._crop_press_w = ev.position()
+                self._crop_anchor = self._to_img(ev.position())
+                self._crop_sel0 = QRect(self._crop_sel) if self._crop_sel else QRect()
+                self.setCursor(self._crop_cursor_for(self._crop_drag))
+                self.update()
+                if had_sel and not self._crop_sel:
+                    self.crop_selection_changed.emit()   # старое выделение сброшено
+                ev.accept()
+                return
         if self._resize_on and ev.button() == Qt.MouseButton.LeftButton:
             handle = self.handle_at(ev.position().toPoint())
             if handle:
@@ -504,6 +683,33 @@ class _ResizeView(_CheckerView):
         super().mousePressEvent(ev)
 
     def mouseMoveEvent(self, ev) -> None:  # noqa: N802 (Qt API)
+        if self._crop_on and self._crop_drag:
+            img_p = self._to_img(ev.position())
+            full = QRect(0, 0, self._crop_img.width(), self._crop_img.height())
+            if self._crop_drag == self.CROP_DRAW:
+                # резинка: от якоря до текущего пикселя включительно, в пределах картинки
+                sel = QRect(QPoint(min(self._crop_anchor.x(), img_p.x()),
+                                   min(self._crop_anchor.y(), img_p.y())),
+                            QPoint(max(self._crop_anchor.x(), img_p.x()),
+                                   max(self._crop_anchor.y(), img_p.y())))
+                if not full.isNull():
+                    sel = sel.intersected(full)
+            elif self._crop_drag == self.CROP_MOVE:
+                dx = img_p.x() - self._crop_anchor.x()
+                dy = img_p.y() - self._crop_anchor.y()
+                sel = self._clamp_sel(self._crop_sel0.translated(dx, dy))
+            else:
+                sel = self._crop_resize_sel(self._crop_sel0, self._crop_drag, img_p)
+            if sel != self._crop_sel:
+                self._crop_sel = sel
+                self.crop_selection_changed.emit()
+            self.update()
+            ev.accept()
+            return
+        if self._crop_on:
+            self._crop_hover_cursor(ev.position().toPoint())
+            super().mouseMoveEvent(ev)
+            return
         if self._drag_handle:
             d = ev.position() - self._press_pos
             self.resize_dragged.emit(int(round(d.x())), int(round(d.y())))
@@ -514,6 +720,20 @@ class _ResizeView(_CheckerView):
         super().mouseMoveEvent(ev)
 
     def mouseReleaseEvent(self, ev) -> None:  # noqa: N802 (Qt API)
+        if (self._crop_on and self._crop_drag
+                and ev.button() == Qt.MouseButton.LeftButton):
+            was_draw = self._crop_drag == self.CROP_DRAW
+            # движение короче _CROP_MIN_DRAG — случайный клик, не выделение
+            moved = ((ev.position() - self._crop_press_w).manhattanLength()
+                     >= _CROP_MIN_DRAG)
+            self._crop_drag = self.CROP_NONE
+            if was_draw and not moved:
+                self._crop_sel = None
+            self._crop_hover_cursor(ev.position().toPoint())
+            self.crop_selection_changed.emit()
+            self.update()
+            ev.accept()
+            return
         if self._drag_handle and ev.button() == Qt.MouseButton.LeftButton:
             self._drag_handle = self.HANDLE_NONE
             self.resize_finished.emit()
@@ -522,14 +742,37 @@ class _ResizeView(_CheckerView):
         super().mouseReleaseEvent(ev)
 
     def leaveEvent(self, ev) -> None:  # noqa: N802 (Qt API)
-        if self._resize_on and not self._drag_handle:
+        if ((self._resize_on or self._crop_on)
+                and not self._drag_handle and not self._crop_drag):
             self.unsetCursor()
         super().leaveEvent(ev)
+
+    def _crop_resize_sel(self, s0: QRect, handle: int, p: QPoint) -> QRect:
+        """Выделение с подвинутой рукояткой: угол тянет два края, край — один.
+
+        Считается от выделения на момент захвата (s0), поэтому «прош MouseEvent»
+        через противоположную сторону просто переворачивает рамку, без накопления
+        ошибки. Результат зажат в пределы картинки, сторона — минимум 1 px."""
+        l, t = s0.left(), s0.top()
+        r, b = s0.right(), s0.bottom()
+        if handle in (self.CROP_TL, self.CROP_L, self.CROP_BL):
+            l = p.x()
+        if handle in (self.CROP_TR, self.CROP_R, self.CROP_BR):
+            r = p.x()
+        if handle in (self.CROP_TL, self.CROP_T, self.CROP_TR):
+            t = p.y()
+        if handle in (self.CROP_BL, self.CROP_B, self.CROP_BR):
+            b = p.y()
+        sel = QRect(QPoint(min(l, r), min(t, b)), QPoint(max(l, r), max(t, b)))
+        return self._clamp_sel(sel)
 
     # ---------- отрисовка ----------
 
     def paintEvent(self, event) -> None:  # noqa: N802 (Qt API)
         super().paintEvent(event)   # шахматка + картинка/кадр/текст (v0.7.16)
+        if self._crop_on:
+            self._paint_crop()
+            return   # режимы взаимоисключающие: в обрезке рамки ресайса нет
         if not self._resize_on:
             return
         r = self.pixmap_rect()
@@ -560,6 +803,67 @@ class _ResizeView(_CheckerView):
             p.setPen(QColor("#ffffff"))
             p.drawText(QRect(int(bx), int(by), tw, th).adjusted(6, 2, -6, -2),
                        Qt.AlignmentFlag.AlignCenter, self._badge)
+        p.end()
+
+    def _paint_crop(self) -> None:
+        """Выделение обрезки (v0.8.7) — как в XnView: затемнение вне рамки,
+
+        внутри — сетка третей; рамка двойная (белая сплошная + чёрный
+        пунктир со сдвигом) — видна на любом фоне; восемь янтарных рукояток
+        (тем же цветом, что в режиме размера) и бейдж с размером выделения."""
+        r = self.pixmap_rect()
+        if r.isNull():
+            return
+        s = self._sel_widget()
+        p = QPainter(self)
+        if not s.isNull():
+            # затемнение вне выделения — четыре полосы внутри картинки
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(0, 0, 0, 110))
+            for band in (QRect(r.left(), r.top(), r.width(),
+                               max(0, s.top() - r.top())),
+                         QRect(r.left(), s.bottom() + 1, r.width(),
+                               max(0, r.bottom() - s.bottom())),
+                         QRect(r.left(), s.top(),
+                               max(0, s.left() - r.left()), s.height()),
+                         QRect(s.right() + 1, s.top(),
+                               max(0, r.right() - s.right()), s.height())):
+                if band.width() > 0 and band.height() > 0:
+                    p.drawRect(band)
+            # сетка третей внутри выделения — на достаточно больших рамках
+            if s.width() >= 30 and s.height() >= 30:
+                p.setPen(QPen(QColor(255, 255, 255, 80), 1))
+                for i in (1, 2):
+                    x = s.left() + s.width() * i // 3
+                    p.drawLine(x, s.top() + 1, x, s.bottom() - 1)
+                    y = s.top() + s.height() * i // 3
+                    p.drawLine(s.left() + 1, y, s.right() - 1, y)
+            # рамка: чёрный пунктир со сдвигом + белая сплошная поверх
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.setPen(QPen(QColor(0, 0, 0, 170), 1, Qt.PenStyle.DashLine))
+            p.drawRect(s.adjusted(1, 1, 0, 0))
+            p.setPen(QPen(QColor(255, 255, 255, 230), 1))
+            p.drawRect(s.adjusted(0, 0, -1, -1))
+            # восемь рукояток — тем же янтарным, что звезда избранного
+            p.setPen(QPen(QColor("#8a6100"), 1.0))
+            p.setBrush(QColor("#F5B301"))
+            for h in (self.CROP_TL, self.CROP_TR, self.CROP_BR, self.CROP_BL,
+                      self.CROP_L, self.CROP_R, self.CROP_T, self.CROP_B):
+                p.drawRect(self._crop_handle_rect(h, s).adjusted(0, 0, -1, -1))
+            # бейдж с размером выделения — под правым-нижним углом рамки
+            badge = f"{self._crop_sel.width()}×{self._crop_sel.height()}"
+            fm = p.fontMetrics()
+            tw, th = fm.horizontalAdvance(badge) + 12, fm.height() + 4
+            bx = min(self.width() - tw, s.right() - tw + _RESIZE_HANDLE)
+            by = s.bottom() + 4
+            if by + th > self.height():
+                by = max(0, s.top() - th - 4)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(0, 0, 0, 170))
+            p.drawRoundedRect(int(bx), int(by), tw, th, 3, 3)
+            p.setPen(QColor("#ffffff"))
+            p.drawText(QRect(int(bx), int(by), tw, th).adjusted(6, 2, -6, -2),
+                       Qt.AlignmentFlag.AlignCenter, badge)
         p.end()
 
 
@@ -1059,6 +1363,11 @@ class _ResizeSignals(QObject):
     done = Signal(bool, str, int, int, str)
 
 
+class _CropSignals(QObject):
+    # итог сохранения обрезки: успех, путь результата, ширина, высота, ошибка
+    done = Signal(bool, str, int, int, str)
+
+
 class _ResizeSaveTask(QRunnable):
     """Масштабирование и запись картинки нового размера в рабочем потоке (v0.8.6).
 
@@ -1105,6 +1414,65 @@ class _ResizeSaveTask(QRunnable):
             self.signals.done.emit(True, path, out.width(), out.height(), "")
         except Exception as exc:  # noqa: BLE001 — текст ошибки уходит в статус
             applog.error(tr("log.event.resize_err",
+                            name=self.src_name, err=str(exc)[:200]))
+            self.signals.done.emit(False, "", 0, 0, str(exc)[:200])
+
+
+class _CropSaveTask(QRunnable):
+    """Вырезание выделенной области и запись результата в рабочем потоке (v0.8.7).
+
+    QImage.copy на большом фото — десятки миллисекунд, запись на сетевой
+    диск — секунды: GUI не ждёт (принцип v0.7.2). Оригинальный QImage не
+    режется — копия уходит в файл, оригинал живёт дальше в просмотре.
+    Без явного пути свободное имя «имя_crop.ext» проверяется здесь же,
+    непосредственно перед записью, — существующие файлы не затираются;
+    для «💾 Как…» путь уже выбран человеком в диалоге (Qt спросил
+    подтверждение перезаписи) — пишется ровно туда, куда указал человек."""
+
+    def __init__(self, img: QImage, rect: QRect, folder: str, stem: str,
+                 ext: str, src_name: str, signals: _CropSignals,
+                 dst_path: str = ""):
+        super().__init__()
+        self.img, self.rect = img, QRect(rect)
+        self.folder, self.stem, self.ext = folder, stem, ext
+        self.src_name, self.signals = src_name, signals
+        self.dst_path = dst_path
+
+    def run(self) -> None:  # рабочий поток
+        t0 = time.perf_counter()
+        try:
+            path = self.dst_path
+            if path and not os.path.splitext(path)[1]:
+                path = path + self.ext   # «Как…» без расширения — как у оригинала
+            if not path:
+                path = os.path.join(self.folder,
+                                    _free_crop_name(self.folder, self.stem,
+                                                    self.ext))
+            name = os.path.basename(path)
+            out = self.img.copy(self.rect)
+            if out.isNull():
+                raise ValueError("выделенная область пуста")
+            ext2 = os.path.splitext(path)[1].lower()
+            # JPEG и BMP не умеют в прозрачность: альфа → белый фон
+            # (те же правила, что при сохранении из интернета, image_saver.py)
+            if out.hasAlphaChannel() and ext2 in (".jpg", ".jpeg", ".bmp"):
+                from app.core.image_saver import _flatten_on_white
+                out = _flatten_on_white(out)
+            if ext2 in _RESIZE_SAVE_FORMATS:
+                qt_fmt, quality = _RESIZE_SAVE_FORMATS[ext2]
+                ok = (out.save(path, qt_fmt) if quality is None
+                      else out.save(path, qt_fmt, quality))
+            else:
+                ok = out.save(path)   # незнакомое расширение — Qt разберёт по суффиксу
+            if not ok:
+                raise ValueError(f"не удалось записать {name}")
+            ms = round((time.perf_counter() - t0) * 1000)
+            applog.event("log.event.crop", src=self.src_name, dst=name,
+                         w=out.width(), h=out.height(),
+                         extra=applog.extra(ms=ms))
+            self.signals.done.emit(True, path, out.width(), out.height(), "")
+        except Exception as exc:  # noqa: BLE001 — текст ошибки уходит в статус
+            applog.error(tr("log.event.crop_err",
                             name=self.src_name, err=str(exc)[:200]))
             self.signals.done.emit(False, "", 0, 0, str(exc)[:200])
 
@@ -1867,6 +2235,16 @@ class LocalViewer(QWidget):
         # путь, который надо открыть после пересканирования ленты (v0.8.6):
         # после сохранения уменьшенной копии лента обновится и покажет её
         self._select_after_scan = ""
+        # обрезка картинки мышью, как в XnView (v0.8.7): выделение хранит сам
+        # вью (в координатах картинки — переживает смену зума), вьюеру
+        # остаётся статус, кнопки и запись; сохранение — не чаще одной
+        # фоновой задачи за раз; «✂▶ К следующему» продолжает серию
+        self._crop_mode = False
+        self._crop_saving = False
+        self._crop_continue = False
+        self._crop_next_row = -1
+        self._crop_signals = _CropSignals()
+        self._crop_signals.done.connect(self._on_crop_save_done)
 
         # --- верхняя панель ---
         bar = QHBoxLayout()
@@ -1923,6 +2301,28 @@ class LocalViewer(QWidget):
         self.btn_resize_save = btn("viewer.resize_save", "viewer.resize_save_tip",
                                    self._on_resize_save)
         self.btn_resize_save.setVisible(False)
+        bar.addSpacing(8)
+        # ✂ Обрезать: выделение мышью по картинке, как в XnView (v0.8.7)
+        self.btn_crop = QToolButton()
+        self.btn_crop.setText(tr("viewer.crop"))
+        self.btn_crop.setCheckable(True)
+        self.btn_crop.setToolTip(tr("viewer.crop_tip"))
+        self.btn_crop.setEnabled(False)   # включится, когда картинка показана
+        self.btn_crop.toggled.connect(self._on_crop_toggled)
+        bar.addWidget(self.btn_crop)
+        self._i18n_buttons.append((self.btn_crop, "viewer.crop", "viewer.crop_tip"))
+        # три кнопки режима обрезки — видны только в режиме (v0.8.7):
+        # как в XnView — «Обрезать», «Сохранить выделенную область как…»
+        # и «Обрезать, Сохранить и перейти к следующему»
+        self.btn_crop_save = btn("viewer.crop_save", "viewer.crop_save_tip",
+                                 self._on_crop_apply)
+        self.btn_crop_save.setVisible(False)
+        self.btn_crop_saveas = btn("viewer.crop_saveas", "viewer.crop_saveas_tip",
+                                   self._on_crop_save_as)
+        self.btn_crop_saveas.setVisible(False)
+        self.btn_crop_next = btn("viewer.crop_next", "viewer.crop_next_tip",
+                                 self._on_crop_apply_next)
+        self.btn_crop_next.setVisible(False)
         bar.addSpacing(8)
         # фон-«шахматка» под прозрачными картинками: размер клетки — ползунком
         # (v0.7.16). Иконка-шахматка подсказывает, что регулирует ползунок.
@@ -2093,6 +2493,8 @@ class LocalViewer(QWidget):
         self.view_label.resize_started.connect(self._on_resize_start)
         self.view_label.resize_dragged.connect(self._on_resize_drag)
         self.view_label.resize_finished.connect(self._on_resize_release)
+        # выделение обрезки меняет сам вью — вьюеру нужен только статус (v0.8.7)
+        self.view_label.crop_selection_changed.connect(self._on_crop_selection_changed)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -2983,6 +3385,10 @@ class LocalViewer(QWidget):
         сервере — сетевой тайм-аут целиком; GUI-поток не ждёт — лента на это
         время очищается, статус показывает «Читаю папку…» (v0.7.2)."""
         self._cancel_search()
+        # та же папка или другая? при пересканировании той же папки (refresh
+        # после сохранения) серия «✂▶ К следующему» должна выжить (v0.8.7)
+        same_folder = (os.path.normpath(folder) == os.path.normpath(self._folder)
+                       if self._folder else False)
         self._folder = folder
         self._update_fav_button()   # ☆/★ под текущую папку
         self._gen += 1
@@ -3002,6 +3408,10 @@ class LocalViewer(QWidget):
         self._select_after_scan = ""   # отложенный выбор — только для своей папки
         self.set_resize_mode(False)          # смена папки закрывает ресайс (v0.8.6)
         self._update_resize_button()         # на время чтения кнопка погашена
+        self.set_crop_mode(False)            # и обрезку тоже (v0.8.7)
+        if not same_folder:
+            self._crop_continue = False      # серия «к следующему» не переживает СМЕНУ папки
+        self._update_crop_button()
         if entries is None:
             self._scan_restore = False
             self._scan_sync_tree = sync_tree
@@ -3153,8 +3563,11 @@ class LocalViewer(QWidget):
     # ---------- фильтр папок в дереве «Диски и папки» ----------
 
     def _escape_search(self) -> None:
-        """Esc чистит то поле поиска, где сейчас фокус; в режиме ресайса —
-        сначала выходит из него (v0.8.6)."""
+        """Esc чистит то поле поиска, где сейчас фокус; в режиме обрезки или
+        ресайса — сначала выходит из него (v0.8.7, v0.8.6)."""
+        if self._crop_mode:
+            self.set_crop_mode(False)
+            return
         if self._resize_mode:
             self.set_resize_mode(False)
             return
@@ -3456,6 +3869,7 @@ class LocalViewer(QWidget):
         # выбрали другую картинку — режим ресайса закрывается (v0.8.6):
         # размер задаётся одной конкретной картинке, а не вкладке целиком
         self.set_resize_mode(False)
+        self.set_crop_mode(False)   # и обрезка тоже — рамка чужой картинке не нужна (v0.8.7)
         self._movie = None
         path = self._paths[row]
         if os.path.splitext(path)[1].lower() == ".gif":
@@ -3491,6 +3905,7 @@ class LocalViewer(QWidget):
         # новая картинка — режим ресайса гарантированно закрыт (v0.8.6): пока
         # файл читался, пользователь мог успеть включить его на старой
         self.set_resize_mode(False)
+        self.set_crop_mode(False)
         if not img.isNull():
             self._pixmap = QPixmap.fromImage(img)
             # прозрачный формат (PNG/GIF/WebP…) — под ним рисуем «шахматку» (v0.7.16)
@@ -3498,10 +3913,17 @@ class LocalViewer(QWidget):
             self._apply_mode()
             self._set_view_status(path, row, self._pixmap.size())
             self._update_resize_button()   # статичная картинка — «⇲ Размер» доступна
+            self._update_crop_button()     # и «✂ Обрезать» тоже (v0.8.7)
+            if self._crop_continue:        # серия «✂▶ К следующему» (v0.8.7):
+                self._crop_continue = False
+                if self.btn_crop.isEnabled():
+                    self.set_crop_mode(True)   # рамка ждёт на следующей картинке
         elif err:
             self._pixmap = None   # картинки больше нет — и зумить/ресайзить нечего
             self._view_text(tr("viewer.cant_open", err=err))
             self._update_resize_button()
+            self._update_crop_button()
+            self._crop_continue = False   # серия прервалась — картинка не открылась
 
     def _on_gif_ready(self, row: int, path: str, data: bytes, err: str) -> None:
         """GIF прочитан в фоне — построить анимацию из памяти (QBuffer).
@@ -3519,9 +3941,12 @@ class LocalViewer(QWidget):
             self._pixmap = None
             self._view_text(tr("viewer.cant_open", err=err))
             self._update_resize_button()
+            self._update_crop_button()
             return
         # анимация — режим ресайса закрыт, кнопка погашена (v0.8.6)
         self.set_resize_mode(False)
+        self.set_crop_mode(False)   # GIF не режем — один кадр (v0.8.7)
+        self._crop_continue = False   # и серия «к следующему» тоже (v0.8.7)
         buf = QBuffer()
         buf.setData(QByteArray(data))
         buf.open(QBuffer.OpenModeFlag.ReadOnly)
@@ -3538,6 +3963,7 @@ class LocalViewer(QWidget):
         self._set_view_checker(movie.currentPixmap().hasAlphaChannel())
         self._set_view_status(path, row, movie.currentPixmap().size())
         self._update_resize_button()   # GIF — «⇲ Размер» недоступна (v0.8.6)
+        self._update_crop_button()     # и «✂ Обрезать» тем более (v0.8.7)
 
     def _set_view_status(self, path: str, row: int, size: QSize) -> None:
         self.status.setText(
@@ -3608,6 +4034,12 @@ class LocalViewer(QWidget):
         self._apply_mode()
 
     def fit_to_window(self) -> None:
+        if self._crop_mode:
+            # в обрезке «◱» просто вписывает показ: выделение хранится
+            # в координатах картинки и переживает смену зума (v0.8.7)
+            self._mode = "fit"
+            self._apply_mode()
+            return
         if self._resize_mode:
             self.set_resize_mode(False)   # «Вписать» — выход из ресайса (v0.8.6)
             return
@@ -3642,6 +4074,8 @@ class LocalViewer(QWidget):
         on = bool(on)
         if on == self._resize_mode:
             return
+        if on and self._crop_mode:
+            self.set_crop_mode(False)   # режимы «⇲ Размер» и «✂ Обрезать» взаимоисключающие
         if on and (self._pixmap is None or self._movie is not None):
             return   # менять размер нечего: GIF или пустой просмотр
         self._resize_mode = on
@@ -3773,6 +4207,177 @@ class LocalViewer(QWidget):
             self._select_after_scan = path
         else:
             self.status.setText(tr("viewer.resize_save_err", err=err))
+
+    # ---------- обрезка картинки мышью, как в XnView (v0.8.7) ----------
+
+    def _update_crop_button(self) -> None:
+        """Кнопка «✂ Обрезать» активна, только пока показана статичная картинка.
+
+        GIF обрезать нельзя (Qt пишет один кадр — честнее не предлагать),
+        пустой просмотр/ошибка чтения — тем более."""
+        can = self._pixmap is not None and self._movie is None
+        self.btn_crop.setEnabled(can)
+        if not can and self._crop_mode:
+            self.set_crop_mode(False)
+        # флаг серии «✂▶ К следующему» здесь НЕ гасится: он должен пережить
+        # пересканирование той же папки (pixmap на это время пуст) — его гасят
+        # только смена папки (load_folder), GIF и ошибка чтения (v0.8.7)
+
+    def _on_crop_toggled(self, on: bool) -> None:
+        self.set_crop_mode(on)
+
+    def set_crop_mode(self, on: bool) -> None:
+        """Включить/выключить режим обрезки (кнопка и программно).
+
+        Режимы «⇲ Размер» и «✂ Обрезать» взаимоисключающие: вход в один
+        закрывает другой. Показ картинки в режиме НЕ меняется (зум работает
+        как обычно) — выделение хранится в координатах картинки и переживает
+        смену зума; между заходами выделение не сохраняется."""
+        on = bool(on)
+        if on == self._crop_mode:
+            return
+        if on and (self._pixmap is None or self._movie is not None):
+            return   # обрезать нечего: GIF или пустой просмотр
+        if on and self._resize_mode:
+            self.set_resize_mode(False)
+        self._crop_mode = on
+        if self.btn_crop.isChecked() != on:
+            self.btn_crop.blockSignals(True)
+            self.btn_crop.setChecked(on)
+            self.btn_crop.blockSignals(False)
+        self.view_label.set_crop_mode(
+            on, self._pixmap.size() if (on and self._pixmap is not None) else None)
+        for b in (self.btn_crop_save, self.btn_crop_saveas, self.btn_crop_next):
+            b.setVisible(on)
+            b.setEnabled(False)   # включатся, когда появится выделение
+        if on:
+            self._crop_saving = False
+            self.status.setText(tr("viewer.crop_enter"))
+        else:
+            self._crop_saving = False
+
+    def _on_crop_selection_changed(self) -> None:
+        """Выделение изменилось: статус «✂ 409×275 из …» и доступность кнопок."""
+        if not self._crop_mode:
+            return
+        sel = self.view_label.selection()
+        has = not sel.isNull() and self._pixmap is not None
+        for b in (self.btn_crop_save, self.btn_crop_saveas, self.btn_crop_next):
+            b.setEnabled(has and not self._crop_saving)
+        if self._crop_saving:
+            return
+        if has:
+            orig = self._pixmap.size()
+            self.status.setText(tr("viewer.crop_status",
+                                   sel=_dims_text(sel.width(), sel.height()),
+                                   orig=_dims_text(orig.width(), orig.height())))
+        else:
+            self.status.setText(tr("viewer.crop_none"))
+
+    def _on_crop_apply(self) -> None:
+        self._crop_save("")
+
+    def _on_crop_apply_next(self) -> None:
+        """«✂▶ К следующему»: сохранить выделенное и открыть следующую картинку.
+
+        Режим обрезки остаётся включённым — папку целиком можно пройти одним
+        потоком, как в XnView («Обрезать, Сохранить и перейти к следующему»).
+        Если это была последняя картинка, серия честно заканчивается."""
+        row = self.list.currentRow()
+        self._crop_next_row = row + 1
+        self._crop_continue = True
+        self._crop_save("")
+
+    def _on_crop_save_as(self) -> None:
+        """«💾 Как…»: имя и папка результата — через стандартный диалог.
+
+        По умолчанию предлагается «имя_crop.ext» рядом с оригиналом; Qt сам
+        спросит подтверждение, если такой файл уже существует."""
+        if not self._crop_mode or not self.view_label.has_selection():
+            return
+        row = self.list.currentRow()
+        src = self._paths[row] if 0 <= row < len(self._paths) else ""
+        folder = os.path.dirname(src) if src else (self._folder or "")
+        stem = os.path.splitext(os.path.basename(src))[0] if src else "image"
+        ext = _resize_save_ext(os.path.splitext(src)[1]) if src else ".png"
+        path, _fltr = QFileDialog.getSaveFileName(
+            self, tr("viewer.crop_saveas_title"),
+            os.path.join(folder, f"{stem}_{_CROP_SUFFIX}{ext}"),
+            tr("viewer.crop_saveas_filter"))
+        if path:
+            self._crop_save(path)
+
+    def _crop_save(self, dst_path: str) -> None:
+        """Записать выделенную область — общий хвост «Сохранить»/«Как…»/«К следующему».
+
+        Вырезание и запись выполняет рабочий поток (_CropSaveTask): GUI не
+        ждёт ни QImage.copy большого фото, ни сетевой диск (принцип v0.7.2).
+        Оригинал не меняется; без явного пути свободное имя «имя_crop.ext»
+        выбирается непосредственно перед записью — ничего не затирается."""
+        if (not self._crop_mode or self._pixmap is None
+                or not self.view_label.has_selection()):
+            return
+        if self._crop_saving:
+            self.status.setText(tr("viewer.crop_saving"))
+            return
+        row = self.list.currentRow()
+        src = self._paths[row] if 0 <= row < len(self._paths) else ""
+        folder = os.path.dirname(src) if src else self._folder
+        if not dst_path and (not folder or not os.path.isdir(folder)):
+            self.status.setText(tr("viewer.crop_save_err",
+                                   err=os.path.basename(src) or "—"))
+            applog.error(tr("log.event.crop_err",
+                            name=os.path.basename(src) or "—",
+                            err="папка недоступна"))
+            return
+        self._crop_saving = True
+        for b in (self.btn_crop_save, self.btn_crop_saveas, self.btn_crop_next):
+            b.setEnabled(False)
+        self.status.setText(tr("viewer.crop_saving"))
+        stem = os.path.splitext(os.path.basename(src))[0] if src else "image"
+        ext = _resize_save_ext(os.path.splitext(src)[1]) if src else ".png"
+        QThreadPool.globalInstance().start(_CropSaveTask(
+            self._pixmap.toImage(), self.view_label.selection(), folder,
+            stem, ext, os.path.basename(src) or "—", self._crop_signals,
+            dst_path))
+
+    def _on_crop_save_done(self, ok: bool, path: str, w: int, h: int,
+                           err: str) -> None:
+        """Фоновая запись закончилась: статус и обновление ленты.
+
+        «💾 Сохранить»/«💾 Как…»: режим закрывается, лента пересканируется,
+        новый файл открывается в просмотре. «✂▶ К следующему»: режим
+        остаётся — после пересканирования откроется СЛЕДУЮЩАЯ картинка
+        папки, рамка чистая, можно обрезать дальше. При ошибке режим и
+        выделение на месте — можно поправить и сохранить снова."""
+        self._crop_saving = False
+        if ok:
+            name = os.path.basename(path)
+            batch = self._crop_continue
+            nxt = (self._paths[self._crop_next_row]
+                   if batch and 0 <= self._crop_next_row < len(self._paths)
+                   else "")
+            self._crop_next_row = -1
+            if batch and nxt:
+                self.status.setText(tr("viewer.crop_saved_next",
+                                       name=name, w=w, h=h))
+                self.refresh()   # новый файл появится в ленте
+                # отложенный выбор — ПОСЛЕ refresh(): load_folder внутри него
+                # чистит поле, а цель нужен только скану, который приедет позже
+                self._select_after_scan = nxt   # серия продолжится сама
+            else:
+                if batch:
+                    self._crop_continue = False   # папка кончилась — серия закрыта
+                self.status.setText(tr("viewer.crop_saved_end" if batch
+                                       else "viewer.crop_saved",
+                                       name=name, w=w, h=h))
+                self.set_crop_mode(False)
+                self.refresh()
+                self._select_after_scan = path
+        else:
+            for b in (self.btn_crop_save, self.btn_crop_saveas, self.btn_crop_next):
+                b.setEnabled(self.view_label.has_selection())
+            self.status.setText(tr("viewer.crop_save_err", err=err))
 
     # ---------- дерево дисков и папок ----------
 

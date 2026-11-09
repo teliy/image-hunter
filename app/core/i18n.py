@@ -671,6 +671,98 @@ _STRINGS: dict[str, dict[str, str]] = {
         "zh": "无法保存 {name} 的新尺寸：{err}"},
     "perf.op.resize": {
         "ru": "resize: {name}", "en": "resize: {name}", "zh": "resize：{name}"},
+    # ---------- обрезка картинки мышью, как в XnView (v0.8.7) ----------
+    "viewer.crop": {
+        "ru": "✂ Обрезать", "en": "✂ Crop", "zh": "✂ 裁剪"},
+    "viewer.crop_tip": {
+        "ru": "Обрезать картинку, как в XnView: растяните рамку мышью по картинке,\n"
+              "поправьте за янтарные рукоятки (углы и края) или перетащите рамку\n"
+              "целиком; внутри — сетка третей. «💾 Сохранить» запишет выделенное\n"
+              "отдельным файлом «имя_crop.ext» рядом с оригиналом, «💾 Как…» —\n"
+              "с выбором имени и папки, «✂▶ К следующему» — сохранит и откроет\n"
+              "следующую картинку папки. Зум в режиме работает. Esc — выйти.",
+        "en": "Crop the image like in XnView: drag a rectangle over the picture,\n"
+              "adjust it by the amber handles (corners and edges) or drag the\n"
+              "whole rectangle; a thirds grid is drawn inside. “💾 Save” writes\n"
+              "the selection as a separate file “name_crop.ext” next to the\n"
+              "original, “💾 As…” — with a name and folder of your choice,\n"
+              "“✂▶ Save & next” — saves and opens the next picture of the\n"
+              "folder. Zoom works in this mode. Esc — leave.",
+        "zh": "像 XnView 一样裁剪图片：在图片上拖动出矩形选框，用琥珀色手柄\n"
+              "（角点和边点）微调，或整体拖动选框；内部显示三分构图线。\n"
+              "“💾 保存”将所选区域另存为原图旁边的单独文件“名字_crop.ext”，\n"
+              "“💾 另存为…”可选择名称和文件夹，“✂▶ 裁剪下一张”保存并打开\n"
+              "文件夹中的下一张图片。此模式下缩放可用。Esc — 退出。"},
+    "viewer.crop_save": {
+        "ru": "💾 Сохранить", "en": "💾 Save", "zh": "💾 保存"},
+    "viewer.crop_save_tip": {
+        "ru": "Записать выделенную область отдельным файлом «имя_crop.ext» рядом\n"
+              "с оригиналом — оригинал не меняется, существующие файлы не затираются",
+        "en": "Write the selected area as a separate file “name_crop.ext” next to\n"
+              "the original — the original stays untouched, nothing is overwritten",
+        "zh": "将所选区域作为单独文件“名字_crop.ext”保存到原图旁边 —\n"
+              "原图不变，不会覆盖现有文件"},
+    "viewer.crop_saveas": {
+        "ru": "💾 Как…", "en": "💾 As…", "zh": "💾 另存为…"},
+    "viewer.crop_saveas_tip": {
+        "ru": "Сохранить выделенную область с выбором имени и папки",
+        "en": "Save the selected area with a name and folder of your choice",
+        "zh": "保存所选区域，并可自选名称和文件夹"},
+    "viewer.crop_saveas_title": {
+        "ru": "Сохранить выделенную область как",
+        "en": "Save selected area as",
+        "zh": "将所选区域另存为"},
+    "viewer.crop_saveas_filter": {
+        "ru": "Картинки (*.png *.jpg *.jpeg *.webp *.bmp *.tif *.tiff);;Все файлы (*)",
+        "en": "Images (*.png *.jpg *.jpeg *.webp *.bmp *.tif *.tiff);;All files (*)",
+        "zh": "图片 (*.png *.jpg *.jpeg *.webp *.bmp *.tif *.tiff);;所有文件 (*)"},
+    "viewer.crop_next": {
+        "ru": "✂▶ К следующему", "en": "✂▶ Save & next", "zh": "✂▶ 裁剪下一张"},
+    "viewer.crop_next_tip": {
+        "ru": "Сохранить выделенное и открыть следующую картинку папки —\n"
+              "режим остаётся включённым, папку можно пройти одним потоком",
+        "en": "Save the selection and open the next picture of the folder —\n"
+              "the mode stays on, so a whole folder can be cropped in one flow",
+        "zh": "保存所选区域并打开文件夹中的下一张图片 —\n"
+              "模式保持开启，可连续裁剪整个文件夹"},
+    "viewer.crop_enter": {
+        "ru": "✂ Растяните рамку по картинке; «💾 Сохранить» запишет выделенное, Esc — выход",
+        "en": "✂ Drag a rectangle over the picture; “💾 Save” writes the selection, Esc to leave",
+        "zh": "✂ 在图片上拖动出选框；“💾 保存”保存所选区域，Esc 退出"},
+    "viewer.crop_status": {
+        "ru": "✂ {sel} из {orig}", "en": "✂ {sel} of {orig}", "zh": "✂ {sel} / {orig}"},
+    "viewer.crop_none": {
+        "ru": "Выделите рамкой область картинки",
+        "en": "Drag a rectangle to select an area of the picture",
+        "zh": "拖动选框选择图片区域"},
+    "viewer.crop_saving": {
+        "ru": "Сохраняю выделенную область…",
+        "en": "Saving the selected area…",
+        "zh": "正在保存所选区域…"},
+    "viewer.crop_saved": {
+        "ru": "Обрезано: {name} ({w}×{h}) — оригинал не тронут",
+        "en": "Cropped: {name} ({w}×{h}) — the original is untouched",
+        "zh": "已裁剪：{name}（{w}×{h}）— 原图未变"},
+    "viewer.crop_saved_next": {
+        "ru": "Обрезано: {name} ({w}×{h}) — открыл следующую картинку",
+        "en": "Cropped: {name} ({w}×{h}) — opened the next picture",
+        "zh": "已裁剪：{name}（{w}×{h}）— 已打开下一张图片"},
+    "viewer.crop_saved_end": {
+        "ru": "Обрезано: {name} ({w}×{h}) — это была последняя картинка папки",
+        "en": "Cropped: {name} ({w}×{h}) — that was the last picture of the folder",
+        "zh": "已裁剪：{name}（{w}×{h}）— 这是文件夹中的最后一张图片"},
+    "viewer.crop_save_err": {
+        "ru": "Не удалось обрезать: {err}", "en": "Failed to crop: {err}", "zh": "裁剪失败：{err}"},
+    "log.event.crop": {
+        "ru": "Обрезана картинка: {src} → {dst} ({w}×{h})",
+        "en": "Image cropped: {src} → {dst} ({w}×{h})",
+        "zh": "图片已裁剪：{src} → {dst}（{w}×{h}）"},
+    "log.event.crop_err": {
+        "ru": "Не удалось обрезать {name}: {err}",
+        "en": "Failed to crop {name}: {err}",
+        "zh": "无法裁剪 {name}：{err}"},
+    "perf.op.crop": {
+        "ru": "crop: {name}", "en": "crop: {name}", "zh": "crop：{name}"},
     "viewer.home": {
         "ru": "🏠 Домой", "en": "🏠 Home", "zh": "🏠 主目录"},
     "viewer.pictures": {
