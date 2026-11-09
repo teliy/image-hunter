@@ -190,6 +190,14 @@ _STRINGS: dict[str, dict[str, str]] = {
               "然后在需要的地方粘贴 (Ctrl+V)。\n"
               "双击文件名可重命名；双击图片本身\n"
               "将在系统查看器中打开。"},
+    "viewer.tree_drop_tip": {
+        "ru": "Перетащите выделенные в ленте файлы на папку или диск — они\n"
+              "перенесутся туда (файл над свёрнутой папкой сам её раскроет).",
+        "en": "Drop files selected in the strip onto a folder or drive —\n"
+              "they will be moved there (holding a file over a collapsed\n"
+              "folder expands it).",
+        "zh": "将缩略图条中选中的文件拖到文件夹或磁盘上即可移动；\n"
+              "悬停在折叠的文件夹上会自动展开。"},
     "viewer.ctx_open": {
         "ru": "Открыть", "en": "Open", "zh": "打开"},
     "viewer.ctx_copy": {
@@ -315,6 +323,32 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ru": "Ничего не выделено — копировать нечего",
         "en": "Nothing is selected — nothing to copy",
         "zh": "未选择任何内容 — 没有可复制的"},
+    "viewer.move_busy": {
+        "ru": "Предыдущее перемещение ещё идёт — секунду",
+        "en": "The previous move is still in progress — one moment",
+        "zh": "上一个移动操作仍在进行 — 请稍候"},
+    "viewer.move_nothing": {
+        "ru": "Нечего перемещать", "en": "Nothing to move", "zh": "没有可移动的文件"},
+    "viewer.move_same_folder": {
+        "ru": "Файлы уже лежат в этой папке — переносить нечего",
+        "en": "The files are already in this folder — nothing to move",
+        "zh": "文件已在此文件夹中 — 无需移动"},
+    "viewer.moving": {
+        "ru": "Переношу {n} файлов → {target}…",
+        "en": "Moving {n} files → {target}…",
+        "zh": "正在移动 {n} 个文件 → {target}…"},
+    "viewer.move_done": {
+        "ru": "Перемещено: {n} → {target}",
+        "en": "Moved: {n} → {target}",
+        "zh": "已移动：{n} 个 → {target}"},
+    "viewer.move_done_err": {
+        "ru": "Перемещено: {n}, с ошибками: {m} (подробности в Журнале)",
+        "en": "Moved: {n}, failed: {m} (details in the Log)",
+        "zh": "已移动：{n} 个，失败：{m} 个（详见日志）"},
+    "viewer.move_none": {
+        "ru": "Переносить нечего — файлы уже в целевой папке",
+        "en": "Nothing moved — the files are already there",
+        "zh": "无需移动 — 文件已在目标文件夹中"},
     "viewer.copied_status": {
         "ru": "Скопировано: {n} — вставьте в Проводник или браузер (Ctrl+V)",
         "en": "Copied: {n} — paste into Explorer or a browser (Ctrl+V)",
@@ -919,6 +953,18 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ru": "Плитку зажали и повели, но перетаскивание не началось: {why}",
         "en": "The tile was pressed and moved, but the drag did not start: {why}",
         "zh": "卡片被按住并移动，但拖放未开始：{why}"},
+    "log.event.move_start": {
+        "ru": "Перемещение начато: {n} файлов → {target}: {names}",
+        "en": "Move started: {n} files → {target}: {names}",
+        "zh": "移动开始：{n} 个文件 → {target}：{names}"},
+    "log.event.move_done": {
+        "ru": "Перемещено: {n} → {target}",
+        "en": "Moved: {n} → {target}",
+        "zh": "已移动：{n} 个 → {target}"},
+    "log.event.move_err": {
+        "ru": "ОШИБКА перемещения «{path}»: {err}",
+        "en": "MOVE ERROR “{path}”: {err}",
+        "zh": "移动错误“{path}”：{err}"},
     "log.why.not_selected": {
         "ru": "плитка не выделена",
         "en": "the tile is not selected",
@@ -1208,6 +1254,9 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ru": "пакет сохранения", "en": "save batch", "zh": "保存批次"},
     "perf.op.delete_files": {
         "ru": "удаление файлов", "en": "delete files", "zh": "删除文件"},
+    "perf.op.move_files": {
+        "ru": "перемещение файлов в папку дерева", "en": "move files to a tree folder",
+        "zh": "移动文件到目录树文件夹"},
 }
 
 # кэш текущего языка: читается на каждый tr() — QSettings трогаем один раз
