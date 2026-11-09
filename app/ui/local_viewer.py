@@ -104,6 +104,81 @@ _RES_ROLE = Qt.ItemDataRole.UserRole + 10   # подпись плитки: ра�
 # при попадании в кэш оригинал не читается вовсе, а подписи разрешение нужно
 _DIMS_TEXT_KEY = "ih-dims"
 
+# ---------- изменение размера картинки мышью (v0.8.6) ----------
+_RESIZE_HANDLE = 12            # видимый размер рукоятки (угол), px
+_RESIZE_EDGE = 6               # толщина краевых рукояток, px
+_RESIZE_SLOP = 5               # запас зоны попадания курсора вокруг рукоятки, px
+_RESIZE_MIN = 1                # минимальная сторона результата, px
+_RESIZE_MAX_SIDE = 16383       # разумный предел стороны (ограничение QImage/текстур)
+_RESIZE_MAX_PIXELS = 64_000_000   # предел площади: RGBA-картинка такого размера ≈ 256 МБ
+# формат записи результата по расширению оригинала: (Qt-формат, качество | None);
+# AVIF средствами Qt не записывается — такой оригинал уезжает в PNG (v0.8.6)
+_RESIZE_SAVE_FORMATS = {
+    ".png": ("PNG", None), ".jpg": ("JPEG", 92), ".jpeg": ("JPEG", 92),
+    ".bmp": ("BMP", None), ".webp": ("WEBP", 90),
+    ".tiff": ("TIFF", None), ".tif": ("TIFF", None),
+}
+_RESIZE_DEFAULT_FMT = ("PNG", None)
+
+
+def _resize_save_ext(ext: str) -> str:
+    """Расширение файла-результата по расширению оригинала (AVIF → .png)."""
+    return ext.lower() if ext.lower() in _RESIZE_SAVE_FORMATS else ".png"
+
+
+def _resize_format_for(ext: str) -> tuple[str, int | None]:
+    """(Qt-формат, качество) записи результата по расширению оригинала."""
+    return _RESIZE_SAVE_FORMATS.get(ext.lower(), _RESIZE_DEFAULT_FMT)
+
+
+def _clamp_resize(w: int, h: int) -> tuple[int, int]:
+    """Ограничить запрошенный размер: стороны — до 16383, площадь — до 64 Мп.
+
+    Верхние пределы защищают и от случайного «растягивания до гигантской
+    картинки» (память RGBA ×4 байта), и от пределов самого QImage."""
+    w = max(_RESIZE_MIN, min(_RESIZE_MAX_SIDE, int(w)))
+    h = max(_RESIZE_MIN, min(_RESIZE_MAX_SIDE, int(h)))
+    if w * h > _RESIZE_MAX_PIXELS:
+        k = math.sqrt(_RESIZE_MAX_PIXELS / float(w * h))
+        w = max(_RESIZE_MIN, int(w * k))
+        h = max(_RESIZE_MIN, int(h * k))
+    return w, h
+
+
+def _resize_target_for(handle: int, start: QSize, dx: int, dy: int,
+                       orig: QSize) -> QSize:
+    """Новый размер по типу рукоятки (v0.8.6).
+
+    Угол — пропорционально исходным пропорциям картинки (за ширину);
+    правый край — только ширина, нижний край — только высота. Результат
+    всегда в пределах _clamp_resize."""
+    if handle == _ResizeView.HANDLE_CORNER:
+        w = start.width() + dx
+        h = int(round(w * orig.height() / max(1, orig.width())))
+    elif handle == _ResizeView.HANDLE_RIGHT:
+        w, h = start.width() + dx, start.height()
+    elif handle == _ResizeView.HANDLE_BOTTOM:
+        w, h = start.width(), start.height() + dy
+    else:
+        w, h = start.width(), start.height()
+    w, h = _clamp_resize(w, h)
+    return QSize(w, h)
+
+
+def _free_resize_name(folder: str, stem: str, w: int, h: int, ext: str) -> str:
+    """Свободное имя «stem_WxH.ext», затем «stem_WxH-1.ext»… — без затираний.
+
+    Вызывается из рабочего потока непосредственно перед записью (v0.8.6):
+    если файл с таким именем появился между кликом «Сохранить» и записью,
+    результат получает следующий свободный номер — чужой файл не тронут."""
+    base = f"{stem}_{w}x{h}"
+    candidate = f"{base}{ext}"
+    n = 0
+    while os.path.lexists(os.path.join(folder, candidate)):
+        n += 1
+        candidate = f"{base}-{n}{ext}"
+    return candidate
+
 
 def _dims_text(w: int, h: int) -> str:
     """Разрешение в виде для подписи плитки и для хранения в кэше.
@@ -319,6 +394,173 @@ class _CheckerView(QLabel):
             p = QPainter(self)
             p.fillRect(self.rect(), QBrush(self._tile))
         super().paintEvent(event)
+
+
+class _ResizeView(_CheckerView):
+    """Область просмотра с рукоятками изменения размера картинки (v0.8.6).
+
+    В обычном режиме ведёт себя в точности как _CheckerView (шахматка под
+    прозрачными картинками, кадр GIF, текст ошибок). В режиме ресайза
+    (его включает вьюер) поверх картинки рисуется рамка и три рукоятки:
+    угол (пропорционально), правый край (ширина) и нижний край (высота);
+    курсор подсказывает, за что можно тянуть, а перетаскивание вьюером
+    транслируется в сигналы — математику размера считает LocalViewer
+    (_resize_target_for), он же перестраивает показанный пиксмап.
+    """
+
+    HANDLE_NONE = 0
+    HANDLE_CORNER = 1    # правый-нижний угол: пропорционально
+    HANDLE_RIGHT = 2     # правый край: только ширина
+    HANDLE_BOTTOM = 3    # нижний край: только высота
+
+    resize_started = Signal(int)        # рукоятка захвачена (номер рукоятки)
+    resize_dragged = Signal(int, int)   # смещение мыши от точки захвата, px
+    resize_finished = Signal()          # кнопка отпущена
+
+    def __init__(self, text: str = "") -> None:
+        super().__init__(text)
+        self._resize_on = False
+        self._drag_handle = self.HANDLE_NONE
+        self._press_pos = QPointF()
+        self._badge = ""
+        # mouseTracking: курсор-подсказка «за что тянуть» без зажатой кнопки
+        self.setMouseTracking(True)
+
+    # ---------- состояние режима (управляет LocalViewer) ----------
+
+    def set_resize_mode(self, on: bool) -> None:
+        self._resize_on = bool(on)
+        self._drag_handle = self.HANDLE_NONE
+        if not on:
+            self.unsetCursor()
+        self.update()
+
+    def set_size_badge(self, text: str) -> None:
+        """Бейдж с текущим размером у угла рамки (пусто — не рисовать)."""
+        if text != self._badge:
+            self._badge = text
+            self.update()
+
+    # ---------- геометрия ----------
+
+    def pixmap_rect(self) -> QRect:
+        """Прямоугольник картинки внутри виджета (QLabel центрует содержимое)."""
+        pm = self.pixmap()
+        if pm is None or pm.isNull():
+            return QRect()
+        x = max(0, (self.width() - pm.width()) // 2)
+        y = max(0, (self.height() - pm.height()) // 2)
+        return QRect(x, y, pm.width(), pm.height())
+
+    def _corner_rect(self, r: QRect) -> QRect:
+        return QRect(r.right() - _RESIZE_HANDLE + 1, r.bottom() - _RESIZE_HANDLE + 1,
+                     _RESIZE_HANDLE, _RESIZE_HANDLE)
+
+    def _right_rect(self, r: QRect) -> QRect:
+        return QRect(r.right() - _RESIZE_EDGE // 2,
+                     (r.top() + r.bottom()) // 2 - _RESIZE_HANDLE,
+                     _RESIZE_EDGE, _RESIZE_HANDLE * 2)
+
+    def _bottom_rect(self, r: QRect) -> QRect:
+        return QRect((r.left() + r.right()) // 2 - _RESIZE_HANDLE,
+                     r.bottom() - _RESIZE_EDGE // 2,
+                     _RESIZE_HANDLE * 2, _RESIZE_EDGE)
+
+    def handle_at(self, pos) -> int:
+        """Какая рукоятка под точкой (с запасом _RESIZE_SLOP), 0 — никакая."""
+        r = self.pixmap_rect()
+        if r.isNull():
+            return self.HANDLE_NONE
+        slop = _RESIZE_SLOP
+        if self._corner_rect(r).adjusted(-slop, -slop, slop, slop).contains(pos):
+            return self.HANDLE_CORNER
+        if self._right_rect(r).adjusted(-slop, -slop, slop, slop).contains(pos):
+            return self.HANDLE_RIGHT
+        if self._bottom_rect(r).adjusted(-slop, -slop, slop, slop).contains(pos):
+            return self.HANDLE_BOTTOM
+        return self.HANDLE_NONE
+
+    def _cursor_for(self, handle: int) -> Qt.CursorShape:
+        if handle == self.HANDLE_CORNER:
+            return Qt.CursorShape.SizeFDiagCursor
+        if handle == self.HANDLE_RIGHT:
+            return Qt.CursorShape.SizeHorCursor
+        if handle == self.HANDLE_BOTTOM:
+            return Qt.CursorShape.SizeVerCursor
+        return Qt.CursorShape.ArrowCursor
+
+    # ---------- мышь ----------
+
+    def mousePressEvent(self, ev) -> None:  # noqa: N802 (Qt API)
+        if self._resize_on and ev.button() == Qt.MouseButton.LeftButton:
+            handle = self.handle_at(ev.position().toPoint())
+            if handle:
+                self._drag_handle = handle
+                self._press_pos = ev.position()
+                self.setCursor(self._cursor_for(handle))
+                self.resize_started.emit(handle)
+                ev.accept()
+                return
+        super().mousePressEvent(ev)
+
+    def mouseMoveEvent(self, ev) -> None:  # noqa: N802 (Qt API)
+        if self._drag_handle:
+            d = ev.position() - self._press_pos
+            self.resize_dragged.emit(int(round(d.x())), int(round(d.y())))
+            ev.accept()
+            return
+        if self._resize_on:
+            self.setCursor(self._cursor_for(self.handle_at(ev.position().toPoint())))
+        super().mouseMoveEvent(ev)
+
+    def mouseReleaseEvent(self, ev) -> None:  # noqa: N802 (Qt API)
+        if self._drag_handle and ev.button() == Qt.MouseButton.LeftButton:
+            self._drag_handle = self.HANDLE_NONE
+            self.resize_finished.emit()
+            ev.accept()
+            return
+        super().mouseReleaseEvent(ev)
+
+    def leaveEvent(self, ev) -> None:  # noqa: N802 (Qt API)
+        if self._resize_on and not self._drag_handle:
+            self.unsetCursor()
+        super().leaveEvent(ev)
+
+    # ---------- отрисовка ----------
+
+    def paintEvent(self, event) -> None:  # noqa: N802 (Qt API)
+        super().paintEvent(event)   # шахматка + картинка/кадр/текст (v0.7.16)
+        if not self._resize_on:
+            return
+        r = self.pixmap_rect()
+        if r.isNull():
+            return
+        p = QPainter(self)
+        # рамка вокруг картинки результата — видно, ЧТО именно сохранится
+        p.setPen(QPen(QColor(255, 255, 255, 150), 1, Qt.PenStyle.DashLine))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawRect(r.adjusted(0, 0, -1, -1))
+        # рукоятки — тем же янтарным, что звезда избранного и галочки выдачи
+        p.setPen(QPen(QColor("#8a6100"), 1.0))
+        p.setBrush(QColor("#F5B301"))
+        p.drawRect(self._corner_rect(r).adjusted(0, 0, -1, -1))
+        p.drawRect(self._right_rect(r).adjusted(0, 0, -1, -1))
+        p.drawRect(self._bottom_rect(r).adjusted(0, 0, -1, -1))
+        # бейдж с текущим размером — под правым-нижним углом рамки
+        if self._badge:
+            fm = p.fontMetrics()
+            tw, th = fm.horizontalAdvance(self._badge) + 12, fm.height() + 4
+            bx = min(self.width() - tw, r.right() - tw + _RESIZE_HANDLE)
+            by = r.bottom() + 4
+            if by + th > self.height():
+                by = max(0, r.top() - th - 4)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(0, 0, 0, 170))
+            p.drawRoundedRect(int(bx), int(by), tw, th, 3, 3)
+            p.setPen(QColor("#ffffff"))
+            p.drawText(QRect(int(bx), int(by), tw, th).adjusted(6, 2, -6, -2),
+                       Qt.AlignmentFlag.AlignCenter, self._badge)
+        p.end()
 
 
 def _is_hidden_entry(entry: os.DirEntry) -> bool:
@@ -810,6 +1052,61 @@ class _MoveTask(QRunnable):
                 errors.append((os.path.basename(src) or src, str(e)))
                 fail += 1
         self.signals.done.emit(ok, skip, fail, errors, moved, self.target)
+
+
+class _ResizeSignals(QObject):
+    # итог сохранения: успех, путь результата, ширина, высота, ошибка
+    done = Signal(bool, str, int, int, str)
+
+
+class _ResizeSaveTask(QRunnable):
+    """Масштабирование и запись картинки нового размера в рабочем потоке (v0.8.6).
+
+    Масштаб SmoothTransformation на большом фото — десятки-сотни миллисекунд,
+    запись на сетевой диск — секунды: GUI не ждёт (принцип v0.7.2). QImage
+    можно передавать между потоками (QPixmap — нельзя), поэтому в задачу
+    уходит оригинальный QImage, а масштабирование и запись делает рабочий
+    поток. Имя «имя_WxH.ext» проверяется на свободу здесь же, непосредственно
+    перед записью, — существующие файлы никогда не затираются.
+    """
+
+    def __init__(self, img: QImage, w: int, h: int, folder: str, stem: str,
+                 ext: str, src_name: str, signals: _ResizeSignals):
+        super().__init__()
+        self.img, self.w, self.h = img, w, h
+        self.folder, self.stem, self.ext = folder, stem, ext
+        self.src_name, self.signals = src_name, signals
+
+    def run(self) -> None:  # рабочий поток
+        t0 = time.perf_counter()
+        try:
+            qt_fmt, quality = _resize_format_for(self.ext)
+            out = self.img.scaled(self.w, self.h,
+                                  Qt.AspectRatioMode.IgnoreAspectRatio,
+                                  Qt.TransformationMode.SmoothTransformation)
+            if out.isNull():
+                raise ValueError("масштабирование не удалось")
+            # JPEG и BMP не умеют в прозрачность: альфа → белый фон
+            # (те же правила, что при сохранении из интернета, image_saver.py)
+            if out.hasAlphaChannel() and qt_fmt in ("JPEG", "BMP"):
+                from app.core.image_saver import _flatten_on_white
+                out = _flatten_on_white(out)
+            name = _free_resize_name(self.folder, self.stem, self.w, self.h,
+                                     self.ext)
+            path = os.path.join(self.folder, name)
+            ok = (out.save(path, qt_fmt) if quality is None
+                  else out.save(path, qt_fmt, quality))
+            if not ok:
+                raise ValueError(f"не удалось записать {qt_fmt}")
+            ms = round((time.perf_counter() - t0) * 1000)
+            applog.event("log.event.resize", src=self.src_name, dst=name,
+                         w=out.width(), h=out.height(),
+                         extra=applog.extra(ms=ms))
+            self.signals.done.emit(True, path, out.width(), out.height(), "")
+        except Exception as exc:  # noqa: BLE001 — текст ошибки уходит в статус
+            applog.error(tr("log.event.resize_err",
+                            name=self.src_name, err=str(exc)[:200]))
+            self.signals.done.emit(False, "", 0, 0, str(exc)[:200])
 
 
 class _RenameSignals(QObject):
@@ -1556,6 +1853,20 @@ class LocalViewer(QWidget):
         # разрешение картинок для подписи плиток: приходит вместе с миниатюрой
         # (v0.8.4), ключ — номер строки, значение — готовая строка «Ш×В»
         self._pending_dims: dict[int, str] = {}
+        # изменение размера картинки мышью (v0.8.6): целевой размер показанной
+        # картинки (QSize) или None вне режима; сохранение — не чаще одной
+        # фоновой задачи за раз, как у переименования
+        self._resize_mode = False
+        self._resize_size: QSize | None = None
+        self._resize_orig: QSize | None = None
+        self._resize_handle = 0
+        self._resize_start: QSize | None = None
+        self._resize_saving = False
+        self._resize_signals = _ResizeSignals()
+        self._resize_signals.done.connect(self._on_resize_save_done)
+        # путь, который надо открыть после пересканирования ленты (v0.8.6):
+        # после сохранения уменьшенной копии лента обновится и покажет её
+        self._select_after_scan = ""
 
         # --- верхняя панель ---
         bar = QHBoxLayout()
@@ -1598,6 +1909,20 @@ class LocalViewer(QWidget):
         btn(None, "viewer.actual_tip", lambda: self.set_manual_zoom(1.0), literal="100%")
         btn(None, "viewer.fit_tip", self.fit_to_window, literal="◱")
         btn(None, "viewer.zoom_in_tip", lambda: self.zoom(1.25), literal="+")
+        bar.addSpacing(8)
+        # ⇲ Размер: мышью задать размер картинки в окне предпросмотра (v0.8.6)
+        self.btn_resize = QToolButton()
+        self.btn_resize.setText(tr("viewer.resize"))
+        self.btn_resize.setCheckable(True)
+        self.btn_resize.setToolTip(tr("viewer.resize_tip"))
+        self.btn_resize.setEnabled(False)   # включится, когда картинка показана
+        self.btn_resize.toggled.connect(self._on_resize_toggled)
+        bar.addWidget(self.btn_resize)
+        self._i18n_buttons.append((self.btn_resize, "viewer.resize", "viewer.resize_tip"))
+        # 💾 Сохранить: появляется только в режиме изменения размера (v0.8.6)
+        self.btn_resize_save = btn("viewer.resize_save", "viewer.resize_save_tip",
+                                   self._on_resize_save)
+        self.btn_resize_save.setVisible(False)
         bar.addSpacing(8)
         # фон-«шахматка» под прозрачными картинками: размер клетки — ползунком
         # (v0.7.16). Иконка-шахматка подсказывает, что регулирует ползунок.
@@ -1750,7 +2075,9 @@ class LocalViewer(QWidget):
         tree_lay.addWidget(self.tree, 1)
 
         # --- область просмотра ---
-        self.view_label = _CheckerView("…")
+        # _ResizeView — тот же просмотр с «шахматкой» (v0.7.16) плюс рукоятки
+        # изменения размера мышью (v0.8.6): рамка, угол и края, бейдж размера
+        self.view_label = _ResizeView("…")
         self.view_label.setAlignment(Qt.AlignCenter)
         self.view_label.setBackgroundRole(QPalette.ColorRole.Dark)
         self.view_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
@@ -1761,6 +2088,11 @@ class LocalViewer(QWidget):
         self.scroll.setWidgetResizable(True)
         self.scroll.setBackgroundRole(QPalette.ColorRole.Dark)
         self.scroll.viewport().installEventFilter(self)  # Ctrl+колесо — зум
+        # перетаскивание рукояток рамки ресайза (v0.8.6): захват, движение
+        # и отпускание мыши приходят сигналами из _ResizeView
+        self.view_label.resize_started.connect(self._on_resize_start)
+        self.view_label.resize_dragged.connect(self._on_resize_drag)
+        self.view_label.resize_finished.connect(self._on_resize_release)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -2667,6 +2999,9 @@ class LocalViewer(QWidget):
         self._thumbs_done = 0
         self._pixmap = None
         self._movie = None
+        self._select_after_scan = ""   # отложенный выбор — только для своей папки
+        self.set_resize_mode(False)          # смена папки закрывает ресайс (v0.8.6)
+        self._update_resize_button()         # на время чтения кнопка погашена
         if entries is None:
             self._scan_restore = False
             self._scan_sync_tree = sync_tree
@@ -2697,8 +3032,18 @@ class LocalViewer(QWidget):
                 self.list.addItem(item)
 
             if self._paths:
-                self.list.setCurrentRow(0)
+                # отложенный выбор (v0.8.6): после сохранения копии нового
+                # размера лента обновится и откроет именно её, а не первую плитку
+                row0 = 0
+                if self._select_after_scan:
+                    try:
+                        row0 = self._paths.index(self._select_after_scan)
+                    except ValueError:
+                        row0 = 0
+                    self._select_after_scan = ""
+                self.list.setCurrentRow(row0)
             else:
+                self._select_after_scan = ""
                 self._view_text(tr("viewer.no_images"))
                 self.status.setText(folder or "—")
             self._schedule_visible_thumbs()
@@ -2808,7 +3153,11 @@ class LocalViewer(QWidget):
     # ---------- фильтр папок в дереве «Диски и папки» ----------
 
     def _escape_search(self) -> None:
-        """Esc чистит то поле поиска, где сейчас фокус."""
+        """Esc чистит то поле поиска, где сейчас фокус; в режиме ресайса —
+        сначала выходит из него (v0.8.6)."""
+        if self._resize_mode:
+            self.set_resize_mode(False)
+            return
         if QApplication.focusWidget() is self.folder_search:
             self.folder_search.clear()
         else:
@@ -3104,6 +3453,9 @@ class LocalViewer(QWidget):
     def _show_index(self, row: int) -> None:
         if not (0 <= row < len(self._paths)):
             return
+        # выбрали другую картинку — режим ресайса закрывается (v0.8.6):
+        # размер задаётся одной конкретной картинке, а не вкладке целиком
+        self.set_resize_mode(False)
         self._movie = None
         path = self._paths[row]
         if os.path.splitext(path)[1].lower() == ".gif":
@@ -3136,14 +3488,20 @@ class LocalViewer(QWidget):
         # результат устарел (выбрали другую плитку/папку) — только снять занятость
         if not (0 <= row < len(self._paths)) or self._paths[row] != path:
             return
+        # новая картинка — режим ресайса гарантированно закрыт (v0.8.6): пока
+        # файл читался, пользователь мог успеть включить его на старой
+        self.set_resize_mode(False)
         if not img.isNull():
             self._pixmap = QPixmap.fromImage(img)
             # прозрачный формат (PNG/GIF/WebP…) — под ним рисуем «шахматку» (v0.7.16)
             self._set_view_checker(img.hasAlphaChannel())
             self._apply_mode()
             self._set_view_status(path, row, self._pixmap.size())
+            self._update_resize_button()   # статичная картинка — «⇲ Размер» доступна
         elif err:
+            self._pixmap = None   # картинки больше нет — и зумить/ресайзить нечего
             self._view_text(tr("viewer.cant_open", err=err))
+            self._update_resize_button()
 
     def _on_gif_ready(self, row: int, path: str, data: bytes, err: str) -> None:
         """GIF прочитан в фоне — построить анимацию из памяти (QBuffer).
@@ -3158,8 +3516,12 @@ class LocalViewer(QWidget):
         if not (0 <= row < len(self._paths)) or self._paths[row] != path:
             return
         if err:
+            self._pixmap = None
             self._view_text(tr("viewer.cant_open", err=err))
+            self._update_resize_button()
             return
+        # анимация — режим ресайса закрыт, кнопка погашена (v0.8.6)
+        self.set_resize_mode(False)
         buf = QBuffer()
         buf.setData(QByteArray(data))
         buf.open(QBuffer.OpenModeFlag.ReadOnly)
@@ -3175,6 +3537,7 @@ class LocalViewer(QWidget):
         # знает, есть ли в файле прозрачные пиксели
         self._set_view_checker(movie.currentPixmap().hasAlphaChannel())
         self._set_view_status(path, row, movie.currentPixmap().size())
+        self._update_resize_button()   # GIF — «⇲ Размер» недоступна (v0.8.6)
 
     def _set_view_status(self, path: str, row: int, size: QSize) -> None:
         self.status.setText(
@@ -3215,6 +3578,8 @@ class LocalViewer(QWidget):
     def _apply_mode(self) -> None:
         if self._movie is not None or self._pixmap is None:
             return
+        if self._resize_mode:
+            return   # в режиме ресайса показом рулит _apply_resize (v0.8.6)
         if self._mode == "fit":
             area = self.scroll.viewport().size() * 0.96
             scaled = self._pixmap.scaled(
@@ -3229,26 +3594,185 @@ class LocalViewer(QWidget):
         self.view_label.resize(scaled.size())
 
     def zoom(self, factor: float) -> None:
-        if self._pixmap is None:
+        if self._pixmap is None or self._resize_mode:
             return
         self._mode = "manual"
         self._zoom = max(0.05, min(12.0, self._zoom * factor))
         self._apply_mode()
 
     def set_manual_zoom(self, value: float) -> None:
-        if self._pixmap is None:
+        if self._pixmap is None or self._resize_mode:
             return
         self._mode = "manual"
         self._zoom = max(0.05, min(12.0, value))
         self._apply_mode()
 
     def fit_to_window(self) -> None:
+        if self._resize_mode:
+            self.set_resize_mode(False)   # «Вписать» — выход из ресайса (v0.8.6)
+            return
         self._mode = "fit"
         self._apply_mode()
 
     def reveal_folder(self) -> None:
         if self._folder:
             QDesktopServices.openUrl(QUrl.fromLocalFile(self._folder))
+
+    # ---------- изменение размера картинки мышью (v0.8.6) ----------
+
+    def _update_resize_button(self) -> None:
+        """Кнопка «⇲ Размер» активна, только пока показана статичная картинка.
+
+        GIF-анимацию менять в размере нельзя (Qt пишет только первый кадр —
+        честнее не предлагать), как и пустой просмотр/ошибку чтения."""
+        can = self._pixmap is not None and self._movie is None
+        self.btn_resize.setEnabled(can)
+        if not can and self._resize_mode:
+            self.set_resize_mode(False)
+
+    def _on_resize_toggled(self, on: bool) -> None:
+        self.set_resize_mode(on)
+
+    def set_resize_mode(self, on: bool) -> None:
+        """Включить/выключить режим изменения размера (кнопка и программно).
+
+        В режиме картинка показана «один к одному» в целевом размере — что
+        видно, то и запишется. Выход всегда возвращает «Вписать в окно»
+        с исходной картинкой; целевой размер не сохраняется между заходами."""
+        on = bool(on)
+        if on == self._resize_mode:
+            return
+        if on and (self._pixmap is None or self._movie is not None):
+            return   # менять размер нечего: GIF или пустой просмотр
+        self._resize_mode = on
+        if self.btn_resize.isChecked() != on:
+            self.btn_resize.blockSignals(True)
+            self.btn_resize.setChecked(on)
+            self.btn_resize.blockSignals(False)
+        self.view_label.set_resize_mode(on)
+        self.btn_resize_save.setVisible(on)
+        if on:
+            self._resize_orig = QSize(self._pixmap.width(), self._pixmap.height())
+            self._resize_size = QSize(self._resize_orig)
+            self._resize_saving = False
+            self.btn_resize_save.setEnabled(True)
+            self._apply_resize(smooth=True)
+            self.status.setText(tr("viewer.resize_enter",
+                                   new=_dims_text(self._resize_size.width(),
+                                                  self._resize_size.height()),
+                                   orig=_dims_text(self._resize_orig.width(),
+                                                   self._resize_orig.height())))
+        else:
+            self._resize_size = None
+            self._resize_orig = None
+            self._resize_handle = 0
+            self._resize_start = None
+            self._resize_saving = False
+            self.view_label.set_size_badge("")
+            self._mode = "fit"
+            self._apply_mode()
+
+    def _apply_resize(self, smooth: bool = False) -> None:
+        """Показать картинку в целевом размере (WYSIWYG: пиксмап = будущий файл).
+
+        Во время перетаскивания масштаб быстрый (FastTransformation) — плавность
+        важнее качества; на отпускании кнопки (и при входе в режим) проход
+        гладкий (SmoothTransformation). Бейдж у угла рамки дублирует размер."""
+        if not self._resize_mode or self._pixmap is None or self._resize_size is None:
+            return
+        w, h = self._resize_size.width(), self._resize_size.height()
+        scaled = self._pixmap.scaled(
+            w, h, Qt.AspectRatioMode.IgnoreAspectRatio,
+            Qt.TransformationMode.SmoothTransformation if smooth
+            else Qt.TransformationMode.FastTransformation)
+        if scaled.isNull():
+            return
+        self.view_label.setPixmap(scaled)
+        self.view_label.resize(scaled.size())
+        self.view_label.set_size_badge(f"{w}×{h}")
+        orig = self._resize_orig
+        self.status.setText(tr(
+            "viewer.resize_status", new=_dims_text(w, h),
+            orig=_dims_text(orig.width(), orig.height()) if orig else "—"))
+
+    def _on_resize_start(self, handle: int) -> None:
+        """Рукоятка захвачена — запомнить размер на старте перетаскивания."""
+        if not self._resize_mode or self._resize_size is None:
+            return
+        self._resize_handle = handle
+        self._resize_start = QSize(self._resize_size)
+
+    def _on_resize_drag(self, dx: int, dy: int) -> None:
+        """Мышь поехала: пересчитать целевой размер по типу рукоятки."""
+        if (not self._resize_mode or self._resize_handle == 0
+                or self._resize_start is None or self._resize_orig is None):
+            return
+        self._resize_size = _resize_target_for(
+            self._resize_handle, self._resize_start, dx, dy, self._resize_orig)
+        self._apply_resize(smooth=False)   # быстрый масштаб на лету
+
+    def _on_resize_release(self) -> None:
+        """Кнопка отпущена — финальный гладкий масштаб нового размера."""
+        if self._resize_handle == 0:
+            return
+        self._resize_handle = 0
+        self._resize_start = None
+        self._apply_resize(smooth=True)
+
+    def _on_resize_save(self) -> None:
+        """«💾 Сохранить»: записать картинку нового размера рядом с оригиналом.
+
+        Имя — «имя_ШxВ.ext» (расширение оригинала; AVIF Qt не пишет — уедет
+        в PNG). Само масштабирование и запись выполняет рабочий поток
+        (_ResizeSaveTask): GUI не ждёт ни SmoothTransformation на большом
+        фото, ни сетевой диск. Оригинал не трогается, существующие файлы
+        не затираются (свободное имя выбирается перед самой записью)."""
+        if (not self._resize_mode or self._resize_size is None
+                or self._pixmap is None):
+            return
+        if self._resize_saving:
+            self.status.setText(tr("viewer.resize_saving"))
+            return
+        row = self.list.currentRow()
+        src = self._paths[row] if 0 <= row < len(self._paths) else ""
+        folder = os.path.dirname(src) if src else self._folder
+        if not folder or not os.path.isdir(folder):
+            self.status.setText(tr("viewer.resize_save_err",
+                                   err=os.path.basename(src) or "—"))
+            applog.error(tr("log.event.resize_err",
+                            name=os.path.basename(src) or "—",
+                            err="папка недоступна"))
+            return
+        self._resize_saving = True
+        self.btn_resize_save.setEnabled(False)
+        self.status.setText(tr("viewer.resize_saving"))
+        stem = os.path.splitext(os.path.basename(src))[0] if src else "image"
+        ext = _resize_save_ext(os.path.splitext(src)[1]) if src else ".png"
+        QThreadPool.globalInstance().start(_ResizeSaveTask(
+            self._pixmap.toImage(), self._resize_size.width(),
+            self._resize_size.height(), folder, stem, ext,
+            os.path.basename(src) or "—", self._resize_signals))
+
+    def _on_resize_save_done(self, ok: bool, path: str, w: int, h: int,
+                             err: str) -> None:
+        """Фоновая запись закончилась: статус, лента обновится, режим закроется.
+
+        После успеха режим ресайса закрывается (исходник снова «вписан»),
+        лента пересканируется, и новый файл открывается в просмотре — сразу
+        видно результат. При ошибке режим остаётся открытым: размер на месте,
+        можно поправить и сохранить снова."""
+        self._resize_saving = False
+        self.btn_resize_save.setEnabled(True)
+        if ok:
+            self.status.setText(tr("viewer.resize_saved",
+                                   name=os.path.basename(path), w=w, h=h))
+            self.set_resize_mode(False)
+            self.refresh()   # новый файл появится в ленте
+            # отложенный выбор — ПОСЛЕ refresh(): load_folder внутри него
+            # чистит поле, а цель нужен только скану, который приедет позже
+            self._select_after_scan = path
+        else:
+            self.status.setText(tr("viewer.resize_save_err", err=err))
 
     # ---------- дерево дисков и папок ----------
 
@@ -3815,7 +4339,7 @@ class LocalViewer(QWidget):
 
     def resizeEvent(self, event) -> None:  # noqa: N802 (Qt API)
         super().resizeEvent(event)
-        if self._mode == "fit":
+        if self._mode == "fit" and not self._resize_mode:
             self._resize_timer.start()   # рескейл — после паузы в ресайзе (v0.7.11)
         self._schedule_visible_thumbs()
 

@@ -10,6 +10,12 @@ Written in Python + PySide6 (Qt6): heavy operations (rendering, network, image d
 
 > **⚡ Special focus — fast work over the network and with network drives** (SMB/NAS, mounted shares): a folder is read in one request, thumbnails are built only for the visible part of the list, ready previews are cached on disk. A network folder with thousands of photos opens without lags — neither in the app nor on the network. Details in [“Fast work over the network and with network drives”](#fast-work-over-the-network-and-with-network-drives).
 
+## Resizing an image with the mouse (v0.8.6)
+
+The **“⇲ Resize”** button on the “My Pictures” toolbar turns on a mode where the image size is set with the mouse right in the preview: the image gets a frame with three amber handles — drag the corner (keeps proportions) or the right/bottom edge (one side). The display matches the future file one to one: what you see is what gets written; a badge near the corner shows the current size, the status line shows “✂ 400×300 of 800×600”. The **“💾 Save”** button writes the result as a separate “name_WxH.ext” file next to the original: the original stays untouched, existing files are never overwritten (on a conflict a free “-1” suffix is picked), scaling and writing run in a background thread (the window does not freeze even on a network drive), and after saving the strip refreshes and opens the new file right away. GIF animations are not resizable (the button is disabled), AVIF is saved as PNG (Qt cannot write AVIF), and transparency in JPEG/BMP lands on a white background. Esc or “◱ Fit” leaves the mode.
+
+Tests: new `scripts/test_image_resize.py` — 73 checks.
+
 ## Dragging selected files onto tree folders (v0.8.5)
 
 Select images in the “My Pictures” strip (Ctrl/Shift, like in Explorer) and drop them onto a folder or a drive in the tree on the left — the files are moved there. The folder under the cursor is highlighted with a translucent selection color; a collapsed folder expands by itself when you hold a file over it (like in Explorer). The move never overwrites anything: files already in the target folder are skipped, and on a name conflict the file gets a free name (“cat-1.png”). The move runs as a background task (the window does not freeze even on a network drive); the result and errors are visible in the status line and the Log.

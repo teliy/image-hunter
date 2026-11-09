@@ -623,6 +623,54 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ru": "загрузка…", "en": "loading…", "zh": "加载中…"},
     "viewer.of": {
         "ru": "{i} из {n}", "en": "{i} of {n}", "zh": "第 {i} 张，共 {n} 张"},
+    # ---------- изменение размера картинки мышью (v0.8.6) ----------
+    "viewer.resize": {
+        "ru": "⇲ Размер", "en": "⇲ Resize", "zh": "⇲ 大小"},
+    "viewer.resize_tip": {
+        "ru": "Задать размер картинки мышью: тяните угол рамки (пропорционально)\n"
+              "или правый/нижний край (одну сторону). «💾 Сохранить» запишет\n"
+              "результат отдельным файлом рядом с оригиналом. Esc — выйти.",
+        "en": "Set the image size with the mouse: drag the frame corner (keeps\n"
+              "proportions) or the right/bottom edge (one side). “💾 Save” writes\n"
+              "the result as a separate file next to the original. Esc — leave.",
+        "zh": "用鼠标设定图片大小：拖动边框角点（保持比例）\n"
+              "或右/下边缘（单边）。“💾 保存”将结果另存为\n"
+              "原图旁边的单独文件。Esc — 退出。"},
+    "viewer.resize_save": {
+        "ru": "💾 Сохранить", "en": "💾 Save", "zh": "💾 保存"},
+    "viewer.resize_save_tip": {
+        "ru": "Записать картинку нового размера рядом с оригиналом отдельным файлом\n"
+              "«имя_ШxВ.ext» — оригинал не меняется, существующие файлы не затираются",
+        "en": "Write the resized image next to the original as a separate file\n"
+              "“name_WxH.ext” — the original stays untouched, nothing is overwritten",
+        "zh": "将调整大小后的图片作为单独文件“名字_WxH.ext”保存到原图旁边 —\n"
+              "原图不变，不会覆盖现有文件"},
+    "viewer.resize_enter": {
+        "ru": "✂ {new} (исходник {orig}) — тяните угол или края рамки; Esc — выход",
+        "en": "✂ {new} (original {orig}) — drag the corner or edges of the frame; Esc to leave",
+        "zh": "✂ {new}（原图 {orig}）— 拖动角点或边框；Esc 退出"},
+    "viewer.resize_status": {
+        "ru": "✂ {new} из {orig}", "en": "✂ {new} of {orig}", "zh": "✂ {new} / {orig}"},
+    "viewer.resize_saving": {
+        "ru": "Сохраняю картинку нового размера…",
+        "en": "Saving the resized image…",
+        "zh": "正在保存调整大小后的图片…"},
+    "viewer.resize_saved": {
+        "ru": "Сохранено: {name} ({w}×{h}) — оригинал не тронут",
+        "en": "Saved: {name} ({w}×{h}) — the original is untouched",
+        "zh": "已保存：{name}（{w}×{h}）— 原图未变"},
+    "viewer.resize_save_err": {
+        "ru": "Не удалось сохранить: {err}", "en": "Failed to save: {err}", "zh": "保存失败：{err}"},
+    "log.event.resize": {
+        "ru": "Изменён размер картинки: {src} → {dst} ({w}×{h})",
+        "en": "Image resized: {src} → {dst} ({w}×{h})",
+        "zh": "图片大小已调整：{src} → {dst}（{w}×{h}）"},
+    "log.event.resize_err": {
+        "ru": "Не удалось сохранить новый размер {name}: {err}",
+        "en": "Failed to save the new size of {name}: {err}",
+        "zh": "无法保存 {name} 的新尺寸：{err}"},
+    "perf.op.resize": {
+        "ru": "resize: {name}", "en": "resize: {name}", "zh": "resize：{name}"},
     "viewer.home": {
         "ru": "🏠 Домой", "en": "🏠 Home", "zh": "🏠 主目录"},
     "viewer.pictures": {
