@@ -763,6 +763,82 @@ _STRINGS: dict[str, dict[str, str]] = {
         "zh": "无法裁剪 {name}：{err}"},
     "perf.op.crop": {
         "ru": "crop: {name}", "en": "crop: {name}", "zh": "crop：{name}"},
+    # ---------- пипетка и закрашивание выделенной области (v0.8.8) ----------
+    "viewer.picker": {
+        "ru": "💧 Пипетка", "en": "💧 Picker", "zh": "💧 取色器"},
+    "viewer.picker_tip": {
+        "ru": "Пипетка: включите режим и кликните по картинке — цвет пикселя\n"
+              "скопируется в буфер обмена, образец появится на панели.\n"
+              "Наведение показывает цвет под курсором. ПРАВЫЙ клик по картинке\n"
+              "берёт цвет в любом режиме. Взятый цвет использует кнопка\n"
+              "«🪣 Закрасить» в режиме обрезки. Esc — выйти.",
+        "en": "Color picker: turn the mode on and click the picture — the\n"
+              "pixel color is copied to the clipboard and a sample appears\n"
+              "on the panel. Hovering shows the color under the cursor.\n"
+              "RIGHT-click on the picture picks the color in any mode.\n"
+              "The “🪣 Fill” button in crop mode uses the picked color.\n"
+              "Esc — leave.",
+        "zh": "取色器：开启模式后点击图片 — 像素颜色将复制到剪贴板，\n"
+              "面板上会出现色样。悬停时显示光标下的颜色。在任意模式下\n"
+              "右键点击图片均可取色。裁剪模式中的“🪣 填充”按钮\n"
+              "使用所选颜色。Esc — 退出。"},
+    "viewer.picker_enter": {
+        "ru": "💧 Наведите на картинку — покажу цвет; клик — взять цвет; Esc — выход",
+        "en": "💧 Hover the picture to see the color; click to pick it; Esc to leave",
+        "zh": "💧 悬停在图片上查看颜色；单击取色；Esc 退出"},
+    "viewer.picker_hover": {
+        "ru": "💧 {hex} · {x},{y} — клик, чтобы взять цвет",
+        "en": "💧 {hex} · {x},{y} — click to pick",
+        "zh": "💧 {hex} · {x},{y} — 单击取色"},
+    "viewer.picker_picked": {
+        "ru": "💧 {hex} ({x},{y}) — цвет в буфере обмена",
+        "en": "💧 {hex} ({x},{y}) — color copied to the clipboard",
+        "zh": "💧 {hex}（{x},{y}）— 颜色已复制到剪贴板"},
+    "viewer.picker_chip_tip": {
+        "ru": "Цвет, взятый пипеткой (правый клик по картинке — в любом режиме):\n"
+              "его использует кнопка «🪣 Закрасить» в режиме обрезки",
+        "en": "Color picked with the eyedropper (right-click the picture — in any\n"
+              "mode): used by the “🪣 Fill” button in crop mode",
+        "zh": "取色器所选的颜色（任意模式下右键点击图片）：\n"
+              "裁剪模式中的“🪣 填充”按钮会使用它"},
+    "viewer.fill": {
+        "ru": "🪣 Закрасить", "en": "🪣 Fill", "zh": "🪣 填充"},
+    "viewer.fill_tip": {
+        "ru": "Закрасить выделенную область цветом пипетки (возьмите цвет:\n"
+              "режим «💧 Пипетка» или правый клик по картинке) и записать\n"
+              "результат отдельным файлом «имя_fill.ext» рядом с оригиналом —\n"
+              "оригинал не меняется, существующие файлы не затираются",
+        "en": "Fill the selected area with the picked color (take it with the\n"
+              "“💧 Picker” mode or a right-click on the picture) and write the\n"
+              "result as a separate file “name_fill.ext” next to the original —\n"
+              "the original stays untouched, nothing is overwritten",
+        "zh": "用取色器所选的颜色填充所选区域（取色：开启“💧 取色器”模式\n"
+              "或右键点击图片），并将结果另存为原图旁边的单独文件\n"
+              "“名字_fill.ext” — 原图不变，不会覆盖现有文件"},
+    "viewer.fill_nocolor": {
+        "ru": "Сначала возьмите цвет пипеткой 💧 (или правый клик по картинке)",
+        "en": "Pick a color with the eyedropper 💧 first (or right-click the picture)",
+        "zh": "请先用取色器 💧 取色（或右键点击图片）"},
+    "viewer.fill_saving": {
+        "ru": "Закрашиваю выделенную область…",
+        "en": "Filling the selected area…",
+        "zh": "正在填充所选区域…"},
+    "viewer.fill_saved": {
+        "ru": "Закрашено: {name} ({w}×{h}) — оригинал не тронут",
+        "en": "Filled: {name} ({w}×{h}) — the original is untouched",
+        "zh": "已填充：{name}（{w}×{h}）— 原图未变"},
+    "viewer.fill_save_err": {
+        "ru": "Не удалось закрасить: {err}", "en": "Failed to fill: {err}", "zh": "填充失败：{err}"},
+    "log.event.fill": {
+        "ru": "Закрашена область картинки: {src} → {dst} ({w}×{h})",
+        "en": "Image area filled: {src} → {dst} ({w}×{h})",
+        "zh": "已填充图片区域：{src} → {dst}（{w}×{h}）"},
+    "log.event.fill_err": {
+        "ru": "Не удалось закрасить {name}: {err}",
+        "en": "Failed to fill {name}: {err}",
+        "zh": "无法填充 {name}：{err}"},
+    "perf.op.fill": {
+        "ru": "fill: {name}", "en": "fill: {name}", "zh": "fill：{name}"},
     "viewer.home": {
         "ru": "🏠 Домой", "en": "🏠 Home", "zh": "🏠 主目录"},
     "viewer.pictures": {

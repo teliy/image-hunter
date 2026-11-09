@@ -124,6 +124,25 @@ _RESIZE_DEFAULT_FMT = ("PNG", None)
 _CROP_MIN_DRAG = 4            # движение мыши короче (px виджета) — случайный клик
 _CROP_SUFFIX = "crop"         # имя результата: «имя_crop.ext», конфликт → «-1»
 
+# ---------- пипетка и закрашивание выделенной области (v0.8.8) ----------
+_FILL_SUFFIX = "fill"         # имя результата: «имя_fill.ext», конфликт → «-1»
+_PICKER_HOLD_S = 1.2          # сколько секунд подсказка «цвет в буфере» не гасится наведением
+
+
+def _free_fill_name(folder: str, stem: str, ext: str) -> str:
+    """Свободное имя «stem_fill.ext», затем «stem_fill-1.ext»… — без затираний.
+
+    Вызывается из рабочего потока непосредственно перед записью (v0.8.8):
+    если файл с таким именем появился между кликом «Закрасить» и записью,
+    результат получает следующий свободный номер — чужой файл не тронут."""
+    base = f"{stem}_{_FILL_SUFFIX}"
+    candidate = f"{base}{ext}"
+    n = 0
+    while os.path.lexists(os.path.join(folder, candidate)):
+        n += 1
+        candidate = f"{base}-{n}{ext}"
+    return candidate
+
 
 def _resize_save_ext(ext: str) -> str:
     """Расширение файла-результата по расширению оригинала (AVIF → .png)."""
@@ -450,6 +469,8 @@ class _ResizeView(_CheckerView):
     resize_dragged = Signal(int, int)   # смещение мыши от точки захвата, px
     resize_finished = Signal()          # кнопка отпущена
     crop_selection_changed = Signal()   # выделение обрезки изменилось (v0.8.7)
+    picker_pick = Signal(QPoint)        # цвет взят: пиксель картинки (v0.8.8)
+    picker_hover = Signal(QPoint, bool) # мышь над картинкой: пиксель и «внутри ли» (v0.8.8)
 
     def __init__(self, text: str = "") -> None:
         super().__init__(text)
@@ -466,6 +487,9 @@ class _ResizeView(_CheckerView):
         self._crop_anchor = QPoint()      # якорь резинки/переноса (картинка)
         self._crop_sel0 = QRect()         # выделение на момент захвата
         self._crop_press_w = QPointF()    # точка нажатия (виджет) — отсчёт драга
+        # пипетка (v0.8.8): в режиме курсор-крестик над картинкой, клик берёт
+        # цвет; ПРАВЫЙ клик берёт цвет в любом режиме (без входа в режимы)
+        self._picker_on = False
         # mouseTracking: курсор-подсказка «за что тянуть» без зажатой кнопки
         self.setMouseTracking(True)
 
@@ -495,6 +519,22 @@ class _ResizeView(_CheckerView):
         if not on:
             self.unsetCursor()
         self.update()
+
+    # ---------- режим пипетки (v0.8.8) ----------
+
+    def set_picker_mode(self, on: bool) -> None:
+        self._picker_on = bool(on)
+        if not on:
+            self.unsetCursor()
+        self.update()
+
+    def set_img_size(self, size: QSize) -> None:
+        """Запомнить размер показанной картинки в пикселях.
+
+        Нужно пипетке: правый клик берёт цвет в ЛЮБОМ режиме, без входа
+        в режимы обрезки/пипетки, — значит, размер картинки у вью всегда
+        актуальный. Тот же размер использует и обрезка (_crop_img)."""
+        self._crop_img = QSize(size)
 
     def has_selection(self) -> bool:
         """Есть ли выделенная область обрезки."""
@@ -650,6 +690,23 @@ class _ResizeView(_CheckerView):
     # ---------- мышь ----------
 
     def mousePressEvent(self, ev) -> None:  # noqa: N802 (Qt API)
+        # правый клик по картинке — взять цвет пипеткой в ЛЮБОМ режиме
+        # (v0.8.8): образец нужен «🪣 Закрасить», а выходить из обрезки
+        # ради одного клика неудобно. В режиме ресайса показ не совпадает
+        # с картинкой (WYSIWYG целевого размера) — координаты бы соврали
+        pr = self.pixmap_rect()
+        if (ev.button() == Qt.MouseButton.RightButton and not self._resize_on
+                and not pr.isNull() and pr.contains(ev.position().toPoint())):
+            self.picker_pick.emit(self._to_img(ev.position()))
+            ev.accept()
+            return
+        if self._picker_on and ev.button() == Qt.MouseButton.LeftButton:
+            # клик в режиме пипетки — взять цвет (v0.8.8)
+            pr = self.pixmap_rect()
+            if not pr.isNull() and pr.contains(ev.position().toPoint()):
+                self.picker_pick.emit(self._to_img(ev.position()))
+                ev.accept()
+                return
         if self._crop_on and ev.button() == Qt.MouseButton.LeftButton:
             pr = self.pixmap_rect()
             if not pr.isNull() and pr.contains(ev.position().toPoint()):
@@ -710,6 +767,17 @@ class _ResizeView(_CheckerView):
             self._crop_hover_cursor(ev.position().toPoint())
             super().mouseMoveEvent(ev)
             return
+        if self._picker_on:
+            # живое чтение цвета под курсором (v0.8.8): статус вьюера
+            pr = self.pixmap_rect()
+            if not pr.isNull() and pr.contains(ev.position().toPoint()):
+                self.setCursor(Qt.CursorShape.CrossCursor)
+                self.picker_hover.emit(self._to_img(ev.position()), True)
+            else:
+                self.unsetCursor()
+                self.picker_hover.emit(QPoint(), False)
+            super().mouseMoveEvent(ev)
+            return
         if self._drag_handle:
             d = ev.position() - self._press_pos
             self.resize_dragged.emit(int(round(d.x())), int(round(d.y())))
@@ -742,7 +810,7 @@ class _ResizeView(_CheckerView):
         super().mouseReleaseEvent(ev)
 
     def leaveEvent(self, ev) -> None:  # noqa: N802 (Qt API)
-        if ((self._resize_on or self._crop_on)
+        if ((self._resize_on or self._crop_on or self._picker_on)
                 and not self._drag_handle and not self._crop_drag):
             self.unsetCursor()
         super().leaveEvent(ev)
@@ -1473,6 +1541,56 @@ class _CropSaveTask(QRunnable):
             self.signals.done.emit(True, path, out.width(), out.height(), "")
         except Exception as exc:  # noqa: BLE001 — текст ошибки уходит в статус
             applog.error(tr("log.event.crop_err",
+                            name=self.src_name, err=str(exc)[:200]))
+            self.signals.done.emit(False, "", 0, 0, str(exc)[:200])
+
+
+class _FillSignals(QObject):
+    # итог закрашивания: успех, путь результата, ширина, высота, ошибка
+    done = Signal(bool, str, int, int, str)
+
+
+class _FillSaveTask(QRunnable):
+    """Запись закрашенной картинки в рабочем потоке (v0.8.8).
+
+    Само закрашивание делается мгновенно в GUI-потоке (QPainter.fillRect —
+    микросекунды даже на большом фото), чтобы результат был виден сразу;
+    а вот запись GUI не ждёт (принцип v0.7.2): на сетевом диске она может
+    занять секунды. Оригинал никогда не меняется — результат отдельный
+    файл «имя_fill.ext»; свободное имя проверяется здесь же, непосредственно
+    перед записью, — существующие файлы не затираются.
+    """
+
+    def __init__(self, img: QImage, folder: str, stem: str, ext: str,
+                 src_name: str, signals: _FillSignals):
+        super().__init__()
+        self.img = img   # уже закрашенная копия: GUI дальше её не трогает
+        self.folder, self.stem, self.ext = folder, stem, ext
+        self.src_name, self.signals = src_name, signals
+
+    def run(self) -> None:  # рабочий поток
+        t0 = time.perf_counter()
+        try:
+            qt_fmt, quality = _resize_format_for(self.ext)
+            name = _free_fill_name(self.folder, self.stem, self.ext)
+            path = os.path.join(self.folder, name)
+            out = self.img
+            # JPEG и BMP не умеют в прозрачность: альфа → белый фон
+            # (те же правила, что при сохранении из интернета, image_saver.py)
+            if out.hasAlphaChannel() and qt_fmt in ("JPEG", "BMP"):
+                from app.core.image_saver import _flatten_on_white
+                out = _flatten_on_white(out)
+            ok = (out.save(path, qt_fmt) if quality is None
+                  else out.save(path, qt_fmt, quality))
+            if not ok:
+                raise ValueError(f"не удалось записать {name}")
+            ms = round((time.perf_counter() - t0) * 1000)
+            applog.event("log.event.fill", src=self.src_name, dst=name,
+                         w=out.width(), h=out.height(),
+                         extra=applog.extra(ms=ms))
+            self.signals.done.emit(True, path, out.width(), out.height(), "")
+        except Exception as exc:  # noqa: BLE001 — текст ошибки уходит в статус
+            applog.error(tr("log.event.fill_err",
                             name=self.src_name, err=str(exc)[:200]))
             self.signals.done.emit(False, "", 0, 0, str(exc)[:200])
 
@@ -2245,6 +2363,20 @@ class LocalViewer(QWidget):
         self._crop_next_row = -1
         self._crop_signals = _CropSignals()
         self._crop_signals.done.connect(self._on_crop_save_done)
+        # пипетка (v0.8.8): взятый цвет живёт, пока открыта вкладка (его
+        # использует «🪣 Закрасить»), источник чтения — только в режиме
+        # пипетки; правый клик берёт цвет и без режима (картинка читается
+        # на лету); подсказка «цвет в буфере» не гасится наведением
+        self._picker_mode = False
+        self._picker_color: QColor | None = None
+        self._picker_img: QImage | None = None
+        self._picker_hold = 0.0
+        # закрашивание выделенной области (v0.8.8): не чаще одной фоновой
+        # задачи за раз; на время записи показ можно откатить к оригиналу
+        self._fill_saving = False
+        self._fill_prev_pixmap: QPixmap | None = None
+        self._fill_signals = _FillSignals()
+        self._fill_signals.done.connect(self._on_fill_save_done)
 
         # --- верхняя панель ---
         bar = QHBoxLayout()
@@ -2320,9 +2452,36 @@ class LocalViewer(QWidget):
         self.btn_crop_saveas = btn("viewer.crop_saveas", "viewer.crop_saveas_tip",
                                    self._on_crop_save_as)
         self.btn_crop_saveas.setVisible(False)
+        # 🪣 Закрасить: залить выделенное цветом пипетки (v0.8.8) — четвёртая
+        # кнопка режима обрезки, видна только в режиме
+        self.btn_fill = btn("viewer.fill", "viewer.fill_tip", self._on_fill_apply)
+        self.btn_fill.setVisible(False)
         self.btn_crop_next = btn("viewer.crop_next", "viewer.crop_next_tip",
                                  self._on_crop_apply_next)
         self.btn_crop_next.setVisible(False)
+        bar.addSpacing(8)
+        # 💧 Пипетка: цвет пикселя по клику (v0.8.8); правый клик по картинке
+        # берёт цвет в ЛЮБОМ режиме — образец нужен кнопке «🪣 Закрасить»
+        self.btn_picker = QToolButton()
+        self.btn_picker.setText(tr("viewer.picker"))
+        self.btn_picker.setCheckable(True)
+        self.btn_picker.setToolTip(tr("viewer.picker_tip"))
+        self.btn_picker.setEnabled(False)   # включится, когда картинка показана
+        self.btn_picker.toggled.connect(self._on_picker_toggled)
+        bar.addWidget(self.btn_picker)
+        self._i18n_buttons.append((self.btn_picker, "viewer.picker", "viewer.picker_tip"))
+        # образец взятого цвета: цветной квадрат + HEX — появляется
+        # после первого взятого цвета и живёт до конца сессии
+        self.picker_swatch = QLabel()
+        self.picker_swatch.setFixedSize(18, 18)
+        self.picker_swatch.setVisible(False)
+        bar.addWidget(self.picker_swatch)
+        self.picker_hex = QLabel("")
+        self.picker_hex.setStyleSheet("color: #666;")
+        self.picker_hex.setVisible(False)
+        bar.addWidget(self.picker_hex)
+        self._i18n_buttons.append((self.picker_swatch, None, "viewer.picker_chip_tip"))
+        self._i18n_buttons.append((self.picker_hex, None, "viewer.picker_chip_tip"))
         bar.addSpacing(8)
         # фон-«шахматка» под прозрачными картинками: размер клетки — ползунком
         # (v0.7.16). Иконка-шахматка подсказывает, что регулирует ползунок.
@@ -2495,6 +2654,10 @@ class LocalViewer(QWidget):
         self.view_label.resize_finished.connect(self._on_resize_release)
         # выделение обрезки меняет сам вью — вьюеру нужен только статус (v0.8.7)
         self.view_label.crop_selection_changed.connect(self._on_crop_selection_changed)
+        # пипетка (v0.8.8): клик/правый клик — взять цвет, наведение —
+        # живой цвет под курсором в статусе
+        self.view_label.picker_pick.connect(self._on_picker_pick)
+        self.view_label.picker_hover.connect(self._on_picker_hover)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -3409,9 +3572,13 @@ class LocalViewer(QWidget):
         self.set_resize_mode(False)          # смена папки закрывает ресайс (v0.8.6)
         self._update_resize_button()         # на время чтения кнопка погашена
         self.set_crop_mode(False)            # и обрезку тоже (v0.8.7)
+        self.set_picker_mode(False)          # и пипетку (v0.8.8)
+        self._picker_img = None              # источник цвета прошлой папки больше не нужен
+        self._fill_prev_pixmap = None        # и черновик закрашивания тоже
         if not same_folder:
             self._crop_continue = False      # серия «к следующему» не переживает СМЕНУ папки
         self._update_crop_button()
+        self._update_picker_button()
         if entries is None:
             self._scan_restore = False
             self._scan_sync_tree = sync_tree
@@ -3563,13 +3730,16 @@ class LocalViewer(QWidget):
     # ---------- фильтр папок в дереве «Диски и папки» ----------
 
     def _escape_search(self) -> None:
-        """Esc чистит то поле поиска, где сейчас фокус; в режиме обрезки или
-        ресайса — сначала выходит из него (v0.8.7, v0.8.6)."""
+        """Esc чистит то поле поиска, где сейчас фокус; в режиме обрезки,
+        ресайса или пипетки — сначала выходит из него (v0.8.7, v0.8.6, v0.8.8)."""
         if self._crop_mode:
             self.set_crop_mode(False)
             return
         if self._resize_mode:
             self.set_resize_mode(False)
+            return
+        if self._picker_mode:
+            self.set_picker_mode(False)
             return
         if QApplication.focusWidget() is self.folder_search:
             self.folder_search.clear()
@@ -3870,6 +4040,7 @@ class LocalViewer(QWidget):
         # размер задаётся одной конкретной картинке, а не вкладке целиком
         self.set_resize_mode(False)
         self.set_crop_mode(False)   # и обрезка тоже — рамка чужой картинке не нужна (v0.8.7)
+        self.set_picker_mode(False)   # и пипетка (v0.8.8)
         self._movie = None
         path = self._paths[row]
         if os.path.splitext(path)[1].lower() == ".gif":
@@ -3906,14 +4077,17 @@ class LocalViewer(QWidget):
         # файл читался, пользователь мог успеть включить его на старой
         self.set_resize_mode(False)
         self.set_crop_mode(False)
+        self.set_picker_mode(False)
         if not img.isNull():
             self._pixmap = QPixmap.fromImage(img)
             # прозрачный формат (PNG/GIF/WebP…) — под ним рисуем «шахматку» (v0.7.16)
             self._set_view_checker(img.hasAlphaChannel())
             self._apply_mode()
             self._set_view_status(path, row, self._pixmap.size())
+            self.view_label.set_img_size(self._pixmap.size())   # пипетке нужен актуальный размер (v0.8.8)
             self._update_resize_button()   # статичная картинка — «⇲ Размер» доступна
             self._update_crop_button()     # и «✂ Обрезать» тоже (v0.8.7)
+            self._update_picker_button()   # и «💧 Пипетка» (v0.8.8)
             if self._crop_continue:        # серия «✂▶ К следующему» (v0.8.7):
                 self._crop_continue = False
                 if self.btn_crop.isEnabled():
@@ -3923,6 +4097,7 @@ class LocalViewer(QWidget):
             self._view_text(tr("viewer.cant_open", err=err))
             self._update_resize_button()
             self._update_crop_button()
+            self._update_picker_button()
             self._crop_continue = False   # серия прервалась — картинка не открылась
 
     def _on_gif_ready(self, row: int, path: str, data: bytes, err: str) -> None:
@@ -3942,10 +4117,12 @@ class LocalViewer(QWidget):
             self._view_text(tr("viewer.cant_open", err=err))
             self._update_resize_button()
             self._update_crop_button()
+            self._update_picker_button()
             return
         # анимация — режим ресайса закрыт, кнопка погашена (v0.8.6)
         self.set_resize_mode(False)
         self.set_crop_mode(False)   # GIF не режем — один кадр (v0.8.7)
+        self.set_picker_mode(False)   # и цвет GIF-анимации не читаем (v0.8.8)
         self._crop_continue = False   # и серия «к следующему» тоже (v0.8.7)
         buf = QBuffer()
         buf.setData(QByteArray(data))
@@ -3964,6 +4141,7 @@ class LocalViewer(QWidget):
         self._set_view_status(path, row, movie.currentPixmap().size())
         self._update_resize_button()   # GIF — «⇲ Размер» недоступна (v0.8.6)
         self._update_crop_button()     # и «✂ Обрезать» тем более (v0.8.7)
+        self._update_picker_button()   # и «💧 Пипетка» (v0.8.8)
 
     def _set_view_status(self, path: str, row: int, size: QSize) -> None:
         self.status.setText(
@@ -4076,6 +4254,8 @@ class LocalViewer(QWidget):
             return
         if on and self._crop_mode:
             self.set_crop_mode(False)   # режимы «⇲ Размер» и «✂ Обрезать» взаимоисключающие
+        if on and self._picker_mode:
+            self.set_picker_mode(False)   # и пипетка — тоже режим (v0.8.8)
         if on and (self._pixmap is None or self._movie is not None):
             return   # менять размер нечего: GIF или пустой просмотр
         self._resize_mode = on
@@ -4240,6 +4420,8 @@ class LocalViewer(QWidget):
             return   # обрезать нечего: GIF или пустой просмотр
         if on and self._resize_mode:
             self.set_resize_mode(False)
+        if on and self._picker_mode:
+            self.set_picker_mode(False)   # пипетка и обрезка взаимоисключающие (v0.8.8)
         self._crop_mode = on
         if self.btn_crop.isChecked() != on:
             self.btn_crop.blockSignals(True)
@@ -4247,7 +4429,8 @@ class LocalViewer(QWidget):
             self.btn_crop.blockSignals(False)
         self.view_label.set_crop_mode(
             on, self._pixmap.size() if (on and self._pixmap is not None) else None)
-        for b in (self.btn_crop_save, self.btn_crop_saveas, self.btn_crop_next):
+        for b in (self.btn_crop_save, self.btn_crop_saveas, self.btn_fill,
+                  self.btn_crop_next):
             b.setVisible(on)
             b.setEnabled(False)   # включатся, когда появится выделение
         if on:
@@ -4262,8 +4445,9 @@ class LocalViewer(QWidget):
             return
         sel = self.view_label.selection()
         has = not sel.isNull() and self._pixmap is not None
-        for b in (self.btn_crop_save, self.btn_crop_saveas, self.btn_crop_next):
-            b.setEnabled(has and not self._crop_saving)
+        for b in (self.btn_crop_save, self.btn_crop_saveas, self.btn_fill,
+                  self.btn_crop_next):
+            b.setEnabled(has and not self._crop_saving and not self._fill_saving)
         if self._crop_saving:
             return
         if has:
@@ -4331,7 +4515,8 @@ class LocalViewer(QWidget):
                             err="папка недоступна"))
             return
         self._crop_saving = True
-        for b in (self.btn_crop_save, self.btn_crop_saveas, self.btn_crop_next):
+        for b in (self.btn_crop_save, self.btn_crop_saveas, self.btn_fill,
+                  self.btn_crop_next):
             b.setEnabled(False)
         self.status.setText(tr("viewer.crop_saving"))
         stem = os.path.splitext(os.path.basename(src))[0] if src else "image"
@@ -4375,9 +4560,204 @@ class LocalViewer(QWidget):
                 self.refresh()
                 self._select_after_scan = path
         else:
-            for b in (self.btn_crop_save, self.btn_crop_saveas, self.btn_crop_next):
-                b.setEnabled(self.view_label.has_selection())
+            for b in (self.btn_crop_save, self.btn_crop_saveas, self.btn_fill,
+                      self.btn_crop_next):
+                b.setEnabled(self.view_label.has_selection()
+                             and not self._fill_saving)
             self.status.setText(tr("viewer.crop_save_err", err=err))
+
+    # ---------- пипетка: цвет пикселя (v0.8.8) ----------
+
+    def _update_picker_button(self) -> None:
+        """Кнопка «💧 Пипетка» активна, только пока показана статичная картинка.
+
+        Цвет GIF-анимации читать не у чего честного (кадры мелькают),
+        пустой просмотр/ошибка чтения — тем более."""
+        can = self._pixmap is not None and self._movie is None
+        self.btn_picker.setEnabled(can)
+        if not can and self._picker_mode:
+            self.set_picker_mode(False)
+
+    def _on_picker_toggled(self, on: bool) -> None:
+        self.set_picker_mode(on)
+
+    def set_picker_mode(self, on: bool) -> None:
+        """Включить/выключить режим пипетки (кнопка и программно).
+
+        В режиме курсор над картинкой — крестик, наведение показывает цвет
+        пикселя в статусе, клик берёт цвет (образец на панели + буфер
+        обмена). Режимы «💧 Пипетка», «✂ Обрезать» и «⇲ Размер»
+        взаимоисключающие; взятый ЦВЕТ переживает выход из режима."""
+        on = bool(on)
+        if on == self._picker_mode:
+            return
+        if on and (self._pixmap is None or self._movie is not None):
+            return   # читать цвет нечего: GIF или пустой просмотр
+        if on and self._crop_mode:
+            self.set_crop_mode(False)
+        if on and self._resize_mode:
+            self.set_resize_mode(False)
+        self._picker_mode = on
+        if self.btn_picker.isChecked() != on:
+            self.btn_picker.blockSignals(True)
+            self.btn_picker.setChecked(on)
+            self.btn_picker.blockSignals(False)
+        self.view_label.set_picker_mode(on)
+        if on:
+            # источник чтения — своя копия картинки: pixelColor по пиксмапу
+            # показа даёт интерполированный цвет, нужен оригинал
+            self._picker_img = self._pixmap.toImage()
+            self.status.setText(tr("viewer.picker_enter"))
+        else:
+            self._picker_img = None   # копия оригинала нужна только в режиме
+
+    def _on_picker_hover(self, p: QPoint, inside: bool) -> None:
+        """Мышь в режиме пипетки: живой цвет под курсором — в статус."""
+        if not self._picker_mode:
+            return
+        if time.monotonic() < self._picker_hold:
+            return   # только что взятый цвет не гасится мгновенно
+        img = self._picker_img
+        if (not inside or img is None or img.isNull()
+                or not (0 <= p.x() < img.width() and 0 <= p.y() < img.height())):
+            return
+        c = img.pixelColor(p)
+        if c.isValid():
+            self.status.setText(tr("viewer.picker_hover", hex=c.name(),
+                                   x=p.x(), y=p.y()))
+
+    def _on_picker_pick(self, p: QPoint) -> None:
+        """Цвет взят: клик в режиме «💧 Пипетка» ИЛИ правый клик по картинке.
+
+        Правый клик работает в любом режиме (обрезка, ресайс, простой
+        просмотр) — не выходить же из обрезки ради одного клика. Цвет
+        запоминается (его использует «🪣 Закрасить»), показывается
+        образцом на панели и копируется в буфер обмена как «#rrggbb»."""
+        if self._pixmap is None or self._movie is not None:
+            return
+        img = self._picker_img
+        if img is None or img.isNull() or img.size() != self._pixmap.size():
+            img = self._pixmap.toImage()   # разовое чтение — копия не хранится
+            if img.isNull():
+                return
+            if self._picker_mode:
+                self._picker_img = img
+        x = max(0, min(img.width() - 1, int(p.x())))
+        y = max(0, min(img.height() - 1, int(p.y())))
+        c = img.pixelColor(x, y)
+        if not c.isValid():
+            return
+        self._picker_color = QColor(c)
+        hexs = self._picker_color.name()
+        QApplication.clipboard().setText(hexs)
+        self._picker_hold = time.monotonic() + _PICKER_HOLD_S
+        self._update_picker_chip()
+        self.status.setText(tr("viewer.picker_picked", hex=hexs, x=x, y=y))
+
+    def _update_picker_chip(self) -> None:
+        """Образец взятого цвета на панели: цветной квадрат + HEX."""
+        c = self._picker_color
+        if c is None or not c.isValid():
+            self.picker_swatch.setVisible(False)
+            self.picker_hex.setVisible(False)
+            return
+        hexs = c.name()
+        self.picker_swatch.setStyleSheet(
+            f"background-color: {hexs}; border: 1px solid #888; border-radius: 3px;")
+        self.picker_hex.setText(hexs)
+        self.picker_swatch.setVisible(True)
+        self.picker_hex.setVisible(True)
+
+    # ---------- закрашивание выделенной области цветом пипетки (v0.8.8) ----------
+
+    def _on_fill_apply(self) -> None:
+        """«🪣 Закрасить»: залить выделенную область цветом пипетки.
+
+        Закрашивание делается сразу в показе (WYSIWYG): область становится
+        ровно взятого цвета — что видно, то и запишется. Запись выполняет
+        рабочий поток (_FillSaveTask): результат — отдельный файл
+        «имя_fill.ext» рядом с оригиналом, сам оригинал не меняется.
+        Без взятого цвета — честная подсказка: сначала пипетка."""
+        if (not self._crop_mode or self._pixmap is None
+                or not self.view_label.has_selection()):
+            return
+        if self._picker_color is None:
+            self.status.setText(tr("viewer.fill_nocolor"))
+            return
+        if self._fill_saving:
+            self.status.setText(tr("viewer.fill_saving"))
+            return
+        row = self.list.currentRow()
+        src = self._paths[row] if 0 <= row < len(self._paths) else ""
+        folder = os.path.dirname(src) if src else self._folder
+        if not folder or not os.path.isdir(folder):
+            self.status.setText(tr("viewer.fill_save_err",
+                                   err=os.path.basename(src) or "—"))
+            applog.error(tr("log.event.fill_err",
+                            name=os.path.basename(src) or "—",
+                            err="папка недоступна"))
+            return
+        sel = self.view_label.selection()
+        old_pm = self._pixmap
+        img = old_pm.toImage()
+        if img.isNull():
+            self.status.setText(tr("viewer.fill_save_err",
+                                   err=tr("viewer.cant_open", err="—")))
+            return
+        p = QPainter(img)
+        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
+        c = QColor(self._picker_color)
+        c.setAlpha(255)   # закрашивание непрозрачное — ровно как показывает образец
+        p.fillRect(sel, c)
+        p.end()
+        new_pm = QPixmap.fromImage(img)
+        if new_pm.isNull():
+            self.status.setText(tr("viewer.fill_save_err",
+                                   err=tr("viewer.cant_open", err="—")))
+            return
+        self._fill_prev_pixmap = old_pm   # при ошибке записи показ вернётся к оригиналу
+        self._pixmap = new_pm
+        self._apply_mode()   # закрашенное видно сразу, до записи
+        self._fill_saving = True
+        for b in (self.btn_crop_save, self.btn_crop_saveas, self.btn_fill,
+                  self.btn_crop_next):
+            b.setEnabled(False)
+        self.status.setText(tr("viewer.fill_saving"))
+        stem = os.path.splitext(os.path.basename(src))[0] if src else "image"
+        ext = _resize_save_ext(os.path.splitext(src)[1]) if src else ".png"
+        QThreadPool.globalInstance().start(_FillSaveTask(
+            img, folder, stem, ext, os.path.basename(src) or "—",
+            self._fill_signals))
+
+    def _on_fill_save_done(self, ok: bool, path: str, w: int, h: int,
+                           err: str) -> None:
+        """Фоновая запись закрашенной картинки закончилась.
+
+        Успех: режим закрывается, лента пересканируется, результат
+        открывается в просмотре. Ошибка: показ честно откатывается к
+        оригиналу (в файле ничего нет — показывать закрашенное нельзя),
+        режим и выделение на месте — можно поправить и попробовать снова."""
+        self._fill_saving = False
+        has = self.view_label.has_selection()
+        for b in (self.btn_crop_save, self.btn_crop_saveas, self.btn_fill,
+                  self.btn_crop_next):
+            b.setEnabled(has and not self._crop_saving)
+        if ok:
+            self._fill_prev_pixmap = None
+            self.status.setText(tr("viewer.fill_saved",
+                                   name=os.path.basename(path), w=w, h=h))
+            self.set_crop_mode(False)
+            self.refresh()   # новый файл появится в ленте
+            # отложенный выбор — ПОСЛЕ refresh(): load_folder внутри него
+            # чистит поле, а цель нужен только скану, который приедет позже
+            self._select_after_scan = path
+        else:
+            prev = self._fill_prev_pixmap
+            self._fill_prev_pixmap = None
+            if prev is not None:
+                self._pixmap = prev
+                self._apply_mode()
+            self.status.setText(tr("viewer.fill_save_err", err=err))
 
     # ---------- дерево дисков и папок ----------
 
