@@ -715,6 +715,10 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ru": "🧽 Не удалось убрать водяные знаки: {name} — {err}",
         "en": "🧽 Watermark removal failed: {name} — {err}",
         "zh": "🧽 去除水印失败：{name} — {err}"},
+    "log.event.wm_cover": {
+        "ru": "маска заняла {pct}% кадра — детектор не отделил знак от картинки, файл не тронут",
+        "en": "the mask covered {pct}% of the frame — the detector failed to separate the watermark; the file is untouched",
+        "zh": "遮罩覆盖了画面的 {pct}% —— 检测器未能分离水印，文件未作改动"},
     "log.event.wm_done": {
         "ru": "🧽 Водяные знаки убраны: обработано {ok}, чистых {clean}, ошибок {fail} ({ms} мс)",
         "en": "🧽 Watermark removal finished: {ok} processed, {clean} clean, {fail} failed ({ms} ms)",

@@ -37,6 +37,23 @@
 Florence-2; кэши других моделей (и общие библиотеки numpy/pillow, нужные
 программе и rembg, и шимы окружения) не трогаются.
 
+Детекция с v0.8.14 — две задачи Florence-2 вместо одной (репорт:
+«Знаки не удалил. Получилась какая-то ерунда.» — tiled-знак «НАТАР»
+на каталоге запчастей стал кашей на весь кадр). Первичной стала
+``<OCR_WITH_REGION>``: точные ПОВЁРНУТЫЕ четырёхугольники надписей с
+фильтром по медианной насыщенности HSV — серый полупрозрачный знак
+остаётся, цветной текст этикетки товара не закрашивается. Знак без
+текста (логотип) ловит резервная ``<CAPTION_TO_PHRASE_GROUNDING>`` с
+фразой «watermark» — только если OCR не нашёл ничего. Живой замер
+(Florence-2-base, картинка пользователя): grounding отдавал 3–4
+гигантских бокса на 18–100% кадра → маска 100% → LaMa «достроил» весь
+кадр; OCR двух проходов (оригинал + авто-контраст) нашёл 46 квадов
+знака (медианная насыщенность 0–25) против четырёх надписей этикетки
+(~180), 13 бледных экземпляров видны только на усиленной копии.
+Предохранители: боксы-гиганты (больше четверти кадра) отбрасываются,
+а если итоговая маска накрыла больше половины кадра — файл честно
+помечается ошибкой, картинка не портится.
+
 Здесь только механика; все надписи (i18n) и журнальные события — в
 local_viewer, который этими задачами распоряжается. Тяжёлые зависимости
 импортируются лениво: пока модуль не установлен, файл безопасно
@@ -53,13 +70,30 @@ import shutil
 import subprocess
 import sys
 
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFilter, ImageOps
 
+from app.core.i18n import tr
 from PySide6.QtCore import QObject, QRunnable, Signal
 
 # фраза для Florence-2: что искать на картинке (как в WatermarkRemover-AI)
 DETECT_PROMPT = "watermark"
 _FLORENCE_TASK = "<CAPTION_TO_PHRASE_GROUNDING>"
+_OCR_TASK = "<OCR_WITH_REGION>"        # повёрнутые четырёхугольники надписей
+
+# предохранители детекции (v0.8.14, живой замер — репорт «Знаки не
+# удалил. Получилась какая-то ерунда», tiled-знак «НАТАР» на 1024x683):
+# * бокс больше четверти кадра — не знак, а галлюцинация grounding'а на
+#   tiled-знаках (живые мусорные боксы: 100%, 39%, 28%, 18% кадра;
+#   настоящий экземпляр знака — 1–10%);
+# * медианная насыщенность HSV внутри OCR-квада: серый полупрозрачный
+#   знак даёт 0–25, цветной текст этикетки товара ~180 — порог между
+#   ними десятикратный, квад выше порога не закрашивается;
+# * маска, накрывшая больше 60% кадра (на репорте было 100%), — это не
+#   «удаление знака», а уничтожение картинки: файл помечается ошибкой,
+#   оригинал не трогается.
+_GIANT_FRAC = 0.25
+_OCR_MAX_SAT = 60.0
+_MAX_MASK_COVER = 0.6
 
 # доступные детекторы: (id для Hugging Face, ключ i18n с названием и размером)
 FLORENCE_MODELS = (
@@ -188,12 +222,110 @@ def nowm_path(path: str) -> str:
     return stem + _NOWM_SUFFIX + ext
 
 
-def mask_from_boxes(size, boxes, margin: int = MASK_MARGIN):
-    """Маска для LaMa из прямоугольников Florence-2 (numpy, uint8).
+def _poly_area(poly) -> float:
+    """Площадь полигона (формула шнурования); точки — пары (x, y)."""
+    s = 0.0
+    n = len(poly)
+    for i in range(n):
+        x1, y1 = poly[i]
+        x2, y2 = poly[(i + 1) % n]
+        s += x1 * y2 - x2 * y1
+    return abs(s) / 2.0
 
-    Каждый бокс расширяется на ``margin`` px на сторону (аналог dilate
-    маски в WatermarkRemover-AI — надпись редко влезает в бокс впритык),
-    обрезается по краям картинки; объединение боксов заливается 255.
+
+def _boxes_to_polys(boxes, w: int, h: int) -> list[list[tuple[float, float]]]:
+    """Прямоугольники (x1, y1, x2, y2) → полигоны из 4 углов.
+
+    Перевёрнутые координаты чинятся, всё обрезается по краям картинки.
+    """
+    polys = []
+    for box in boxes or ():
+        x1, y1, x2, y2 = (float(v) for v in box)
+        if x2 < x1:
+            x1, x2 = x2, x1
+        if y2 < y1:
+            y1, y2 = y2, y1
+        x1, x2 = max(x1, 0.0), min(x2, float(w))
+        y1, y2 = max(y1, 0.0), min(y2, float(h))
+        polys.append([(x1, y1), (x2, y1), (x2, y2), (x1, y2)])
+    return polys
+
+
+def _giant_polys(polys, w: int, h: int) -> list[list[tuple[float, float]]]:
+    """Полигон больше _GIANT_FRAC кадра — не знак, а галлюцинация (v0.8.14).
+
+    Живой замер: grounding на tiled-знаке отдавал боксы на 100%, 39% и
+    28% кадра — каждый из них накрыл бы товар целиком.
+    """
+    frame = float(w * h)
+    return [p for p in polys if 0.0 < _poly_area(p) / frame <= _GIANT_FRAC]
+
+
+def _ocr_polys(hsv, data, w: int, h: int) -> list[list[tuple[float, float]]]:
+    """Квады <OCR_WITH_REGION> → полигоны знаков; цветной текст отсекается.
+
+    Квад — повёрнутый четырёхугольник надписи [x1, y1, … x4, y4].
+    Фильтр насыщенности (v0.8.14): в прямоугольнике квада считается
+    МЕДИАННАЯ насыщенность HSV — у серого полупрозрачного знака она
+    0–25 даже поверх цветной коробки, у текста этикетки товара ~180;
+    квады выше _OCR_MAX_SAT — не знак и не закрашиваются.
+    """
+    import numpy as np
+
+    polys = []
+    for q in (data or {}).get("quad_boxes", []):
+        poly = [(min(max(float(q[i]), 0.0), float(w)),
+                 min(max(float(q[i + 1]), 0.0), float(h)))
+                for i in range(0, len(q) - 1, 2)]
+        if len(poly) < 3:
+            continue
+        xs, ys = [p[0] for p in poly], [p[1] for p in poly]
+        x1, y1 = int(min(xs)), int(min(ys))
+        x2, y2 = int(max(xs)), int(max(ys))
+        region = hsv[max(y1, 0):max(y2, 0), max(x1, 0):max(x2, 0), 1]
+        if region.size == 0:
+            continue
+        if float(np.median(region)) > _OCR_MAX_SAT:
+            continue   # цветная надпись (этикетка товара) — не трогаем
+        polys.append(poly)
+    return _giant_polys(polys, w, h)
+
+
+def mask_from_polys(size, polys, margin: int = MASK_MARGIN):
+    """Маска для LaMa из полигонов детекции (numpy, uint8).
+
+    Полигоны заливаются 255 (PIL polygon — точные повёрнутые квадры
+    OCR вместо обрамляющих прямоугольников), затем маска расширяется
+    на ``margin`` px фильтром максимума (аналог dilate в
+    WatermarkRemover-AI — надпись редко влезает в рамку впритык);
+    для прямоугольников результат совпадает с прежним раздуванием
+    каждого бокса, для повёрнутых квадров — заметно точнее.
+    """
+    import numpy as np   # лениво: numpy приходит с модулем (torch/iopaint)
+
+    w, h = int(size[0]), int(size[1])
+    img = Image.new("L", (w, h), 0)
+    draw = ImageDraw.Draw(img)
+    for poly in polys or ():
+        pts = [(min(max(float(x), 0.0), float(w)),
+                min(max(float(y), 0.0), float(h))) for x, y in poly]
+        if len(pts) >= 3:
+            draw.polygon(pts, fill=255)
+    if margin > 0 and polys:
+        img = img.filter(ImageFilter.MaxFilter(2 * int(margin) + 1))
+    return np.asarray(img, dtype=np.uint8)
+
+
+def mask_from_boxes(size, boxes, margin: int = MASK_MARGIN):
+    """Маска для LaMa из прямоугольников (numpy, uint8) — прежняя геометрия.
+
+    Каждый бокс расширяется на ``margin`` px на сторону, обрезается по
+    краям картинки; объединение боксов заливается 255. Отдельная от
+    полигонов реализация держит точную прежнюю геометрию (срез numpy
+    не включает правый/нижний край — живые тесты на неё опираются);
+    в конвейере v0.8.14 прямоугольники grounding'а приходят сюда через
+    _boxes_to_polys → mask_from_polys, а эта функция остаётся для
+    совместимости и тестов.
     """
     import numpy as np   # лениво: numpy приходит с модулем (torch/iopaint)
 
@@ -503,12 +635,60 @@ def _load_inpainter(device: str):
     return inpaint
 
 
-def _make_detector(model_id: str, device: str):
-    """Florence-2 в память; возвращает detect(pil) -> [(x1,y1,x2,y2), …].
+def _ocr_passes(pil_img, ask):
+    """Квадры OCR с оригинала И с контраст-усиленной копии (v0.8.14).
 
-    Тот же приём, что в WatermarkRemover-AI: задача
-    ``<CAPTION_TO_PHRASE_GROUNDING>`` с фразой «watermark».
+    Знак полупрозрачный: самые бледные экземпляры (по краям кадра, поверх
+    яркого фона) OCR на оригинале не видит — живой замер на репорте
+    «Знаки не удалил…»: 35 квадов с оригинала против 46 с копии после
+    ``ImageOps.autocontrast(cutoff=1)``, 13 экземпляров найдены только
+    на усиленной. Пропущенные экземпляры опасны вдвойне: их пиксели
+    остаются в картинке, и LaMa использует их как контекст — достраивает
+    призраки знака внутри закрашенных дыр. Сатурационный фильтр (_ocr_polys)
+    считается по ТЕЙ ЖЕ копии, что подана в OCR: серый знак остаётся
+    серым при любом контрасте, цветная этикетка — цветной.
     """
+    import numpy as np
+
+    polys = []
+    for im in (pil_img, ImageOps.autocontrast(pil_img, cutoff=1)):
+        hsv = np.asarray(im.convert("HSV"))
+        polys += _ocr_polys(hsv, ask(im).get(_OCR_TASK, {}),
+                            im.width, im.height)
+    return polys
+
+
+def _merge_detection(ocr: list, grounding: list) -> list:
+    """Что закрашивать: полигоны OCR, а без текста — grounding (v0.8.14).
+
+    Объединять нельзя: на tiled-знаке grounding отдаёт мусорные
+    гигантские боксы рядом с честными квадрами OCR, и маска снова
+    накрывает кадр. OCR нашёл надписи — ему и верим; не нашёл — знак,
+    возможно, логотип без текста, тогда и подключается grounding.
+    """
+    return ocr or grounding
+
+
+def _make_detector(model_id: str, device: str):
+    """Florence-2 в память; возвращает detect(pil) -> [полигон, …].
+
+    Полигон — список точек [(x, y), …]: OCR отдаёт повёрнутые
+    четырёхугольники надписей, grounding — прямоугольники. Сначала
+    ``<OCR_WITH_REGION>`` в два прохода (_ocr_passes): по оригиналу и по
+    контраст-усиленной копии — бледные экземпляры знака иначе ускользают,
+    а их пиксели уводят LaMa в призраки; каждый квад
+    проходит фильтр насыщенности (_ocr_polys): он вырезает именно
+    надписи знака и щадит цветной текст этикетки; пусто —
+    ``<CAPTION_TO_PHRASE_GROUNDING>`` «watermark» (знак-лого, как в
+    WatermarkRemover-AI), с отбраковкой боксов-гигантов (_giant_polys).
+    Живой замер Florence-2-base на репорте «Знаки не удалил. Получилась
+    какая-то ерунда» (tiled-знак «НАТАР»): grounding возвращал 3–4
+    бокса на 18–100% кадра и маска из них накрывала всю картинку;
+    OCR двух проходов нашёл 46 квадов (33 + 13 бледных только на
+    усиленной копии), 4 квада этикетки отсечены насыщенностью (~180
+    против 0–25 у знака).
+    """
+    import numpy as np
     import torch
     from transformers import AutoModelForCausalLM, AutoProcessor
 
@@ -516,9 +696,8 @@ def _make_detector(model_id: str, device: str):
     dtype = torch.float16 if device == "cuda" else torch.float32
     model = AutoModelForCausalLM.from_pretrained(
         model_id, trust_remote_code=True, torch_dtype=dtype).to(device).eval()
-    prompt = f"{_FLORENCE_TASK} {DETECT_PROMPT}"
 
-    def detect(pil_img):
+    def _ask(pil_img, prompt: str):
         inputs = processor(text=prompt, images=pil_img,
                            return_tensors="pt").to(device)
         with torch.inference_mode():
@@ -527,11 +706,19 @@ def _make_detector(model_id: str, device: str):
                                  max_new_tokens=1024, do_sample=False,
                                  num_beams=3)
         text = processor.batch_decode(gen, skip_special_tokens=False)[0]
-        answer = processor.post_process_generation(
-            text, task=_FLORENCE_TASK,
+        return processor.post_process_generation(
+            text, task=prompt.strip(),
             image_size=(pil_img.width, pil_img.height))
-        return [tuple(int(v) for v in box)
-                for box in answer.get(_FLORENCE_TASK, {}).get("bboxes", [])]
+
+    def detect(pil_img):
+        w, h = pil_img.width, pil_img.height
+        ocr = _ocr_passes(pil_img, lambda im: _ask(im, _OCR_TASK))
+        grounding = []
+        if not ocr:   # текста не нашлось — пробуем найти знак-логотип
+            answer = _ask(pil_img, f"{_FLORENCE_TASK} {DETECT_PROMPT}")
+            boxes = answer.get(_FLORENCE_TASK, {}).get("bboxes", [])
+            grounding = _giant_polys(_boxes_to_polys(boxes, w, h), w, h)
+        return _merge_detection(ocr, grounding)
 
     return detect
 
@@ -592,12 +779,22 @@ class RemoveWatermarkTask(QRunnable):
                 with Image.open(path) as im:
                     # EXIF-поворот: фото телефонов иначе уедут «головой вбок»
                     rgb = _exif_rgb(im)
-                boxes = detect(Image.fromarray(rgb))
-                if not boxes:
+                polys = detect(Image.fromarray(rgb))
+                mask = mask_from_polys((rgb.shape[1], rgb.shape[0]), polys)
+                if mask.max() == 0:
                     # водяных знаков не нашлось — писать нечего, это не ошибка
                     self.signals.file_done.emit(path, "", True, "")
                     continue
-                mask = mask_from_boxes((rgb.shape[1], rgb.shape[0]), boxes)
+                cover = float((mask > 0).mean())
+                if cover > _MAX_MASK_COVER:
+                    # маска-гигант не «удаляет знак», а уничтожает картинку
+                    # (репорт v0.8.14: маска на 100% кадра → каша) — честный
+                    # отказ лучше испорченного файла
+                    fail += 1
+                    self.signals.file_done.emit(
+                        path, "", False,
+                        tr("log.event.wm_cover", pct=round(cover * 100)))
+                    continue
                 result = inpainter(rgb, mask)
                 _save_array(result, out)
                 ok += 1

@@ -1,11 +1,19 @@
 """Оффлайн-тест модуля удаления водяных знаков (Florence-2 + LaMa, v0.8.11;
 двухшаговая установка без пина Pillow — v0.8.12; без gradio, с шимами для
-новых Python и скачиванием big-lama до ModelManager — v0.8.13).
+новых Python и скачиванием big-lama до ModelManager — v0.8.13; двухзадачная
+детекция OCR+grounding с фильтрами и предохранителем покрытия — v0.8.14).
 
 Проверяется:
 - watermark_manager: is_installed, nowm_path (формат сохраняется, AVIF → PNG,
   GIF и повторная обработка результата отклоняются), mask_from_boxes
-  (расширение на margin, склейка координат, обрезка по краям, объединение);
+  (расширение на margin, склейка координат, обрезка по краям, объединение),
+  mask_from_polys (поворотные квадры OCR, расширение фильтром максимума);
+  v0.8.14: _poly_area, _giant_polys (боксы-гиганты с репорта «Знаки не
+  удалил. Получилась какая-то ерунда» отбрасываются), _ocr_polys (медианная
+  насыщенность HSV: серый знак отделяется от цветной этикетки),
+  _merge_detection (OCR выигрывает, grounding — лишь без текста),
+  предохранитель покрытия маски (маска на 70% кадра — честная ошибка
+  вместо испорченной картинки, на 55% — результат)
 - фильтр требований iopaint: пины Pillow==9.5.0 и gradio==4.21.0
   выбрасываются (у Pillow нет сборок под Python 3.12/3.13 — сборка старого
   исходника падает с «KeyError: '__version__'»; пин gradio «numpy~=1.0» не
@@ -36,7 +44,7 @@
 - контекстное меню ленты содержит «Убрать водяные знаки»;
 - пачка через _wm_start: jpg даёт jpg-результат, итог — в статусе;
 - _ensure_stdio/_disable_hf_progress: pythonw-сценарий не роняет модуль;
-- i18n: все новые ключи заполнены на ru/en/zh; версия — 0.8.13.
+- i18n: все новые ключи заполнены на ru/en/zh; версия — 0.8.14.
 
 Раздел меню «Модули» проверяет scripts/test_modules_menu.py.
 Запуск: QT_QPA_PLATFORM=offscreen python scripts/test_watermark.py
@@ -88,7 +96,8 @@ WM_KEYS = [
     "viewer.wm_menu_uninstall", "viewer.wm_model_menu",
     "viewer.wm_model_base", "viewer.wm_model_large", "viewer.wm_prepare",
     "viewer.wm_ready", "log.event.wm_start", "log.event.wm_file_err",
-    "log.event.wm_done", "log.event.wm_skip", "log.event.wm_model",
+    "log.event.wm_cover", "log.event.wm_done", "log.event.wm_skip",
+    "log.event.wm_model",
     "log.event.wm_install_start", "log.event.wm_install_done",
     "log.event.wm_install_fail", "log.event.wm_uninstall_start",
     "log.event.wm_uninstall_done", "log.event.wm_uninstall_fail",
@@ -102,7 +111,7 @@ def main() -> int:
     st = QSettings("ImageHunter", "ImageHunter")
     st.sync()
 
-    check("версия 0.8.13", app.__version__ == "0.8.13", app.__version__)
+    check("версия 0.8.14", app.__version__ == "0.8.14", app.__version__)
 
     # ---------- менеджер: чистые функции ----------
     check("is_installed() — булево", isinstance(watermark_manager.is_installed(), bool))
@@ -140,6 +149,109 @@ def main() -> int:
         (100, 100), [(10, 10, 20, 20), (15, 15, 30, 30)], margin=0)
     check("маска: объединение боксов",
           mask[12, 12] == 255 and mask[25, 25] == 255 and mask[9, 12] == 0)
+
+    # ---------- mask_from_polys: полигоны детекции v0.8.14 ----------
+    mask = watermark_manager.mask_from_polys((10, 10), [])
+    check("полигоны: без полигонов маска пуста", mask.max() == 0)
+    # повернутый квад вокруг центра: уголки бокса чистые, центр — закрашен
+    quad = [(10, 20), (20, 10), (30, 20), (20, 30)]
+    mask = watermark_manager.mask_from_polys((40, 40), [quad], margin=0)
+    check("полигоны: ромб закрашен внутри", mask[20, 20] == 255)
+    check("полигоны: угол обрамляющего бокса не тронут",
+          mask[10, 10] == 0 and mask[30, 30] == 0)
+    mask = watermark_manager.mask_from_polys((40, 40), [quad], margin=4)
+    check("полигоны: фильтр максимума расширяет маску",
+          mask[20, 34] == 255 and mask[34, 20] == 255)
+    # точки вне кадра обрезаются, вырожденные полигоны игнорируются
+    mask = watermark_manager.mask_from_polys(
+        (40, 40), [[(-5, 0), (10, -5), (10, 10), (-5, 10)],
+                   [(30, 30), (30, 30), (30, 30)]], margin=0)
+    check("полигоны: обрезка по кадру и вырожденные",
+          mask[0, 0] == 255 and mask[5, 5] == 255 and mask[39, 39] == 0)
+
+    # ---------- _poly_area и _giant_polys: боксы-гиганты с репорта ----------
+    check("площадь: прямоугольник 10x20",
+          watermark_manager._poly_area([(0, 0), (10, 0), (10, 20), (0, 20)]) == 200.0)
+    check("площадь: вырожденный полигон нулевая",
+          watermark_manager._poly_area([(10, 10), (50, 10), (90, 10)]) == 0.0)
+    frame = (1000, 1000)
+    box = lambda a, b: [(a, a), (b, a), (b, b), (a, b)]
+    giants = watermark_manager._giant_polys(
+        [box(0, 1000), box(0, 625), box(0, 530), box(250, 687), box(0, 450)],
+        *frame)
+    # живые мусорные боксы с репорта: 100%, 39%, 28% кадра — отброшены;
+    # 19% (наш реальный случай grounding'а) и 20% — остались
+    check("гиганты: боксы >25% кадра отброшены",
+          len(giants) == 2 and
+          watermark_manager._poly_area(giants[0]) == (687.0 - 250.0) ** 2 and
+          watermark_manager._poly_area(giants[1]) == 450.0 ** 2,
+          str(len(giants)))
+    check("гиганты: вырожденный полигон не выживает",
+          watermark_manager._giant_polys(
+              [[(10, 10), (50, 10), (90, 10)]], 100, 100) == [])
+
+    # ---------- _ocr_polys: фильтр насыщенности отделяет знак от этикетки ----------
+    import numpy as np
+
+    hsv = np.zeros((100, 100, 3), dtype=np.uint8)   # всё серое (насыщенность 0)
+    hsv[60:80, 60:80, 1] = 200      # цветная надпись этикетки (насыщенность ~180)
+    data = {"quad_boxes": [
+        [10.0, 10.0, 30.0, 10.0, 30.0, 30.0, 10.0, 30.0],   # серый знак — остаётся
+        [60.0, 60.0, 80.0, 60.0, 80.0, 80.0, 60.0, 80.0],   # цветная этикетка — вон
+        [0.0, 0.0, 100.0, 0.0, 100.0, 100.0, 0.0, 100.0],   # гигант — вон
+        [-10.0, 40.0, 20.0, 40.0, 20.0, 55.0, -10.0, 55.0],  # частично вне кадра
+    ]}
+    polys = watermark_manager._ocr_polys(hsv, data, 100, 100)
+    check("ocr-полигоны: знак остался, этикетка и гигант отсечены",
+          len(polys) == 2 and
+          watermark_manager._poly_area(polys[0]) == 400.0 and
+          polys[1][0] == (0.0, 40.0),
+          str(len(polys)))
+    check("ocr-полигоны: пустой ответ — пустой список",
+          watermark_manager._ocr_polys(hsv, {}, 100, 100) == [])
+
+    # ---------- _merge_detection: OCR выигрывает, grounding — резерв ----------
+    check("слияние: OCR есть — grounding игнорируется",
+          watermark_manager._merge_detection([["ocr"]], [["g"]]) == [["ocr"]])
+    check("слияние: OCR пуст — работает grounding",
+          watermark_manager._merge_detection([], [["g"]]) == [["g"]])
+    check("слияние: пусто везде — пусто",
+          watermark_manager._merge_detection([], []) == [])
+
+    # ---------- _ocr_passes: оригинал + авто-контраст (v0.8.14) ----------
+    from PIL import Image as _Img
+
+    gray_img = _Img.new("RGB", (60, 60), (200, 200, 200))
+    quad_a = [5.0, 5.0, 25.0, 5.0, 25.0, 25.0, 5.0, 25.0]
+    quad_b = [35.0, 35.0, 55.0, 35.0, 55.0, 55.0, 35.0, 55.0]
+    poly_a = [(5.0, 5.0), (25.0, 5.0), (25.0, 25.0), (5.0, 25.0)]
+    poly_b = [(35.0, 35.0), (55.0, 35.0), (55.0, 55.0), (35.0, 55.0)]
+    calls = []
+
+    def fake_ask(im):
+        # первый вызов (оригинал) видит один знак, второй (авто-контраст
+        # бледной копии) — другой: объединение должно собрать оба
+        calls.append(im)
+        return {"<OCR_WITH_REGION>":
+                {"quad_boxes": [quad_a if len(calls) == 1 else quad_b]}}
+
+    passed = watermark_manager._ocr_passes(gray_img, fake_ask)
+    check("проходы OCR: два вызова — оригинал и усиленная копия",
+          len(calls) == 2)
+    check("проходы OCR: объединение квадов двух проходов",
+          len(passed) == 2 and passed[0] == poly_a and passed[1] == poly_b,
+          str(len(passed)))
+    # гигант из любого прохода отбрасывается
+    calls.clear()
+
+    def giant_ask(im):
+        calls.append(im)
+        return {"<OCR_WITH_REGION>": {"quad_boxes": [
+            [0.0, 0.0, 60.0, 0.0, 60.0, 60.0, 0.0, 60.0]]}}
+
+    watermark_manager._ocr_passes(gray_img, giant_ask)
+    check("проходы OCR: гигант не выживает ни в одном проходе",
+          len(calls) == 2)
 
     # ---------- фильтр требований iopaint: пины Pillow и gradio выбрасываются ----------
     real_reqs = watermark_manager._iopaint_requires
@@ -362,8 +474,9 @@ def main() -> int:
     # ---------- RemoveWatermarkTask без модуля: честные ошибки ----------
     png = os.path.join(tmpdir, "cat.png")
     from PIL import Image
-    # 40×40: «водяной знак» 24..32 с margin 15 не накрывает картинку целиком
-    Image.new("RGB", (40, 40), (0, 128, 0)).save(png, "PNG")
+    # 50×50: «водяной знак» стаба 24..31 с margin 15 даёт 58% кадра —
+    # меньше предохранителя покрытия (60%), иначе честная ошибка вместо результата
+    Image.new("RGB", (50, 50), (0, 128, 0)).save(png, "PNG")
 
     sig = watermark_manager.WatermarkSignals()
     files: list[tuple] = []
@@ -388,8 +501,9 @@ def main() -> int:
     real_pipeline = watermark_manager._load_pipeline
 
     def fake_detect(pil_img):
-        # «водяной знак» в правом нижнем углу — по цвету узнаем результат
-        return [(24, 24, 31, 31)]
+        # «водяной знак» в правом нижнем углу — по цвету узнаем результат;
+        # с v0.8.14 детекция отдаёт ПОЛИГОНЫ (список точек), не боксы
+        return [[(24, 24), (31, 24), (31, 31), (24, 31)]]
 
     def fake_inpaint(rgb, mask):
         rgb = rgb.copy()
@@ -422,6 +536,48 @@ def main() -> int:
         check("со стабом: оригинал цел",
               src.getpixel((25, 25)) == (0, 128, 0))
 
+    # ---------- предохранитель покрытия маски (v0.8.14) ----------
+    # маска 70% кадра: rect (0,0,99,54) + margin 15 → 70 строк из 100 —
+    # честная ошибка, файл-результат НЕ создаётся
+    big = os.path.join(tmpdir, "big.png")
+    Image.new("RGB", (100, 100), (0, 128, 0)).save(big, "PNG")
+    big_rect = [[(0.0, 0.0), (99.0, 0.0), (99.0, 54.0), (0.0, 54.0)]]
+    watermark_manager._load_pipeline = (
+        lambda model_id: (fake_inpaint, lambda img: big_rect))
+    sig = watermark_manager.WatermarkSignals()
+    files, batches = [], []
+    sig.file_done.connect(
+        lambda p, out, ok, err: files.append((p, out, ok, err)))
+    sig.batch_done.connect(lambda ok, fail: batches.append((ok, fail)))
+    QThreadPool.globalInstance().start(
+        watermark_manager.RemoveWatermarkTask(
+            [(big, os.path.join(tmpdir, "big_nowm.png"))], "m", sig))
+    wait_until(lambda: bool(batches))
+    check("покрытие 70%: ошибка, файла-результата нет",
+          batches == [(0, 1)] and bool(files) and files[0][2] is False
+          and files[0][1] == "" and "70" in files[0][3], str(files))
+    check("покрытие 70%: текст ошибки — ключ wm_cover",
+          bool(files) and files[0][3] == i18n.tr("log.event.wm_cover", pct=70),
+          files[0][3] if files else "")
+
+    # маска 55% кадра: rect (0,0,99,39) + margin 15 → 55 строк из 100 — результат
+    ok_rect = [[(0.0, 0.0), (99.0, 0.0), (99.0, 39.0), (0.0, 39.0)]]
+    watermark_manager._load_pipeline = (
+        lambda model_id: (fake_inpaint, lambda img: ok_rect))
+    sig = watermark_manager.WatermarkSignals()
+    files, batches = [], []
+    sig.file_done.connect(
+        lambda p, out, ok, err: files.append((p, out, ok, err)))
+    sig.batch_done.connect(lambda ok, fail: batches.append((ok, fail)))
+    QThreadPool.globalInstance().start(
+        watermark_manager.RemoveWatermarkTask(
+            [(big, os.path.join(tmpdir, "ok_nowm.png"))], "m", sig))
+    wait_until(lambda: bool(batches))
+    check("покрытие 55%: результат создан",
+          batches == [(1, 0)]
+          and os.path.exists(os.path.join(tmpdir, "ok_nowm.png")),
+          str(batches))
+
     # файл без найденных знаков: не даёт результата, не считается ошибкой
     watermark_manager._load_pipeline = (
         lambda model_id: (fake_inpaint, lambda img: []))
@@ -444,6 +600,10 @@ def main() -> int:
     watermark_manager._load_pipeline = real_pipeline
 
     # ---------- вьюер: кнопка, статус, модель, контекстное меню ----------
+    # чужая сохранённая папка (персистентный QSettings от других наборов
+    # тестов) не должна восстанавливаться: её фоновый скан перебивает
+    # статус пачки («Читаю папку…» → путь) и роняет проверку итога
+    st.remove("viewer/last_folder")
     viewer = LocalViewer()
     check("кнопка 🧽 существует", hasattr(viewer, "_on_wm_button"))
     check("модель по умолчанию",
@@ -537,7 +697,7 @@ def main() -> int:
 
     # ---------- пачка через _wm_start со стабом: статус и результат ----------
     marked = os.path.join(tmpdir, "marked.jpg")
-    Image.new("RGB", (40, 40), (0, 128, 0)).save(marked, "JPEG", quality=92)
+    Image.new("RGB", (50, 50), (0, 128, 0)).save(marked, "JPEG", quality=92)
     watermark_manager._load_pipeline = (
         lambda model_id: (fake_inpaint, fake_detect))
     try:
