@@ -7,6 +7,8 @@
   сами действия делегированы вьюеру «Моих картинок» (:class:`app.ui.
   local_viewer.LocalViewer`): он владеет фоновыми задачами pip, guard-ом
   от двойного запуска и всей репортёрикой в статус/журнал с v0.7.12;
+* **Водяные знаки (Florence-2 + LaMa/IOPaint)** — установка/удаление
+  модуля и выбор детектора; делегировано вьюеру тем же способом (v0.8.11);
 * **Веб-сервер (доступ с телефона)** — панель управления (порт, токен,
   QR-код, «только просмотр»), запуск/остановка и автостарт с программой;
   менеджер создаётся лениво, как и раньше: пока модуль не тронули,
@@ -26,7 +28,7 @@ from PySide6.QtWidgets import QMenu
 
 from app.core import applog
 from app.core.i18n import tr
-from app.ui import rembg_manager
+from app.ui import rembg_manager, watermark_manager
 
 
 class ModulesMenu(QMenu):
@@ -48,6 +50,7 @@ class ModulesMenu(QMenu):
         """Собрать пункты заново: состояние модулей могли поменять."""
         self.clear()
         self._add_rembg_section()
+        self._add_watermark_section()
         self.addSeparator()
         self._add_server_section()
 
@@ -79,6 +82,33 @@ class ModulesMenu(QMenu):
             a.setChecked(model_id == viewer.rembg_current_model())
             a.triggered.connect(lambda _=False, mid=model_id:
                                 viewer.rembg_set_model(mid))
+
+    def _add_watermark_section(self) -> None:
+        """Раздел водяных знаков: состояние, установка/удаление, детектор (v0.8.11)."""
+        viewer = self._main.local
+        installed = watermark_manager.is_installed()
+        head = self.addAction(tr("modules.wm_header", state=tr(
+            "modules.installed" if installed else "modules.not_installed")))
+        head.setEnabled(False)   # заголовок-состояние, не команда
+        busy = viewer.wm_is_busy()
+        if installed:
+            act = self.addAction(tr("viewer.wm_menu_uninstall"))
+            act.triggered.connect(viewer.wm_uninstall)
+        else:
+            act = self.addAction(tr("viewer.wm_menu_install"))
+            act.triggered.connect(viewer.wm_install)
+        act.setEnabled(not busy)   # pip уже идёт — второго запуска не будет
+        # выбор детектора: base — резвый, large — точнее (v0.8.11);
+        # подменю с явным C++-родителем — приём из _add_rembg_section
+        m_model = QMenu(self)
+        m_model.setTitle(tr("viewer.wm_model_menu"))
+        self.addMenu(m_model)
+        for model_id, key in watermark_manager.FLORENCE_MODELS:
+            a = m_model.addAction(tr(key))
+            a.setCheckable(True)
+            a.setChecked(model_id == viewer.wm_current_model())
+            a.triggered.connect(lambda _=False, mid=model_id:
+                                viewer.wm_set_model(mid))
 
     def _add_server_section(self) -> None:
         """Раздел веб-сервера: панель, запуск/остановка, автостарт.

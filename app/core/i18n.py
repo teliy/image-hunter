@@ -603,6 +603,153 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ru": "🪄 Не удалось удалить результат: {name} — {err}",
         "en": "🪄 Failed to remove the result: {name} — {err}",
         "zh": "🪄 删除结果失败：{name} — {err}"},
+    # ---------- удаление водяных знаков (Florence-2 + LaMa/IOPaint, v0.8.11) ----------
+    "viewer.wm": {
+        "ru": "🧽 Убрать водяные знаки", "en": "🧽 Remove Watermarks", "zh": "🧽 去除水印"},
+    "viewer.wm_tip": {
+        "ru": "Убрать водяные знаки у картинки (модуль Florence-2 + LaMa, всё локально).\n"
+              "Результат — «имя_nowm.ext» рядом с оригиналом. При первом запуске\n"
+              "скачаются модели (~0,7 ГБ для base).",
+        "en": "Remove watermarks from the image (Florence-2 + LaMa module, fully local).\n"
+              "The result is “name_nowm.ext” next to the original. The first run\n"
+              "downloads the models (~0.7 GB for base).",
+        "zh": "去除图片水印（Florence-2 + LaMa 模块，完全本地）。\n"
+              "结果为原图旁的“名称_nowm.ext”。首次运行会下载模型（base 约 0.7 GB）。"},
+    "viewer.wm_none": {
+        "ru": "Сначала выберите картинку в ленте",
+        "en": "Select an image in the strip first",
+        "zh": "请先在缩略图栏中选择图片"},
+    "viewer.wm_busy": {
+        "ru": "Идёт удаление водяных знаков — подождите",
+        "en": "Watermark removal is already running — please wait",
+        "zh": "正在去除水印，请稍候"},
+    "viewer.wm_already": {
+        "ru": "Эти файлы — уже результаты *_nowm (или GIF)",
+        "en": "These files are already *_nowm results (or GIF)",
+        "zh": "这些文件已是 *_nowm 结果（或 GIF）"},
+    "viewer.wm_progress": {
+        "ru": "Удаление водяных знаков: {done}/{n} — {name}…",
+        "en": "Removing watermarks: {done}/{n} — {name}…",
+        "zh": "去除水印：{done}/{n} — {name}…"},
+    "viewer.wm_done": {
+        "ru": "Водяные знаки убраны: {ok}",
+        "en": "Watermarks removed: {ok}",
+        "zh": "水印已去除：{ok}"},
+    "viewer.wm_clean": {
+        "ru": "; чистых: {clean}", "en": "; clean: {clean}", "zh": "；无水印：{clean}"},
+    "viewer.wm_done_fail": {
+        "ru": "; ошибок: {fail}", "en": "; failed: {fail}", "zh": "；失败：{fail}"},
+    "viewer.wm_inst_q": {
+        "ru": "Модуль удаления водяных знаков (Florence-2 + LaMa) не установлен.\n\n"
+              "Установить сейчас? Скачается iopaint, transformers и timm\n"
+              "(вместе с PyTorch — гигабайты), модели подгрузятся при первом\n"
+              "запуске (LaMa ~0,2 ГБ, Florence-2-base ~0,5 ГБ). Всё локально.",
+        "en": "The watermark removal module (Florence-2 + LaMa) is not installed.\n\n"
+              "Install it now? This downloads iopaint, transformers and timm\n"
+              "(PyTorch included — gigabytes); the models are fetched on first\n"
+              "use (LaMa ~0.2 GB, Florence-2-base ~0.5 GB). Everything runs locally.",
+        "zh": "未安装水印去除模块（Florence-2 + LaMa）。\n\n"
+              "现在安装吗？将下载 iopaint、transformers、timm（含 PyTorch，数 GB），\n"
+              "模型在首次使用时下载（LaMa 约 0.2 GB，Florence-2-base 约 0.5 GB）。全部本地运行。"},
+    "viewer.wm_installing": {
+        "ru": "Устанавливаю модуль удаления водяных знаков (pip install iopaint transformers timm)…",
+        "en": "Installing the watermark removal module (pip install iopaint transformers timm)…",
+        "zh": "正在安装水印去除模块（pip install iopaint transformers timm）…"},
+    "viewer.wm_install_ok": {
+        "ru": "Модуль удаления водяных знаков установлен",
+        "en": "Watermark removal module installed",
+        "zh": "水印去除模块已安装"},
+    "viewer.wm_install_fail": {
+        "ru": "Не удалось установить модуль удаления водяных знаков: {info}",
+        "en": "Failed to install the watermark removal module: {info}",
+        "zh": "安装水印去除模块失败：{info}"},
+    "viewer.wm_uninst_q": {
+        "ru": "Удалить модуль водяных знаков и скачанные модели ({mb})?\n"
+              "С диска будет вычищено всё, что ставил модуль.",
+        "en": "Remove the watermark removal module and the downloaded models ({mb})?\n"
+              "Everything the module installed will be wiped from the disk.",
+        "zh": "删除水印去除模块及已下载的模型（{mb}）？\n模块安装的所有内容将从磁盘完全清除。"},
+    "viewer.wm_uninstalling": {
+        "ru": "Удаляю модуль водяных знаков и модели…",
+        "en": "Removing the watermark removal module and models…",
+        "zh": "正在删除水印去除模块和模型…"},
+    "viewer.wm_uninst_ok": {
+        "ru": "Модуль водяных знаков и модели удалены (освобождено {mb})",
+        "en": "Watermark removal module and models removed ({mb} freed)",
+        "zh": "水印去除模块和模型已删除（释放 {mb}）"},
+    "viewer.wm_uninst_fail": {
+        "ru": "Не удалось удалить модуль водяных знаков: {info}",
+        "en": "Failed to remove the watermark removal module: {info}",
+        "zh": "删除水印去除模块失败：{info}"},
+    "viewer.wm_menu_install": {
+        "ru": "Установить модуль водяных знаков (Florence-2 + LaMa)…",
+        "en": "Install the watermark removal module (Florence-2 + LaMa)…",
+        "zh": "安装水印去除模块（Florence-2 + LaMa）…"},
+    "viewer.wm_menu_uninstall": {
+        "ru": "Удалить модуль водяных знаков и модели…",
+        "en": "Uninstall the watermark removal module and models…",
+        "zh": "卸载水印去除模块和模型…"},
+    "viewer.wm_model_menu": {
+        "ru": "Модель детекции Florence-2", "en": "Florence-2 detection model",
+        "zh": "Florence-2 检测模型"},
+    "viewer.wm_model_base": {
+        "ru": "Florence-2-base (быстрый, ~0,5 ГБ)",
+        "en": "Florence-2-base (fast, ~0.5 GB)",
+        "zh": "Florence-2-base（快，约 0.5 GB）"},
+    "viewer.wm_model_large": {
+        "ru": "Florence-2-large (точнее, ~1,6 ГБ)",
+        "en": "Florence-2-large (better, ~1.6 GB)",
+        "zh": "Florence-2-large（更准，约 1.6 GB）"},
+    "viewer.wm_prepare": {
+        "ru": "Готовлю модели (при первом запуске скачаются): {model}",
+        "en": "Preparing the models (downloaded on first run): {model}",
+        "zh": "正在准备模型（首次运行会下载）：{model}"},
+    "viewer.wm_ready": {
+        "ru": "Модели готовы: {model}", "en": "Models are ready: {model}",
+        "zh": "模型已就绪：{model}"},
+    "log.event.wm_start": {
+        "ru": "🧽 Убираю водяные знаки: файлов {n}, модель {model}",
+        "en": "🧽 Removing watermarks: {n} file(s), model {model}",
+        "zh": "🧽 正在去除水印：{n} 个文件，模型 {model}"},
+    "log.event.wm_file_err": {
+        "ru": "🧽 Не удалось убрать водяные знаки: {name} — {err}",
+        "en": "🧽 Watermark removal failed: {name} — {err}",
+        "zh": "🧽 去除水印失败：{name} — {err}"},
+    "log.event.wm_done": {
+        "ru": "🧽 Водяные знаки убраны: обработано {ok}, чистых {clean}, ошибок {fail} ({ms} мс)",
+        "en": "🧽 Watermark removal finished: {ok} processed, {clean} clean, {fail} failed ({ms} ms)",
+        "zh": "🧽 水印去除完成：处理 {ok}，无水印 {clean}，失败 {fail}（{ms} 毫秒）"},
+    "log.event.wm_skip": {
+        "ru": "🧽 Пропущено файлов: {n} (уже «_nowm» или GIF)",
+        "en": "🧽 Skipped {n} file(s) (already *_nowm results or GIF)",
+        "zh": "🧽 跳过 {n} 个文件（已是 *_nowm 结果或 GIF）"},
+    "log.event.wm_model": {
+        "ru": "🧽 Модель детекции: {model}", "en": "🧽 Detection model: {model}",
+        "zh": "🧽 检测模型：{model}"},
+    "log.event.wm_install_start": {
+        "ru": "🧽 Устанавливаю модуль водяных знаков (pip install iopaint transformers timm)…",
+        "en": "🧽 Installing the watermark removal module (pip install iopaint transformers timm)…",
+        "zh": "🧽 正在安装水印去除模块（pip install iopaint transformers timm）…"},
+    "log.event.wm_install_done": {
+        "ru": "🧽 Модуль водяных знаков установлен",
+        "en": "🧽 Watermark removal module installed",
+        "zh": "🧽 水印去除模块已安装"},
+    "log.event.wm_install_fail": {
+        "ru": "🧽 Ошибка установки модуля водяных знаков: {info}",
+        "en": "🧽 Watermark removal module installation error: {info}",
+        "zh": "🧽 水印去除模块安装错误：{info}"},
+    "log.event.wm_uninstall_start": {
+        "ru": "🧽 Удаляю модуль водяных знаков и модели…",
+        "en": "🧽 Removing the watermark removal module and models…",
+        "zh": "🧽 正在删除水印去除模块和模型…"},
+    "log.event.wm_uninstall_done": {
+        "ru": "🧽 Модуль водяных знаков удалён, освобождено {mb} МБ",
+        "en": "🧽 Watermark removal module removed, {mb} MB freed",
+        "zh": "🧽 水印去除模块已删除，释放 {mb} MB"},
+    "log.event.wm_uninstall_fail": {
+        "ru": "🧽 Ошибка удаления модуля водяных знаков: {info}",
+        "en": "🧽 Watermark removal module removal error: {info}",
+        "zh": "🧽 水印去除模块删除错误：{info}"},
     "viewer.no_images": {
         "ru": "В этой папке нет изображений", "en": "No images in this folder", "zh": "此文件夹中没有图片"},
     "viewer.pick_first": {
@@ -1351,6 +1498,10 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ru": "🪄 Удаление фона (rembg): {state}",
         "en": "🪄 Background removal (rembg): {state}",
         "zh": "🪄 删除背景（rembg）：{state}"},
+    "modules.wm_header": {
+        "ru": "🧽 Водяные знаки (Florence-2 + LaMa): {state}",
+        "en": "🧽 Watermark removal (Florence-2 + LaMa): {state}",
+        "zh": "🧽 水印去除（Florence-2 + LaMa）：{state}"},
     "modules.installed": {
         "ru": "установлен", "en": "installed", "zh": "已安装"},
     "modules.not_installed": {

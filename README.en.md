@@ -10,6 +10,16 @@ Written in Python + PySide6 (Qt6): heavy operations (rendering, network, image d
 
 > **⚡ Special focus — fast work over the network and with network drives** (SMB/NAS, mounted shares): a folder is read in one request, thumbnails are built only for the visible part of the list, ready previews are cached on disk. A network folder with thousands of photos opens without lags — neither in the app nor on the network. Details in [“Fast work over the network and with network drives”](#fast-work-over-the-network-and-with-network-drives).
 
+## Watermark removal — the Florence-2 + LaMa module (v0.8.11)
+
+The wish: “let's add the best watermark remover from GitHub as a module (that can be installed and uninstalled)”. The best of GitHub is wired into one fully local pipeline of two open-source tools — the approach of D-Ogi/WatermarkRemover-AI: **Florence-2** (microsoft, via transformers) runs `<CAPTION_TO_PHRASE_GROUNDING>` with the phrase “watermark” to find watermark captions, and **LaMa from IOPaint** (Sanster/IOPaint) — the most alive inpainting project on GitHub — paints those areas over, rebuilding the background from the surroundings. Everything runs locally, no clouds, no keys.
+
+**Install and uninstall — no terminal.** The “🧽 Remove Watermarks” button on the “My Pictures” toolbar (and the same item in the strip’s right-click menu): if the module is not installed yet, the app honestly warns about the size (iopaint + transformers + timm — gigabytes with PyTorch) and installs everything with pip in a hidden window, then immediately continues processing. The “Modules” menu holds one-item install/uninstall (uninstall asks for confirmation, shows how much space will be freed and wipes the model caches — big-lama in torch-hub and Florence-2 in the Hugging Face cache; foreign caches and libraries shared with the app/rembg are left alone) and a detector submenu: Florence-2-base — fast (~0.5 GB), Florence-2-large — better (~1.6 GB). The models (LaMa ~0.2 GB and Florence-2) download on the first removal run.
+
+**How it works.** Selected tiles (or the opened picture) are processed in one session in the background: models are loaded into memory once per batch, and on network drives the interface does not freeze. The result is “name_nowm.ext” next to the original, the format is preserved (AVIF → PNG), the original is never modified, existing files are never overwritten; already-results and GIF files are skipped. The paint area is the found boxes padded by 15 px per side; files with no detected watermarks are honestly counted as “clean” (no result file, no error). Progress goes to the status line, the summary to the status line and the Log.
+
+Tests: new `scripts/test_watermark.py` — 61 checks; a section in `scripts/test_modules_menu.py`.
+
 ## Search results rebuilt after deletion (v0.8.10)
 
 When a name search is active, deleting images (Delete or the context menu) now reruns the search — the same principle as moving files to tree folders (v0.8.5): deleted files are no longer listed as found, the “found: N” counter is honest, and results trimmed by the 5000 limit are refilled with the next matching files. The selection lands on the first tile of the new results, and the status shows both the deletion summary and the rebuild progress. Without an active search the behavior is unchanged — the film strip simply shrinks by the deleted tiles.
@@ -65,6 +75,7 @@ Tests: the web-search section of `scripts/test_server.py` — mocks for Openvers
 The **Modules** item in the menu bar (next to Help) gathers the management of all pluggable modules in one place. The menu is rebuilt every time it opens, so its items and checkmarks always show the current state.
 
 - **Background removal (rembg):** install or remove the module with one item (removal asks for confirmation and shows how much space the downloaded models take), the “rembg model” submenu with a checkmark on the chosen model (u2netp / u2net / isnet-general-use). The section header shows whether the module is installed. These items are gone from the “My pictures” strip context menu — only the “🪄 Remove background” action remains there.
+- **Watermark removal (Florence-2 + LaMa, v0.8.11):** install or remove the module with one item (with confirmation, the freed space and the model-cache cleanup), the “Florence-2 detection model” submenu with a checkmark on the chosen detector (base — fast / large — better). Only the “🧽 Remove watermarks” action remains in the strip context menu.
 - **Web server:** “▶ Start” / “⏹ Stop” right in the menu, the “Start with the app” checkbox and the “🌐 Web server panel…” item (port, token, QR code, “view only”). The section header shows the state: “Server is running — port N” or “stopped”.
 
 ## Web server: control the app from your phone (v0.8.0)

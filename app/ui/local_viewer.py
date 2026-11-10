@@ -85,7 +85,7 @@ from PySide6.QtWidgets import (
 
 from app.core import applog, i18n, imgload
 from app.core.i18n import tr
-from app.ui import rembg_manager
+from app.ui import rembg_manager, watermark_manager
 
 # .avif добавлен явно: PySide6 не умеет AVIF без Pillow-кодека (см. imgload),
 # но сами файлы в ленте показывать надо — декодирует imgload
@@ -2439,6 +2439,9 @@ class LocalViewer(QWidget):
         # 🪄 удаление фона (rembg): если пакет ещё не стоит — предложит
         # установить его прямо из программы (v0.7.12)
         btn("viewer.rembg", "viewer.rembg_tip", self._on_rembg_button)
+        # 🧽 удаление водяных знаков (Florence-2 + LaMa/IOPaint): тот же
+        # принцип — модуль ставится pip-ом прямо из программы (v0.8.11)
+        btn("viewer.wm", "viewer.wm_tip", self._on_wm_button)
         bar.addSpacing(8)
         btn("viewer.reveal", "viewer.reveal_tip", self.reveal_folder)
         bar.addSpacing(8)
@@ -2825,6 +2828,28 @@ class LocalViewer(QWidget):
         self._rembg_model = (saved_model if saved_model in
                              {m for m, _k in rembg_manager.REMBG_MODELS}
                              else rembg_manager.DEFAULT_MODEL)
+
+        # водяные знаки (Florence-2 + LaMa/IOPaint): сигналы + состояние (v0.8.11)
+        self._wm_signals = watermark_manager.WatermarkSignals()
+        self._wm_signals.install_done.connect(self._on_wm_install_done)
+        self._wm_signals.uninstall_done.connect(self._on_wm_uninstall_done)
+        self._wm_signals.file_done.connect(self._on_wm_file_done)
+        self._wm_signals.batch_done.connect(self._on_wm_batch_done)
+        # модели готовятся/качаются при первом запуске — статус расскажет
+        self._wm_signals.model_prepare.connect(self._on_wm_model_prepare)
+        self._wm_signals.model_ready.connect(self._on_wm_model_ready)
+        self._wm_busy = False          # pip/обработка уже идут — второй запуск не нужен
+        self._wm_pending: list[str] | None = None   # очередь после установки
+        self._wm_ok = 0
+        self._wm_clean = 0             # файлы без найденных водяных знаков
+        self._wm_fail = 0
+        self._wm_total = 0
+        self._wm_t0 = 0.0
+        saved_wm_model = QSettings("ImageHunter", "ImageHunter").value(
+            watermark_manager.MODEL_KEY, watermark_manager.DEFAULT_MODEL, type=str)
+        self._wm_model = (saved_wm_model if saved_wm_model in
+                          {m for m, _k in watermark_manager.FLORENCE_MODELS}
+                          else watermark_manager.DEFAULT_MODEL)
 
         # избранные папки читаются до построения дерева (v0.7.9)
         self._favorites = self._load_favorites()
@@ -3283,6 +3308,8 @@ class LocalViewer(QWidget):
         acts["rename"].setToolTip(tr("viewer.ctx_rename_tip"))
         acts["bg"] = menu.addAction(tr("viewer.rembg"))
         acts["bg"].setToolTip(tr("viewer.rembg_tip"))
+        acts["wm"] = menu.addAction(tr("viewer.wm"))
+        acts["wm"].setToolTip(tr("viewer.wm_tip"))
         acts["del"] = menu.addAction(tr("viewer.ctx_delete"))
         acts["del"].setToolTip(tr("viewer.ctx_delete_tip"))
         return menu, acts
@@ -3301,6 +3328,8 @@ class LocalViewer(QWidget):
             self.rename_current_file()
         elif chosen is acts.get("bg"):
             self._on_rembg_button()
+        elif chosen is acts.get("wm"):
+            self._on_wm_button()
         elif chosen is acts.get("del"):
             self.delete_selected_files()
 
@@ -3587,6 +3616,201 @@ class LocalViewer(QWidget):
         QSettings("ImageHunter", "ImageHunter").setValue(
             rembg_manager.MODEL_KEY, model_id)
         applog.event("log.event.rembg_model", model=model_id)
+
+    # ---------- водяные знаки: публичный доступ для меню «Модули» (v0.8.11) ----------
+
+    def wm_is_installed(self) -> bool:
+        """Установлен ли модуль (меню «Модули» строит по этому пункты)."""
+        return watermark_manager.is_installed()
+
+    def wm_is_busy(self) -> bool:
+        """Идёт ли pip-установка/удаление или обработка пачки (guard меню)."""
+        return self._wm_busy
+
+    def wm_current_model(self) -> str:
+        """Выбранный детектор — для галочки в меню «Модули»."""
+        return self._wm_model
+
+    def wm_install(self) -> None:
+        """Установить модуль из меню «Модули» (без отложенной пачки файлов)."""
+        self._wm_start_install()
+
+    def wm_uninstall(self) -> None:
+        """Удалить модуль и модели из меню «Модули» (с подтверждением)."""
+        self._wm_start_uninstall()
+
+    def wm_set_model(self, model_id: str) -> None:
+        """Выбрать детектор из меню «Модули» (запоминается в настройках)."""
+        self._on_wm_model(model_id)
+
+    # ---------- удаление водяных знаков (Florence-2 + LaMa, v0.8.11) ----------
+
+    def _wm_targets(self) -> list[str]:
+        """Файлы для «Убрать водяные знаки»: выделенные плитки, иначе открытая."""
+        paths = self.list.selected_paths()
+        if not paths:
+            row = self.list.currentRow()
+            if 0 <= row < len(self._paths):
+                paths = [self._paths[row]]
+        return paths
+
+    def _on_wm_button(self) -> None:
+        """Кнопка/пункт меню «Убрать водяные знаки»: пачка уходит в фон."""
+        if self._wm_busy:
+            self.status.setText(tr("viewer.wm_busy"))
+            return
+        targets = self._wm_targets()
+        if not targets:
+            self.status.setText(tr("viewer.wm_none"))
+            return
+        if not watermark_manager.is_installed():
+            # модуля нет — предложить установить, не отпуская в терминал
+            ans = QMessageBox.question(self, tr("viewer.wm"),
+                                       tr("viewer.wm_inst_q"))
+            if ans == QMessageBox.StandardButton.Yes:
+                self._wm_start_install(pending=targets)
+            return
+        self._wm_start(targets)
+
+    def _wm_start(self, paths: list[str]) -> None:
+        """Запустить фоновую обработку пачки (модели грузятся один раз)."""
+        jobs: list[tuple[str, str]] = []
+        skipped = 0
+        for p in paths:
+            out = watermark_manager.nowm_path(p)
+            if out:
+                jobs.append((p, out))
+            else:
+                skipped += 1   # уже результат или GIF — повторять бессмысленно
+        if skipped:
+            applog.event("log.event.wm_skip", n=skipped)
+        if not jobs:
+            self.status.setText(tr("viewer.wm_already"))
+            return
+        self._wm_busy = True
+        self._wm_total = len(jobs)
+        self._wm_ok = 0
+        self._wm_clean = 0
+        self._wm_fail = 0
+        self._wm_t0 = time.perf_counter()
+        self.status.setText(tr("viewer.wm_progress", done=0, n=len(jobs),
+                               name=os.path.basename(jobs[0][0])))
+        applog.event("log.event.wm_start", n=len(jobs), model=self._wm_model)
+        # чтение файлов — в самой задаче, GUI не ждёт; на сетевом диске —
+        # узкий отдельный пул, как у rembg (принцип v0.7.2)
+        pool = (self._net_pool
+                if any(_is_remote_path(p) for p, _out in jobs)
+                else QThreadPool.globalInstance())
+        pool.start(watermark_manager.RemoveWatermarkTask(
+            jobs, self._wm_model, self._wm_signals))
+
+    def _on_wm_file_done(self, path: str, out: str, ok: bool, err: str) -> None:
+        """Промежуточный итог по файлу: прогресс в статусе, ошибки в журнал."""
+        if ok:
+            if out:
+                self._wm_ok += 1
+            else:
+                self._wm_clean += 1   # водяных знаков не нашлось — файл чист
+        else:
+            self._wm_fail += 1
+            applog.error(tr("log.event.wm_file_err",
+                            name=os.path.basename(path), err=err))
+        done = self._wm_ok + self._wm_clean + self._wm_fail
+        self.status.setText(tr("viewer.wm_progress", done=done,
+                               n=self._wm_total,
+                               name=os.path.basename(path)))
+
+    def _on_wm_batch_done(self, ok: int, fail: int) -> None:
+        self._wm_busy = False
+        ms = round((time.perf_counter() - self._wm_t0) * 1000)
+        msg = tr("viewer.wm_done", ok=ok)
+        if self._wm_clean:
+            msg += tr("viewer.wm_clean", clean=self._wm_clean)
+        if fail:
+            msg += tr("viewer.wm_done_fail", fail=fail)
+        self.status.setText(msg)
+        applog.event("log.event.wm_done", ok=ok, clean=self._wm_clean,
+                     fail=fail, ms=ms)
+        if ok:
+            self.refresh()   # файлы «*_nowm» появляются в ленте
+
+    def _on_wm_model_prepare(self, model: str) -> None:
+        """Модели готовятся: грузятся в память, при первом запуске качаются."""
+        self.status.setText(tr("viewer.wm_prepare", model=model))
+
+    def _on_wm_model_ready(self, model: str) -> None:
+        """Модели готовы — дальше идут уже сообщения обработки файлов."""
+        self.status.setText(tr("viewer.wm_ready", model=model))
+
+    def _wm_start_install(self, pending: list[str] | None = None) -> None:
+        """Установить модуль в фоне; ``pending`` — что обработать после."""
+        if self._wm_busy:
+            self.status.setText(tr("viewer.wm_busy"))
+            return
+        self._wm_busy = True
+        self._wm_pending = list(pending or [])
+        self.status.setText(tr("viewer.wm_installing"))
+        applog.event("log.event.wm_install_start")
+        QThreadPool.globalInstance().start(
+            watermark_manager.InstallTask(self._wm_signals))
+
+    def _on_wm_install_done(self, ok: bool, info: str) -> None:
+        self._wm_busy = False
+        pending, self._wm_pending = self._wm_pending, None
+        if ok:
+            applog.event("log.event.wm_install_done")
+            if pending:
+                # установка была по клику «Убрать водяные знаки» — продолжаем
+                self._wm_start(pending)
+            else:
+                self.status.setText(tr("viewer.wm_install_ok"))
+                QMessageBox.information(self, tr("viewer.wm"),
+                                        tr("viewer.wm_install_ok"))
+        else:
+            self.status.setText(tr("viewer.wm_install_fail", info=info))
+            applog.error(tr("log.event.wm_install_fail", info=info))
+            QMessageBox.warning(self, tr("viewer.wm"),
+                                tr("viewer.wm_install_fail", info=info))
+
+    def _wm_start_uninstall(self) -> None:
+        """Удалить модуль и скачанные модели целиком (после подтверждения)."""
+        if self._wm_busy:
+            self.status.setText(tr("viewer.wm_busy"))
+            return
+        mb = _fmt_bytes(watermark_manager.models_size())
+        ans = QMessageBox.question(self, tr("viewer.wm"),
+                                   tr("viewer.wm_uninst_q", mb=mb))
+        if ans != QMessageBox.StandardButton.Yes:
+            return
+        self._wm_busy = True
+        self.status.setText(tr("viewer.wm_uninstalling"))
+        applog.event("log.event.wm_uninstall_start")
+        QThreadPool.globalInstance().start(
+            watermark_manager.UninstallTask(self._wm_signals))
+
+    def _on_wm_uninstall_done(self, ok: bool, info: str,
+                              freed_mb: int) -> None:
+        self._wm_busy = False
+        if ok:
+            freed = _fmt_bytes(freed_mb * 1024 * 1024)
+            self.status.setText(tr("viewer.wm_uninst_ok", mb=freed))
+            applog.event("log.event.wm_uninstall_done", mb=freed_mb)
+            QMessageBox.information(self, tr("viewer.wm"),
+                                    tr("viewer.wm_uninst_ok", mb=freed))
+        else:
+            self.status.setText(tr("viewer.wm_uninst_fail", info=info))
+            applog.error(tr("log.event.wm_uninstall_fail", info=info))
+            QMessageBox.warning(self, tr("viewer.wm"),
+                                tr("viewer.wm_uninst_fail", info=info))
+
+    def _on_wm_model(self, model_id: str) -> None:
+        """Выбор детектора в подменю: запоминается между запусками."""
+        if model_id == self._wm_model:
+            return
+        self._wm_model = model_id
+        QSettings("ImageHunter", "ImageHunter").setValue(
+            watermark_manager.MODEL_KEY, model_id)
+        applog.event("log.event.wm_model", model=model_id)
 
     def load_folder(self, folder: str, entries: list[tuple[str, int, float]] | None = None,
                     sync_tree: bool = False) -> None:

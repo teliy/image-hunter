@@ -1,4 +1,4 @@
-"""Оффлайн-тест меню «Модули» (v0.8.2).
+"""Оффлайн-тест меню «Модули» (v0.8.2; водяные знаки — v0.8.11).
 
 Меню стоит в строке меню слева от «Справки» и собирается заново при
 каждом открывании. Проверяется:
@@ -6,11 +6,13 @@
 1. порядок меню: «Модули» → «Справка»;
 2. раздел rembg: заголовок-состояние, установка/удаление по факту,
    подменю модели с галочкой; выбор модели сохраняется;
-3. раздел веб-сервера: заголовок-состояние, запуск/остановка,
+3. раздел водяных знаков (Florence-2 + LaMa): заголовок-состояние,
+   установка/удаление, подменю детектора; выбор детектора сохраняется;
+4. раздел веб-сервера: заголовок-состояние, запуск/остановка,
    автостарт (галочка пишет настройку и журнал), панель;
-4. ленивость: открытие меню не импортирует app.server;
-5. пункты установки/удаления/модели ушли из контекстного меню ленты;
-6. перетрансляция заголовка при смене языка.
+5. ленивость: открытие меню не импортирует app.server;
+6. пункты установки/удаления/модели ушли из контекстного меню ленты;
+7. перетрансляция заголовка при смене языка.
 
 Запуск: QT_QPA_PLATFORM=offscreen python scripts/test_modules_menu.py
 """
@@ -29,7 +31,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
 
 from app import __version__  # noqa: E402
 from app.core import i18n  # noqa: E402
-from app.ui import rembg_manager  # noqa: E402
+from app.ui import rembg_manager, watermark_manager  # noqa: E402
 from app.ui.main_window import MainWindow  # noqa: E402
 
 FAILURES: list[str] = []
@@ -84,7 +86,7 @@ def main() -> int:
     win.show()
     app.processEvents()
 
-    check("версия 0.8.10", __version__ == "0.8.10", __version__)
+    check("версия 0.8.11", __version__ == "0.8.11", __version__)
 
     # ---------- состав строки меню ----------
     top = win.menuBar().actions()
@@ -145,6 +147,55 @@ def main() -> int:
     st.setValue("viewer/rembg_model", "")
     win.local.rembg_set_model(rembg_manager.DEFAULT_MODEL)
 
+    # ---------- раздел водяных знаков (в песочнице модуль не установлен) ----------
+    acts = actions_of(win._modules_menu)
+    texts = [a.text() for a in acts]
+    head_w = next((a for a in acts if a.text().startswith("🧽")), None)
+    check("заголовок водяных знаков: не установлен",
+          head_w is not None and not head_w.isEnabled()
+          and i18n.tr("modules.not_installed") in head_w.text(),
+          head_w.text() if head_w else "?")
+    check("пункт установки водяных знаков на месте",
+          i18n.tr("viewer.wm_menu_install") in texts, str(texts))
+    check("пункта удаления водяных знаков нет (модуль не установлен)",
+          i18n.tr("viewer.wm_menu_uninstall") not in texts)
+    m_det = next((a.menu() for a in acts
+                  if a.menu() and a.text() == i18n.tr("viewer.wm_model_menu")),
+                 None)
+    check("подменю детектора Florence-2 есть", m_det is not None)
+    dets = m_det.actions() if m_det else []
+    check("в подменю два детектора",
+          len(dets) == len(watermark_manager.FLORENCE_MODELS),
+          str([a.text() for a in dets]))
+    check("галочка на детекторе по умолчанию",
+          any(a.isChecked() for a in dets), "")
+    # выбор детектора из меню: сохраняется в настройках
+    dets[1].trigger()
+    app.processEvents()
+    st.sync()
+    check("выбор детектора из меню сохранён",
+          win.local.wm_current_model() == watermark_manager.FLORENCE_MODELS[1][0]
+          and st.value(watermark_manager.MODEL_KEY, "", type=str)
+          == watermark_manager.FLORENCE_MODELS[1][0],
+          win.local.wm_current_model())
+    st.setValue(watermark_manager.MODEL_KEY, "")
+    win.local.wm_set_model(watermark_manager.DEFAULT_MODEL)
+
+    # «установленный» модуль: пункт удаления + заголовок
+    real_wm_installed = watermark_manager.is_installed
+    watermark_manager.is_installed = lambda: True
+    try:
+        acts = actions_of(win._modules_menu)
+        texts = [a.text() for a in acts]
+        check("установленный wm: пункт удаления",
+              i18n.tr("viewer.wm_menu_uninstall") in texts
+              and i18n.tr("viewer.wm_menu_install") not in texts, str(texts))
+        check("заголовок wm: установлен",
+              any(a.text().startswith("🧽")
+                  and i18n.tr("modules.installed") in a.text() for a in acts))
+    finally:
+        watermark_manager.is_installed = real_wm_installed
+
     # ---------- раздел веб-сервера (менеджер ещё не создан) ----------
     head_s = next((a for a in acts if a.text().startswith("🌐")), None)
     check("заголовок сервера: остановлен",
@@ -200,13 +251,17 @@ def main() -> int:
     names = [a.text() for a in menu.actions()]
     check("в контекст-меню ленты есть «Удалить фон»",
           i18n.tr("viewer.rembg") in names, str(names))
+    check("в контекст-меню ленты есть «Убрать водяные знаки»",
+          i18n.tr("viewer.wm") in names, str(names))
     check("в контекст-меню нет подменю модели",
           not any(a.menu() for a in menu.actions()), str(names))
     check("в контекст-меню нет установки/удаления модуля",
           i18n.tr("viewer.rembg_menu_install") not in names
-          and i18n.tr("viewer.rembg_menu_uninstall") not in names, str(names))
+          and i18n.tr("viewer.rembg_menu_uninstall") not in names
+          and i18n.tr("viewer.wm_menu_install") not in names
+          and i18n.tr("viewer.wm_menu_uninstall") not in names, str(names))
     check("словарь действий без inst/uninst",
-          set(lv_acts) == {"open", "copy", "rename", "bg", "del"},
+          set(lv_acts) == {"open", "copy", "rename", "bg", "wm", "del"},
           str(sorted(lv_acts)))
     menu.close()
 
@@ -277,6 +332,13 @@ def main() -> int:
     check("пока busy — пункт установки запрещён",
           act_inst is not None and not act_inst.isEnabled())
     win.local._rembg_busy = False
+    win.local._wm_busy = True
+    acts = actions_of(win._modules_menu)
+    act_wm = next((a for a in acts
+                   if a.text() == i18n.tr("viewer.wm_menu_install")), None)
+    check("пока busy wm — пункт установки водяных знаков запрещён",
+          act_wm is not None and not act_wm.isEnabled())
+    win.local._wm_busy = False
 
     # ---------- перетрансляция ----------
     i18n.set_lang("en", persist=False)
