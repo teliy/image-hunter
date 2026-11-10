@@ -2943,7 +2943,9 @@ class LocalViewer(QWidget):
         Каждая неудача пишется в журнал с причиной. Само удаление идёт в
         рабочем потоке (_DeleteTask): по сети файл может удаляться секунды,
         а на подвисшем сервере — сетевой тайм-аут целиком, и окно не должно
-        замереть «Не отвечает» посреди диалога (v0.7.2)."""
+        замереть «Не отвечает» посреди диалога (v0.7.2). При активном
+        поиске по имени выдача после удаления пересобирается заново
+        (v0.8.10) — как после переноса (v0.8.5)."""
         items = [it for it in self.list.selectedItems() if it.data(Qt.UserRole)]
         if not items:
             self.status.setText(tr("viewer.del_nothing"))
@@ -3012,7 +3014,13 @@ class LocalViewer(QWidget):
         self._finish_delete(trash_n, perm_n, failed_n)
 
     def _finish_delete(self, trash_n: int, perm_n: int, failed_n: int) -> None:
-        """Итог удаления: события в журнал, статус, порядок строк в ленте."""
+        """Итог удаления: события в журнал, статус, порядок строк в ленте.
+
+        При активном поиске по имени выдача не просто худеет, а
+        пересобирается заново (как после переноса, v0.8.5): удалённые
+        файлы не числятся найденными, счётчик «Найдено: N» честный,
+        а поиск, обрезанный по пределу 5000, добирает следующие находки
+        (v0.8.10)."""
         self._delete_phase = 0
         self._set_view_busy(False)
         done = trash_n + perm_n
@@ -3023,8 +3031,14 @@ class LocalViewer(QWidget):
             if perm_n:
                 applog.event("log.event.delete_perm", n=perm_n,
                              folder=self._folder or "—")
-            # строки сместились — кэш миниатюр по номерам строк больше не верен
-            self._list_rows_changed()
+            if self.search_edit.text().strip():
+                # активен поиск по имени: пересобрать выдачу — удалённые
+                # файлы не должны числиться найденными (принцип переноса,
+                # v0.8.5); курсор встанет на первую плитку выдачи
+                self._start_search_now()
+            else:
+                # строки сместились — кэш миниатюр по номерам строк больше не верен
+                self._list_rows_changed()
         if failed_n:
             self.status.setText(tr("viewer.del_done_err", n=done, m=failed_n))
         elif perm_n and trash_n:

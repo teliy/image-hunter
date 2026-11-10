@@ -1,4 +1,5 @@
-"""Оффлайн-тест удаления (корзина + запасное окончательное) и персиста.
+"""Оффлайн-тест удаления (корзина + запасное окончательное), персиста
+и пересборки выдачи при активном поиске по имени (v0.8.10).
 
 Запуск: QT_QPA_PLATFORM=offscreen python scripts/test_delete_restore.py
 """
@@ -334,6 +335,42 @@ def main() -> int:
     check("log.event.delete_perm: {n}/{folder} подставляются",
           "{n}" not in i18n.tr("log.event.delete_perm", n=2, folder="X")
           and "{folder}" not in i18n.tr("log.event.delete_perm", n=2, folder="X"))
+
+    # ---------- 11. активный поиск по имени: после удаления выдача пересобирается ----------
+    fresh()
+    load_wait(viewer, app, tmp)
+    FakeQFile.trashed.clear()
+    FakeQFile.fail_names.clear()
+    viewer.search_edit.setText("b")   # дебаунс 350 мс — ждём конца поиска
+    ok = wait_until(app, lambda: viewer._search_handle is None
+                    and viewer.list.count() == 1 and viewer._search_count == 1)
+    check("поиск «b» нашёл 1 файл", ok, f"list={viewer.list.count()}")
+    check("найден b.png",
+          viewer.list.count() == 1
+          and os.path.basename(viewer.list.item(0).data(Qt.UserRole)) == "b.png")
+    gen_before = viewer._gen
+    ans = Answers(lv.QMessageBox.StandardButton.Yes)
+    lv.QMessageBox.question = staticmethod(ans)
+    viewer.list.item(0).setSelected(True)
+    viewer.delete_selected_files()
+    # удаление в фоне + пересборка выдачи: новая генерация поиска; файл
+    # в FakeQFile с диска не исчезает — после пересборки снова 1 совпадение
+    ok = wait_until(app, lambda: viewer._delete_phase == 0
+                    and viewer._gen == gen_before + 1
+                    and viewer._search_handle is None)
+    check("после удаления поиск перезапущен (новая генерация)", ok,
+          f"gen={viewer._gen} phase={viewer._delete_phase}")
+    check("выдача пересобрана: в ленте снова 1 совпадение",
+          viewer.list.count() == 1
+          and os.path.basename(viewer.list.item(0).data(Qt.UserRole)) == "b.png",
+          f"list={viewer.list.count()}")
+    check("курсор на первой плитке выдачи", viewer.list.currentRow() == 0,
+          str(viewer.list.currentRow()))
+    check("статус — от пересобранного поиска, не от удаления",
+          "Поиск «b»" in viewer.status.text()
+          and "Удалено" not in viewer.status.text(), viewer.status.text())
+    check("в корзину ушёл 1 файл", len(FakeQFile.trashed) == 1,
+          str(FakeQFile.trashed))
 
     # уборка: не оставлять тестовые папку/запрос в настройках
     st2.setValue("viewer/last_folder", "")

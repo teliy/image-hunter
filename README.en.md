@@ -10,6 +10,12 @@ Written in Python + PySide6 (Qt6): heavy operations (rendering, network, image d
 
 > **⚡ Special focus — fast work over the network and with network drives** (SMB/NAS, mounted shares): a folder is read in one request, thumbnails are built only for the visible part of the list, ready previews are cached on disk. A network folder with thousands of photos opens without lags — neither in the app nor on the network. Details in [“Fast work over the network and with network drives”](#fast-work-over-the-network-and-with-network-drives).
 
+## Search results rebuilt after deletion (v0.8.10)
+
+When a name search is active, deleting images (Delete or the context menu) now reruns the search — the same principle as moving files to tree folders (v0.8.5): deleted files are no longer listed as found, the “found: N” counter is honest, and results trimmed by the 5000 limit are refilled with the next matching files. The selection lands on the first tile of the new results, and the status shows both the deletion summary and the rebuild progress. Without an active search the behavior is unchanged — the film strip simply shrinks by the deleted tiles.
+
+Tests: `scripts/test_delete_restore.py` — a new section with 7 rebuild checks.
+
 ## Image tools panel (v0.8.9)
 
 The editing tools — **“⇲ Resize”** (with “💾 Save”), **“✂ Crop”** (with its mode buttons “💾 Save”, “💾 As…”, “🪣 Fill”, “✂▶ Save & next”), **“💧 Eyedropper”** (with the color swatch and HEX) and all related elements — moved from the top toolbar to a **dedicated panel right below it** (“Image tools:”) with its own caption, a light background and separators between groups. The top toolbar is now about navigation only — folders, the film strip, zoom, the checkerboard, background removal, search; the image tools live on their own always-visible row and no longer mix with navigation. Button behavior is unchanged: mode buttons still appear only in their modes — but now in this panel, next to their group.

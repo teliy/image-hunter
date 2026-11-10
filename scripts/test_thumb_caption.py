@@ -22,7 +22,7 @@
 8. редактор переименования получает только имя файла, без разрешения;
 9. отрисовка делегата без роли и с ролью не падает;
 10. смена папки чистит очередь разрешений, у новой папки — свои размеры;
-11. смоук: версия 0.8.9.
+11. смоук: версия 0.8.10.
 
 Запуск: QT_QPA_PLATFORM=offscreen python scripts/test_thumb_caption.py
 """
@@ -284,7 +284,7 @@ def main() -> int:
           str(viewer.list.item(0).data(lv._RES_ROLE) if viewer.list.count() else None))
 
     # ---------- 11. смоук ----------
-    check("версия 0.8.9", __version__ == "0.8.9", __version__)
+    check("версия 0.8.10", __version__ == "0.8.10", __version__)
 
     print()
     if FAILURES:
