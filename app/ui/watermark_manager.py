@@ -13,8 +13,15 @@
   inpainting'а на GitHub (позиционируется в т.ч. для «Erase … watermarks»):
   закрашивает найденные области, достраивая фон по соседям.
 
-Установка ставит ``iopaint``, ``transformers`` и ``timm`` (torch — самый
-тяжёлый гость, счёт на гигабайты). Модели скачиваются при первом запуске:
+Установка идёт в два шага (v0.8.12): сам ``iopaint`` ставится с
+``--no-deps`` — его метаданные требуют ровно ``Pillow==9.5.0``, а у этой
+версии нет готовых сборок под Python 3.12/3.13, поэтому pip лезет собирать
+старый исходник и падает («KeyError: '__version__'»); зависимости iopaint
+берутся из ЕГО ЖЕ метаданных уже без требования Pillow — это библиотека
+самой программы, она уже стоит, и модуль её не перекладывает (тот же
+принцип, что при удалении: «numpy/Pillow бережены»). Вместе с ними
+ставятся ``transformers`` и ``timm`` — детектор Florence-2; torch — самый
+тяжёлый гость, счёт на гигабайты. Модели скачиваются при первом запуске:
 LaMa (~200 МБ) — в кэш torch-hub, Florence-2 (base ~500 МБ / large ~1,6 ГБ)
 — в кэш Hugging Face. «Удалить модуль» вычищает и пакеты, и кэши моделей —
 но только СВОИ: big-lama.pt и Florence-2; кэши других моделей (и общие
@@ -31,6 +38,7 @@ from __future__ import annotations
 import importlib.metadata
 import importlib.util
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -54,15 +62,69 @@ MODEL_KEY = "viewer/wm_model"                 # где хранится выбр
 _NOWM_SUFFIX = "_nowm"            # метка результата: X.jpg -> X_nowm.jpg
 MASK_MARGIN = 15                  # расширение бокса, px на сторону (аналог dilate)
 
-# что ставит модуль (iopaint сам тянет torch/opencv/numpy)
-_PIP_PACKAGES = ("iopaint", "transformers", "timm")
+# что ставит модуль: iopaint — конвейер LaMa, transformers/timm — Florence-2.
+# iopaint ставится с --no-deps: его пин Pillow==9.5.0 не выполняется на
+# Python 3.12/3.13 и валит всю установку (v0.8.12) — зависимости берутся
+# из его же метаданных, уже без требования Pillow (_module_requirements)
+_MAIN_PACKAGE = "iopaint"
+_SIDE_PACKAGES = ("transformers", "timm")
+
+# имя пакета из требования pip ("Pillow==9.5.0" → "pillow")
+_REQ_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+
+
+def _req_name(raw: str) -> str:
+    """Имя пакета из строки требования; пусто — разобрать не удалось."""
+    m = _REQ_NAME_RE.match(raw.strip())
+    return m.group(0).lower() if m else ""
+
+
+def _iopaint_requires() -> list[str]:
+    """Список требований pip из метаданных установленного iopaint.
+
+    Отдельная точка подмены в тестах (в песочнице iopaint не стоит).
+    """
+    try:
+        return list(importlib.metadata.requires(_MAIN_PACKAGE) or [])
+    except Exception:   # noqa: BLE001 — нет пакета/метаданные побились
+        return []
+
+
+def _module_requirements() -> list[str]:
+    """Зависимости iopaint для pip: его же список, но без требования Pillow.
+
+    iopaint требует ровно ``Pillow==9.5.0``; у такой версии нет готовых
+    сборок под Python 3.12/3.13, и pip, пытаясь собрать старый исходник,
+    падает с «KeyError: '__version__'» (пожелание-репорт: «при установке
+    модуля такая ошибка»). Pillow у программы уже стоит — требование
+    выбрасывается, всё остальное берётся как сказал сам iopaint (маркеры
+    окружения сохраняются, pip сам их оценит).
+    """
+    return [raw.strip() for raw in _iopaint_requires()
+            if _req_name(raw) and _req_name(raw) != "pillow"]
+
+
 # дистрибуции, которые ставились только ради этого модуля — их вычищает
-# «Удалить модуль». numpy/pillow не трогаются никогда: они нужны самой
+# «Удалить модуль» (зависимости iopaint добавляются из его метаданных —
+# _module_dep_names). numpy/pillow не трогаются никогда: они нужны самой
 # программе; opencv-пакеты вычищаются, только если не стоит rembg
 # (у него та же зависимость — принцип rembg «чужое не вычищать», v0.7.12)
 _OWN_DISTS = ("iopaint", "torch", "torchvision", "timm", "transformers",
               "tokenizers", "safetensors", "huggingface-hub")
 _SHARED_DISTS = ("opencv-python", "opencv-python-headless")
+
+
+def _module_dep_names() -> list[str]:
+    """Прямые зависимости iopaint для удаления: имена без Pillow и opencv.
+
+    Pillow — библиотека программы; opencv-пакеты решаются отдельно
+    (_SHARED_DISTS с проверкой rembg), поэтому из динамической части они
+    исключены. Статический _OWN_DISTS остаётся запасом на случай, когда
+    метаданных уже нет (iopaint удалён).
+    """
+    skip = ("pillow",) + _SHARED_DISTS
+    return [n for n in (_req_name(raw) for raw in _iopaint_requires())
+            if n and n not in skip]
 
 
 def is_installed() -> bool:
@@ -203,8 +265,14 @@ def _installed_dists(names) -> set[str]:
 
 
 def _dists_to_remove() -> list[str]:
-    """Что uninstall отдаст pip: свои дистрибуции (+opencv, если rembg нет)."""
-    dists = [d for d in _OWN_DISTS if d in _installed_dists(_OWN_DISTS)]
+    """Что uninstall отдаст pip: свои дистрибуции (+opencv, если rembg нет).
+
+    К статическому списку добавляются прямые зависимости iopaint из его
+    метаданных (gradio, diffusers, peft, fastapi и прочие — v0.8.12):
+    раньше install тянул их, а uninstall оставлял в системе.
+    """
+    own = tuple(dict.fromkeys((*_OWN_DISTS, *_module_dep_names())))
+    dists = [d for d in own if d in _installed_dists(own)]
     try:
         from app.ui import rembg_manager
         rembg_alive = rembg_manager.is_installed()
@@ -283,10 +351,18 @@ class WatermarkSignals(QObject):
 
 
 class InstallTask(QRunnable):
-    """``pip install iopaint transformers timm`` — конвейер модуля целиком.
+    """Установка модуля в два pip-шага (v0.8.12).
 
-    Тяжело (torch качает гигабайты) — поэтому в рабочем потоке, интерфейс
-    не замирает (принцип rembg_manager, v0.7.12).
+    Шаг 1 — сам iopaint с ``--no-deps``: его метаданные требуют ровно
+    Pillow==9.5.0, у которой нет сборок под Python 3.12/3.13 — обычный
+    ``pip install iopaint`` падал на сборке старого исходника
+    («KeyError: '__version__'»). Шаг 2 — зависимости iopaint из ЕГО ЖЕ
+    метаданных (уже без требования Pillow — библиотека программы стоит и
+    не перекладывается) плюс ``transformers``/``timm`` (детектор
+    Florence-2). Тяжело (torch качает гигабайты) — поэтому в рабочем
+    потоке, интерфейс не замирает (принцип rembg_manager, v0.7.12).
+    Повторный запуск после сорванного шага 2 безопасен: шаг 1 увидит
+    «уже установлен» и не потратит времени.
     """
 
     def __init__(self, signals: WatermarkSignals) -> None:
@@ -295,7 +371,19 @@ class InstallTask(QRunnable):
 
     def run(self) -> None:  # рабочий поток
         ok, info = _run_pip(["install", "--disable-pip-version-check",
-                             *_PIP_PACKAGES])
+                             "--no-deps", _MAIN_PACKAGE])
+        if not ok:
+            self.signals.install_done.emit(False, info)
+            return
+        deps = _module_requirements()
+        if not deps:
+            # метаданных нет — ставить вслепую нельзя, модуль остался бы
+            # без torch/opencv; честный отказ лучше тихой поломки
+            self.signals.install_done.emit(
+                False, f"{_MAIN_PACKAGE}: нет зависимостей в метаданных")
+            return
+        ok, info = _run_pip(["install", "--disable-pip-version-check",
+                             *deps, *_SIDE_PACKAGES])
         self.signals.install_done.emit(ok, info)
 
 

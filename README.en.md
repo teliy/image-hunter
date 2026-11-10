@@ -16,9 +16,11 @@ The wish: “let's add the best watermark remover from GitHub as a module (that 
 
 **Install and uninstall — no terminal.** The “🧽 Remove Watermarks” button on the “My Pictures” toolbar (and the same item in the strip’s right-click menu): if the module is not installed yet, the app honestly warns about the size (iopaint + transformers + timm — gigabytes with PyTorch) and installs everything with pip in a hidden window, then immediately continues processing. The “Modules” menu holds one-item install/uninstall (uninstall asks for confirmation, shows how much space will be freed and wipes the model caches — big-lama in torch-hub and Florence-2 in the Hugging Face cache; foreign caches and libraries shared with the app/rembg are left alone) and a detector submenu: Florence-2-base — fast (~0.5 GB), Florence-2-large — better (~1.6 GB). The models (LaMa ~0.2 GB and Florence-2) download on the first removal run.
 
+**The install is fixed on modern Pythons (v0.8.12).** IOPaint pins exactly Pillow==9.5.0 — that version has no prebuilt wheels for Python 3.12/3.13, so the first install died with “KeyError: '__version__'” while building the old Pillow source. The install now runs in two steps: iopaint itself without dependencies, then its dependencies taken from iopaint’s own metadata — already without the Pillow requirement, since that library belongs to the app and is never replaced. The “Remove module” action also cleans iopaint’s direct dependencies now (gradio, diffusers, peft, fastapi…), which used to stay behind.
+
 **How it works.** Selected tiles (or the opened picture) are processed in one session in the background: models are loaded into memory once per batch, and on network drives the interface does not freeze. The result is “name_nowm.ext” next to the original, the format is preserved (AVIF → PNG), the original is never modified, existing files are never overwritten; already-results and GIF files are skipped. The paint area is the found boxes padded by 15 px per side; files with no detected watermarks are honestly counted as “clean” (no result file, no error). Progress goes to the status line, the summary to the status line and the Log.
 
-Tests: new `scripts/test_watermark.py` — 61 checks; a section in `scripts/test_modules_menu.py`.
+Tests: new `scripts/test_watermark.py` — 72 checks; a section in `scripts/test_modules_menu.py`.
 
 ## Search results rebuilt after deletion (v0.8.10)
 

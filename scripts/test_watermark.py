@@ -1,14 +1,21 @@
-"""Оффлайн-тест модуля удаления водяных знаков (Florence-2 + LaMa, v0.8.11).
+"""Оффлайн-тест модуля удаления водяных знаков (Florence-2 + LaMa, v0.8.11;
+двухшаговая установка без пина Pillow — v0.8.12).
 
 Проверяется:
 - watermark_manager: is_installed, nowm_path (формат сохраняется, AVIF → PNG,
   GIF и повторная обработка результата отклоняются), mask_from_boxes
   (расширение на margin, склейка координат, обрезка по краям, объединение);
-- InstallTask вызывает pip с верными аргументами (iopaint, transformers,
-  timm) и сигнал install_done доходит, в том числе с ошибкой;
-- UninstallTask удаляет только дистрибуции модуля (opencv — лишь когда
-  rembg не стоит), вычищает свои кэши моделей (big-lama, Florence-2),
-  чужие кэши не трогает, рапортует освобождёнными мегабайтами;
+- фильтр требований iopaint: пин Pillow==9.5.0 выбрасывается (у версии нет
+  сборок под Python 3.12/3.13 — сборка старого исходника падает с
+  «KeyError: '__version__'»), остальное из его же метаданных сохраняется;
+- InstallTask ставит модуль в два pip-шага (iopaint --no-deps, затем
+  зависимости из метаданных без Pillow + transformers/timm), при отказе
+  первого шага второй не запускается, на пустых метаданных — честный
+  отказ; сигнал install_done доходит во всех ветках;
+- UninstallTask удаляет дистрибуции модуля вместе с прямыми зависимостями
+  iopaint из его метаданных (opencv — лишь когда rembg не стоит), вычищает
+  свои кэши моделей (big-lama, Florence-2), чужие кэши не трогает,
+  рапортует освобождёнными мегабайтами;
 - RemoveWatermarkTask без установленного модуля честно репортит ошибку по
   каждому файлу (batch_done(0, N)); со стабами конвейера (_load_pipeline)
   создаёт «имя_nowm.ext»: область маски перекрашена, остальное — оригинал,
@@ -21,7 +28,7 @@
 - контекстное меню ленты содержит «Убрать водяные знаки»;
 - пачка через _wm_start: jpg даёт jpg-результат, итог — в статусе;
 - _ensure_stdio/_disable_hf_progress: pythonw-сценарий не роняет модуль;
-- i18n: все новые ключи заполнены на ru/en/zh; версия — 0.8.11.
+- i18n: все новые ключи заполнены на ru/en/zh; версия — 0.8.12.
 
 Раздел меню «Модули» проверяет scripts/test_modules_menu.py.
 Запуск: QT_QPA_PLATFORM=offscreen python scripts/test_watermark.py
@@ -87,7 +94,7 @@ def main() -> int:
     st = QSettings("ImageHunter", "ImageHunter")
     st.sync()
 
-    check("версия 0.8.11", app.__version__ == "0.8.11", app.__version__)
+    check("версия 0.8.12", app.__version__ == "0.8.12", app.__version__)
 
     # ---------- менеджер: чистые функции ----------
     check("is_installed() — булево", isinstance(watermark_manager.is_installed(), bool))
@@ -126,7 +133,25 @@ def main() -> int:
     check("маска: объединение боксов",
           mask[12, 12] == 255 and mask[25, 25] == 255 and mask[9, 12] == 0)
 
-    # ---------- InstallTask: аргументы pip и доставка сигнала ----------
+    # ---------- фильтр требований iopaint: пин Pillow выбрасывается ----------
+    real_reqs = watermark_manager._iopaint_requires
+    watermark_manager._iopaint_requires = lambda: [
+        "Pillow==9.5.0", "torch>=2.0.0", "pydantic>=2.5.2",
+        "foo-bar; python_version < '3.10'"]
+    reqs = watermark_manager._module_requirements()
+    check("требования iopaint: Pillow выброшен, остальные с маркерами",
+          reqs == ["torch>=2.0.0", "pydantic>=2.5.2",
+                   "foo-bar; python_version < '3.10'"], str(reqs))
+    names = watermark_manager._module_dep_names()
+    check("имена для удаления: Pillow и opencv не попадают",
+          names == ["torch", "pydantic", "foo-bar"], str(names))
+    watermark_manager._iopaint_requires = lambda: []
+    check("требования iopaint: пустые метаданные — пустой список",
+          watermark_manager._module_requirements() == []
+          and watermark_manager._module_dep_names() == [])
+    watermark_manager._iopaint_requires = real_reqs
+
+    # ---------- InstallTask: два pip-шага и доставка сигнала ----------
     calls: list[list[str]] = []
     real_pip = watermark_manager._run_pip
 
@@ -134,6 +159,9 @@ def main() -> int:
         calls.append(list(args))
         return True, ""
 
+    # фейковые метаданные iopaint: пин Pillow должен уйти из шага 2
+    watermark_manager._iopaint_requires = lambda: [
+        "Pillow==9.5.0", "torch>=2.0.0", "gradio==4.21.0"]
     watermark_manager._run_pip = fake_pip
     try:
         sig = watermark_manager.WatermarkSignals()
@@ -143,17 +171,31 @@ def main() -> int:
         wait_until(lambda: bool(results))
         check("InstallTask: сигнал дошёл",
               bool(results) and results[0][0] is True)
-        args = calls[0] if calls else []
-        check("InstallTask: pip install iopaint transformers timm",
-              args[:2] == ["install", "--disable-pip-version-check"]
-              and all(p in args for p in ("iopaint", "transformers", "timm")),
-              str(calls))
+        check("InstallTask: ровно два pip-вызова", len(calls) == 2, str(calls))
+        first = calls[0] if calls else []
+        second = calls[1] if len(calls) > 1 else []
+        check("InstallTask: шаг 1 — iopaint без зависимостей",
+              first == ["install", "--disable-pip-version-check",
+                        "--no-deps", "iopaint"], str(first))
+        check("InstallTask: шаг 2 — зависимости iopaint и Florence-2",
+              second[:2] == ["install", "--disable-pip-version-check"]
+              and "torch>=2.0.0" in second and "gradio==4.21.0" in second
+              and "transformers" in second and "timm" in second, str(second))
+        check("InstallTask: пин Pillow не ставится",
+              not any(str(p).lower().startswith("pillow") for p in second),
+              str(second))
     finally:
         watermark_manager._run_pip = real_pip
+        watermark_manager._iopaint_requires = real_reqs
+
+    # отказ первого шага: второй не запускается
+    fail_calls: list[list[str]] = []
 
     def failing_pip(args):
+        fail_calls.append(list(args))
         return False, "No space left on device"
 
+    watermark_manager._iopaint_requires = lambda: ["torch>=2.0.0"]
     watermark_manager._run_pip = failing_pip
     try:
         sig = watermark_manager.WatermarkSignals()
@@ -164,8 +206,30 @@ def main() -> int:
         check("InstallTask: ошибка доезжает с хвостом вывода",
               bool(results) and results[0] == (False, "No space left on device"),
               str(results))
+        check("InstallTask: при отказе шага 1 второй шаг не запускается",
+              len(fail_calls) == 1, str(fail_calls))
     finally:
         watermark_manager._run_pip = real_pip
+        watermark_manager._iopaint_requires = real_reqs
+
+    # пустые метаданные после установки — честный отказ, а не тихая поломка
+    watermark_manager._iopaint_requires = lambda: []
+    watermark_manager._run_pip = fake_pip
+    calls.clear()
+    try:
+        sig = watermark_manager.WatermarkSignals()
+        results = []
+        sig.install_done.connect(lambda ok, info: results.append((ok, info)))
+        QThreadPool.globalInstance().start(watermark_manager.InstallTask(sig))
+        wait_until(lambda: bool(results))
+        check("InstallTask: пустые метаданные — честный отказ",
+              bool(results) and results[0][0] is False
+              and "iopaint" in str(results[0][1]), str(results))
+        check("InstallTask: на пустых метаданных вызов один",
+              len(calls) == 1, str(calls))
+    finally:
+        watermark_manager._run_pip = real_pip
+        watermark_manager._iopaint_requires = real_reqs
 
     # ---------- UninstallTask: только свои дистрибуции + свои кэши ----------
     real_dists_fn = watermark_manager._installed_dists
@@ -232,6 +296,21 @@ def main() -> int:
               "opencv-python" in dists, str(dists))
     finally:
         rembg_manager.is_installed = real_rembg_installed
+        watermark_manager._installed_dists = real_dists_fn
+
+    # прямые зависимости iopaint из его метаданных вычищаются вместе с модулем
+    watermark_manager._iopaint_requires = lambda: [
+        "gradio==4.21.0", "diffusers==0.27.2", "Pillow==9.5.0", "opencv-python"]
+    watermark_manager._installed_dists = (
+        lambda names: {"gradio", "diffusers"} & set(names))
+    try:
+        dists = watermark_manager._dists_to_remove()
+        check("UninstallTask: зависимости iopaint уходят, Pillow/opencv — нет",
+              "gradio" in dists and "diffusers" in dists
+              and "pillow" not in dists and "opencv-python" not in dists,
+              str(dists))
+    finally:
+        watermark_manager._iopaint_requires = real_reqs
         watermark_manager._installed_dists = real_dists_fn
 
     # ---------- RemoveWatermarkTask без модуля: честные ошибки ----------
@@ -385,13 +464,17 @@ def main() -> int:
 
     real_task = watermark_manager.RemoveWatermarkTask
     watermark_manager._run_pip = fake_pip3
+    # метаданные iopaint фейковые: в песочнице пакета нет, а установка
+    # должна пройти оба шага до конца
+    watermark_manager._iopaint_requires = lambda: ["torch>=2.0.0"]
     watermark_manager.RemoveWatermarkTask = StubWmTask
     QMessageBox.question = lambda *a, **kw: QMessageBox.StandardButton.Yes
     try:
         viewer._on_wm_button()
         wait_until(lambda: not viewer._wm_busy, timeout_s=10)
         app_inst.processEvents()
-        check("согласие: pip запущен", len(wm_calls) == 1, str(wm_calls))
+        check("согласие: pip запущен в два шага", len(wm_calls) == 2,
+              str(wm_calls))
         check("согласие: очередь обработана после установки",
               viewer._wm_pending is None or viewer._wm_pending == [],
               str(viewer._wm_pending))
@@ -403,6 +486,7 @@ def main() -> int:
     finally:
         QMessageBox.question = real_question
         watermark_manager._run_pip = real_pip
+        watermark_manager._iopaint_requires = real_reqs
         watermark_manager.RemoveWatermarkTask = real_task
 
     # ---------- пачка через _wm_start со стабом: статус и результат ----------
