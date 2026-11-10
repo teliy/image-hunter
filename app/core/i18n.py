@@ -652,9 +652,9 @@ _STRINGS: dict[str, dict[str, str]] = {
               "现在安装吗？将下载 iopaint、transformers、timm（含 PyTorch，数 GB），\n"
               "模型在首次使用时下载（LaMa 约 0.2 GB，Florence-2-base 约 0.5 GB）。全部本地运行。"},
     "viewer.wm_installing": {
-        "ru": "Устанавливаю модуль удаления водяных знаков (pip, два шага)…",
-        "en": "Installing the watermark removal module (pip, two steps)…",
-        "zh": "正在安装水印去除模块（pip，两步）…"},
+        "ru": "Устанавливаю модуль удаления водяных знаков (pip, два шага: без Pillow и gradio, с шимами для новых Python)…",
+        "en": "Installing the watermark removal module (pip, two steps: no Pillow/gradio, with shims for newer Pythons)…",
+        "zh": "正在安装水印去除模块（pip，两步：不含 Pillow/gradio，带新版 Python 的垫片）…"},
     "viewer.wm_install_ok": {
         "ru": "Модуль удаления водяных знаков установлен",
         "en": "Watermark removal module installed",
@@ -727,9 +727,9 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ru": "🧽 Модель детекции: {model}", "en": "🧽 Detection model: {model}",
         "zh": "🧽 检测模型：{model}"},
     "log.event.wm_install_start": {
-        "ru": "🧽 Устанавливаю модуль водяных знаков (pip: iopaint без зависимостей, затем его зависимости из метаданных + transformers/timm)…",
-        "en": "🧽 Installing the watermark removal module (pip: iopaint without deps, then its dependencies from metadata + transformers/timm)…",
-        "zh": "🧽 正在安装水印去除模块（pip：先装 iopaint 本体，再装其元数据依赖 + transformers/timm）…"},
+        "ru": "🧽 Устанавливаю модуль водяных знаков (pip: iopaint без зависимостей, затем его зависимости из метаданных без Pillow и gradio + transformers/timm + шимы standard-imghdr/setuptools для новых Python)…",
+        "en": "🧽 Installing the watermark removal module (pip: iopaint without deps, then its metadata dependencies without Pillow/gradio + transformers/timm + standard-imghdr/setuptools shims for newer Pythons)…",
+        "zh": "🧽 正在安装水印去除模块（pip：先装 iopaint 本体，再装其元数据依赖（不含 Pillow 和 gradio）+ transformers/timm + 新版 Python 的垫片 standard-imghdr/setuptools）…"},
     "log.event.wm_install_done": {
         "ru": "🧽 Модуль водяных знаков установлен",
         "en": "🧽 Watermark removal module installed",

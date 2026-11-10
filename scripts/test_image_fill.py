@@ -22,7 +22,7 @@
    смена картинки/папки закрывает пипетку; GIF и пустой просмотр —
    кнопка погашена;
 8. локализация ru/en/zh новых кнопок;
-9. смоук: версия 0.8.12.
+9. смоук: версия 0.8.13.
 
 Запуск: LD_LIBRARY_PATH=… .venv/bin/python scripts/test_image_fill.py
 (QT_QPA_PLATFORM=offscreen ставится ниже).
@@ -519,7 +519,7 @@ def main() -> int:
           viewer.btn_fill.text())
 
     # ---------- 9. смоук ----------
-    check("версия 0.8.12", __version__ == "0.8.12", __version__)
+    check("версия 0.8.13", __version__ == "0.8.13", __version__)
 
     print()
     if FAILURES:

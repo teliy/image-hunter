@@ -1,17 +1,25 @@
 """Оффлайн-тест модуля удаления водяных знаков (Florence-2 + LaMa, v0.8.11;
-двухшаговая установка без пина Pillow — v0.8.12).
+двухшаговая установка без пина Pillow — v0.8.12; без gradio, с шимами для
+новых Python и скачиванием big-lama до ModelManager — v0.8.13).
 
 Проверяется:
 - watermark_manager: is_installed, nowm_path (формат сохраняется, AVIF → PNG,
   GIF и повторная обработка результата отклоняются), mask_from_boxes
   (расширение на margin, склейка координат, обрезка по краям, объединение);
-- фильтр требований iopaint: пин Pillow==9.5.0 выбрасывается (у версии нет
-  сборок под Python 3.12/3.13 — сборка старого исходника падает с
-  «KeyError: '__version__'»), остальное из его же метаданных сохраняется;
+- фильтр требований iopaint: пины Pillow==9.5.0 и gradio==4.21.0
+  выбрасываются (у Pillow нет сборок под Python 3.12/3.13 — сборка старого
+  исходника падает с «KeyError: '__version__'»; пин gradio «numpy~=1.0» не
+  выполняется на Python 3.13+ — pip собирал numpy из исходников и валил
+  установку), остальное из его же метаданных сохраняется;
 - InstallTask ставит модуль в два pip-шага (iopaint --no-deps, затем
-  зависимости из метаданных без Pillow + transformers/timm), при отказе
-  первого шага второй не запускается, на пустых метаданных — честный
-  отказ; сигнал install_done доходит во всех ветках;
+  зависимости из метаданных без Pillow/gradio + transformers/timm + шимы
+  standard-imghdr/setuptools для новых Python: imghdr удалён из stdlib в
+  3.13, distutils живёт только через setuptools), при отказе первого шага
+  второй не запускается, на пустых метаданных — честный отказ; сигнал
+  install_done доходит во всех ветках;
+- _ensure_lama_downloaded: модель качается до ModelManager (без файла на
+  диске iopaint не считает «lama» доступной — «Unsupported model: lama»),
+  уже скачанный файл не перекачивается;
 - UninstallTask удаляет дистрибуции модуля вместе с прямыми зависимостями
   iopaint из его метаданных (opencv — лишь когда rembg не стоит), вычищает
   свои кэши моделей (big-lama, Florence-2), чужие кэши не трогает,
@@ -28,7 +36,7 @@
 - контекстное меню ленты содержит «Убрать водяные знаки»;
 - пачка через _wm_start: jpg даёт jpg-результат, итог — в статусе;
 - _ensure_stdio/_disable_hf_progress: pythonw-сценарий не роняет модуль;
-- i18n: все новые ключи заполнены на ru/en/zh; версия — 0.8.12.
+- i18n: все новые ключи заполнены на ru/en/zh; версия — 0.8.13.
 
 Раздел меню «Модули» проверяет scripts/test_modules_menu.py.
 Запуск: QT_QPA_PLATFORM=offscreen python scripts/test_watermark.py
@@ -94,7 +102,7 @@ def main() -> int:
     st = QSettings("ImageHunter", "ImageHunter")
     st.sync()
 
-    check("версия 0.8.12", app.__version__ == "0.8.12", app.__version__)
+    check("версия 0.8.13", app.__version__ == "0.8.13", app.__version__)
 
     # ---------- менеджер: чистые функции ----------
     check("is_installed() — булево", isinstance(watermark_manager.is_installed(), bool))
@@ -133,18 +141,18 @@ def main() -> int:
     check("маска: объединение боксов",
           mask[12, 12] == 255 and mask[25, 25] == 255 and mask[9, 12] == 0)
 
-    # ---------- фильтр требований iopaint: пин Pillow выбрасывается ----------
+    # ---------- фильтр требований iopaint: пины Pillow и gradio выбрасываются ----------
     real_reqs = watermark_manager._iopaint_requires
     watermark_manager._iopaint_requires = lambda: [
-        "Pillow==9.5.0", "torch>=2.0.0", "pydantic>=2.5.2",
-        "foo-bar; python_version < '3.10'"]
+        "Pillow==9.5.0", "torch>=2.0.0", "gradio==4.21.0",
+        "pydantic>=2.5.2", "foo-bar; python_version < '3.10'"]
     reqs = watermark_manager._module_requirements()
-    check("требования iopaint: Pillow выброшен, остальные с маркерами",
+    check("требования iopaint: Pillow и gradio выброшены, остальные с маркерами",
           reqs == ["torch>=2.0.0", "pydantic>=2.5.2",
                    "foo-bar; python_version < '3.10'"], str(reqs))
     names = watermark_manager._module_dep_names()
-    check("имена для удаления: Pillow и opencv не попадают",
-          names == ["torch", "pydantic", "foo-bar"], str(names))
+    check("имена для удаления: Pillow/opencv нет, gradio остаётся",
+          names == ["torch", "gradio", "pydantic", "foo-bar"], str(names))
     watermark_manager._iopaint_requires = lambda: []
     check("требования iopaint: пустые метаданные — пустой список",
           watermark_manager._module_requirements() == []
@@ -159,7 +167,7 @@ def main() -> int:
         calls.append(list(args))
         return True, ""
 
-    # фейковые метаданные iopaint: пин Pillow должен уйти из шага 2
+    # фейковые метаданные iopaint: пины Pillow и gradio должны уйти из шага 2
     watermark_manager._iopaint_requires = lambda: [
         "Pillow==9.5.0", "torch>=2.0.0", "gradio==4.21.0"]
     watermark_manager._run_pip = fake_pip
@@ -179,10 +187,14 @@ def main() -> int:
                         "--no-deps", "iopaint"], str(first))
         check("InstallTask: шаг 2 — зависимости iopaint и Florence-2",
               second[:2] == ["install", "--disable-pip-version-check"]
-              and "torch>=2.0.0" in second and "gradio==4.21.0" in second
+              and "torch>=2.0.0" in second
               and "transformers" in second and "timm" in second, str(second))
         check("InstallTask: пин Pillow не ставится",
               not any(str(p).lower().startswith("pillow") for p in second),
+              str(second))
+        check("InstallTask: gradio не ставится, шимы окружения ставятся",
+              "gradio==4.21.0" not in second
+              and "standard-imghdr" in second and "setuptools" in second,
               str(second))
     finally:
         watermark_manager._run_pip = real_pip
@@ -230,6 +242,40 @@ def main() -> int:
     finally:
         watermark_manager._run_pip = real_pip
         watermark_manager._iopaint_requires = real_reqs
+
+    # ---------- _ensure_lama_downloaded: big-lama качается ДО ModelManager ----------
+    # iopaint считает модель доступной только по файлу на диске: без скачивания
+    # ModelManager встречает «lama» как неизвестную («Unsupported model: lama.
+    # Available models: ['cv2']»). Проверяем на стабе iopaint.model.lama.
+    import types
+    fake_lama = types.ModuleType("iopaint.model.lama")
+    state = {"on_disk": False, "downloads": 0}
+
+    class _FakeLaMa:
+        @staticmethod
+        def is_downloaded():
+            return state["on_disk"]
+
+        @staticmethod
+        def download():
+            state["downloads"] += 1
+            state["on_disk"] = True
+
+    fake_lama.LaMa = _FakeLaMa
+    saved_lama_mod = sys.modules.get("iopaint.model.lama")
+    sys.modules["iopaint.model.lama"] = fake_lama
+    try:
+        watermark_manager._ensure_lama_downloaded()
+        check("LaMa: без файла на диске модель качаем",
+              state["downloads"] == 1, str(state))
+        watermark_manager._ensure_lama_downloaded()
+        check("LaMa: скачанный файл не перекачивается",
+              state["downloads"] == 1, str(state))
+    finally:
+        if saved_lama_mod is not None:
+            sys.modules["iopaint.model.lama"] = saved_lama_mod
+        else:
+            sys.modules.pop("iopaint.model.lama", None)
 
     # ---------- UninstallTask: только свои дистрибуции + свои кэши ----------
     real_dists_fn = watermark_manager._installed_dists

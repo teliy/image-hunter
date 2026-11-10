@@ -16,11 +16,11 @@
 
 **无需终端的安装与卸载。** “我的图片”工具栏上的“🧽 去除水印”按钮（缩略图条右键菜单也有同名项）：如果模块尚未安装，程序会如实提示体积（iopaint + transformers + timm —— 含 PyTorch 达数 GB），并在隐藏窗口中用 pip 安装，随后立即继续处理。“模块”菜单中有一键安装/卸载（卸载需确认，显示可释放空间并清理模型缓存——torch-hub 中的 big-lama 与 Hugging Face 缓存中的 Florence-2；不碰别人的缓存，也不碰与程序/rembg 共用的库）以及检测器子菜单：Florence-2-base——快（约 0.5 GB），Florence-2-large——更准（约 1.6 GB）。模型（LaMa 约 0.2 GB 与 Florence-2）在首次运行去除时下载。
 
-**安装问题在新的 Python 上已修复（v0.8.12）。** IOPaint 固定要求 Pillow==9.5.0——该版本没有 Python 3.12/3.13 的预编译包，首次安装会在编译旧版 Pillow 源码时报“KeyError: '__version__'”而失败。现在安装分两步：先安装 iopaint 本体（不带依赖），再从 iopaint 自己的元数据中取依赖列表安装——已去掉对 Pillow 的固定要求，Pillow 属于程序本体，模块不会动它。“移除模块”现在也会一并清理 iopaint 的直接依赖（gradio、diffusers、peft、fastapi 等），以前这些会残留在系统里。
+**安装问题在新的 Python 上已修复（v0.8.12–v0.8.13）。** 首先是（v0.8.12）：IOPaint 固定要求 Pillow==9.5.0——该版本没有 Python 3.12/3.13 的预编译包，首次安装会在编译旧版 Pillow 源码时报“KeyError: '__version__'”而失败。安装分两步：先安装 iopaint 本体（不带依赖），再从 iopaint 自己的元数据中取依赖列表安装。接着（v0.8.13）：在 Python 3.13+ 上，安装又被 gradio 4.21.0（iopaint 的网页界面，流水线用不到）的 `numpy~=1.0` 固定要求卡死——numpy 1.x 没有 3.13+ 的预编译包，pip 试图从源码编译 numpy（“note: This is an issue with the package mentioned above, not pip”）；现在 gradio 已从安装列表中排除。依赖一起安装的还有 `standard-imghdr` 和 `setuptools` 垫片——iopaint 和固定版本的 diffusers 会导入在新版 Python 标准库中已被移除的模块（imghdr、distutils）。“移除模块”会清理 iopaint 的直接依赖（gradio、diffusers、peft、fastapi 等），但保留 numpy/Pillow 和垫片。整个流水线已在 Python 3.13 上实测：big-lama 会在 ModelManager 之前下载（否则报“Unsupported model: lama”），LaMa 正常修补，Florence-2 正常检测水印。
 
 **工作方式。** 选中的缩略图（或当前打开的图片）在同一会话中后台处理：模型每批只加载一次，网络磁盘上界面不卡顿。结果保存为原图旁的“名称_nowm.ext”，保留原格式（AVIF → PNG），原图永不被修改，现有文件绝不覆盖；已是结果与 GIF 的文件被跳过。涂改区域为找到的边框每边外扩 15 像素；未检出水印的文件如实计为“干净”（不产出结果文件，也不算错误）。进度显示在状态栏，汇总显示在状态栏与“日志”中。
 
-测试：新 `scripts/test_watermark.py` — 72 项检查；`scripts/test_modules_menu.py` 中的分区。
+测试：新 `scripts/test_watermark.py` — 75 项检查；`scripts/test_modules_menu.py` 中的分区。
 
 ## 删除文件后重新执行名称搜索（v0.8.10）
 

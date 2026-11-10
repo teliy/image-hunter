@@ -19,13 +19,23 @@
 старый исходник и падает («KeyError: '__version__'»); зависимости iopaint
 берутся из ЕГО ЖЕ метаданных уже без требования Pillow — это библиотека
 самой программы, она уже стоит, и модуль её не перекладывает (тот же
-принцип, что при удалении: «numpy/Pillow бережены»). Вместе с ними
-ставятся ``transformers`` и ``timm`` — детектор Florence-2; torch — самый
-тяжёлый гость, счёт на гигабайты. Модели скачиваются при первом запуске:
-LaMa (~200 МБ) — в кэш torch-hub, Florence-2 (base ~500 МБ / large ~1,6 ГБ)
-— в кэш Hugging Face. «Удалить модуль» вычищает и пакеты, и кэши моделей —
-но только СВОИ: big-lama.pt и Florence-2; кэши других моделей (и общие
-библиотеки numpy/pillow, нужные программе и rembg) не трогаются.
+принцип, что при удалении: «numpy/Pillow бережены»). Туда же не попадает
+``gradio`` (v0.8.13) — веб-морда iopaint, конвейер её не импортирует, а
+её пин ``numpy~=1.0`` не выполняется на Python 3.13+: у numpy 1.x нет
+готовых сборок, pip собирал исходник и падал (репорт: «при установке
+модуля такая ошибка», хвост pip про numpy). Вместе с зависимостями
+ставятся ``transformers`` и ``timm`` (детектор Florence-2) и шимы для
+новых Python (v0.8.13): ``standard-imghdr`` — iopaint импортирует
+``imghdr``, удалённый из стандартной библиотеки в Python 3.13, и
+``setuptools`` — pinned diffusers импортирует ``distutils.util``, живущий
+только через setuptools. torch — самый тяжёлый гость, счёт на гигабайты.
+Модели скачиваются при первом запуске: LaMa (~200 МБ) — в кэш torch-hub
+(iopaint считает модель доступной только по файлу на диске, поэтому
+``LaMa.download()`` вызывается до ``ModelManager``), Florence-2
+(base ~500 МБ / large ~1,6 ГБ) — в кэш Hugging Face. «Удалить модуль»
+вычищает и пакеты, и кэши моделей — но только СВОИ: big-lama.pt и
+Florence-2; кэши других моделей (и общие библиотеки numpy/pillow, нужные
+программе и rembg, и шимы окружения) не трогаются.
 
 Здесь только механика; все надписи (i18n) и журнальные события — в
 local_viewer, который этими задачами распоряжается. Тяжёлые зависимости
@@ -65,9 +75,21 @@ MASK_MARGIN = 15                  # расширение бокса, px на с�
 # что ставит модуль: iopaint — конвейер LaMa, transformers/timm — Florence-2.
 # iopaint ставится с --no-deps: его пин Pillow==9.5.0 не выполняется на
 # Python 3.12/3.13 и валит всю установку (v0.8.12) — зависимости берутся
-# из его же метаданных, уже без требования Pillow (_module_requirements)
+# из его же метаданных, уже без требования Pillow и gradio
+# (_module_requirements)
 _MAIN_PACKAGE = "iopaint"
 _SIDE_PACKAGES = ("transformers", "timm")
+
+# шимы окружения для новых Python (v0.8.13): стандартная библиотека
+# похудела, а pinned-зависимости iopaint про это не знают —
+# * standard-imghdr: iopaint/helper.py делает «import imghdr», которого
+#   в Python 3.13+ больше нет (модуль 300 строк, формат файлов);
+# * setuptools: pinned diffusers импортирует «distutils.util» — с 3.12
+#   distutils живёт только через setuptools.
+# При удалении НЕ вычищаются (как numpy/Pillow — общее достояние:
+# setuptools нужен половине экосистемы, imghdr-шим на 3.12 и так
+# затеняется настоящим модулем из стандартной библиотеки)
+_ENV_SHIMS = ("standard-imghdr", "setuptools")
 
 # имя пакета из требования pip ("Pillow==9.5.0" → "pillow")
 _REQ_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
@@ -90,18 +112,28 @@ def _iopaint_requires() -> list[str]:
         return []
 
 
-def _module_requirements() -> list[str]:
-    """Зависимости iopaint для pip: его же список, но без требования Pillow.
+# что НЕ ставится из зависимостей iopaint: pillow — библиотека самой
+# программы (v0.8.12); gradio — веб-морда iopaint (v0.8.13), наш конвейер
+# её не импортирует (в iopaint 1.6.0 gradio трогает только web_config.py),
+# а её пин «numpy~=1.0» не выполняется на Python 3.13+ — у numpy 1.x нет
+# готовых сборок, pip лезет собирать исходник и валит установку (репорт:
+# «при установке модуля такая ошибка»); заодно с numpy 1.x часто тянулась
+# и старая opencv, которой тоже нет сборок под 3.13
+_INSTALL_SKIP = ("pillow", "gradio")
 
-    iopaint требует ровно ``Pillow==9.5.0``; у такой версии нет готовых
-    сборок под Python 3.12/3.13, и pip, пытаясь собрать старый исходник,
-    падает с «KeyError: '__version__'» (пожелание-репорт: «при установке
-    модуля такая ошибка»). Pillow у программы уже стоит — требование
-    выбрасывается, всё остальное берётся как сказал сам iopaint (маркеры
-    окружения сохраняются, pip сам их оценит).
+
+def _module_requirements() -> list[str]:
+    """Зависимости iopaint для pip: его же список без Pillow и gradio.
+
+    Pillow (v0.8.12) — библиотека программы, стоит и не перекладывается.
+    gradio (v0.8.13) — веб-морда iopaint, конвейеру не нужна; её пин
+    «numpy~=1.0» на Python 3.13+ собирал numpy из исходников и валил
+    установку (репорт: «при установке модуля такая ошибка»). Всё
+    остальное — как сказал сам iopaint (маркеры окружения сохраняются,
+    pip сам их оценит).
     """
     return [raw.strip() for raw in _iopaint_requires()
-            if _req_name(raw) and _req_name(raw) != "pillow"]
+            if _req_name(raw) and _req_name(raw) not in _INSTALL_SKIP]
 
 
 # дистрибуции, которые ставились только ради этого модуля — их вычищает
@@ -119,8 +151,12 @@ def _module_dep_names() -> list[str]:
 
     Pillow — библиотека программы; opencv-пакеты решаются отдельно
     (_SHARED_DISTS с проверкой rembg), поэтому из динамической части они
-    исключены. Статический _OWN_DISTS остаётся запасом на случай, когда
-    метаданных уже нет (iopaint удалён).
+    исключены. gradio остаётся в списке удаления, хотя на установку не
+    идёт (v0.8.13): старые установки могли его притащить — pip честно
+    пропустит отсутствующий («Skipping … not installed»). Шимы окружения
+    (_ENV_SHIMS) тоже не вычищаются — общее достояние. Статический
+    _OWN_DISTS остаётся запасом на случай, когда метаданных уже нет
+    (iopaint удалён).
     """
     skip = ("pillow",) + _SHARED_DISTS
     return [n for n in (_req_name(raw) for raw in _iopaint_requires())
@@ -351,18 +387,20 @@ class WatermarkSignals(QObject):
 
 
 class InstallTask(QRunnable):
-    """Установка модуля в два pip-шага (v0.8.12).
+    """Установка модуля в два pip-шага (v0.8.12, список шага 2 — v0.8.13).
 
     Шаг 1 — сам iopaint с ``--no-deps``: его метаданные требуют ровно
     Pillow==9.5.0, у которой нет сборок под Python 3.12/3.13 — обычный
     ``pip install iopaint`` падал на сборке старого исходника
     («KeyError: '__version__'»). Шаг 2 — зависимости iopaint из ЕГО ЖЕ
-    метаданных (уже без требования Pillow — библиотека программы стоит и
-    не перекладывается) плюс ``transformers``/``timm`` (детектор
-    Florence-2). Тяжело (torch качает гигабайты) — поэтому в рабочем
-    потоке, интерфейс не замирает (принцип rembg_manager, v0.7.12).
-    Повторный запуск после сорванного шага 2 безопасен: шаг 1 увидит
-    «уже установлен» и не потратит времени.
+    метаданных (без Pillow — библиотека программы, и без gradio —
+    веб-моды, чей пин «numpy~=1.0» на Python 3.13+ валил установку
+    сборкой numpy из исходников) плюс ``transformers``/``timm`` (детектор
+    Florence-2) и шимы окружения для новых Python (_ENV_SHIMS). Тяжело
+    (torch качает гигабайты) — поэтому в рабочем потоке, интерфейс не
+    замирает (принцип rembg_manager, v0.7.12). Повторный запуск после
+    сорванного шага 2 безопасен: шаг 1 увидит «уже установлен» и не
+    потратит времени.
     """
 
     def __init__(self, signals: WatermarkSignals) -> None:
@@ -383,7 +421,7 @@ class InstallTask(QRunnable):
                 False, f"{_MAIN_PACKAGE}: нет зависимостей в метаданных")
             return
         ok, info = _run_pip(["install", "--disable-pip-version-check",
-                             *deps, *_SIDE_PACKAGES])
+                             *deps, *_SIDE_PACKAGES, *_ENV_SHIMS])
         self.signals.install_done.emit(ok, info)
 
 
@@ -420,6 +458,22 @@ def _torch_device() -> str:
         return "cpu"
 
 
+def _ensure_lama_downloaded() -> None:
+    """big-lama.pt должен лежать на диске ДО ModelManager (v0.8.13).
+
+    iopaint считает модель доступной только по файлу в кэше torch-hub
+    (scan_models → LaMa.is_downloaded): без скачивания ModelManager
+    встречает «lama» как неизвестную модель — «Unsupported model: lama.
+    Available models: ['cv2']» — и все файлы падали бы с этой ошибкой на
+    первом же запуске. Качаем штатным ``LaMa.download()`` — файл ложится
+    ровно туда, куда смотрит iopaint; уже скачанный не перекачивается.
+    """
+    from iopaint.model.lama import LaMa
+
+    if not LaMa.is_downloaded():
+        LaMa.download()
+
+
 def _load_inpainter(device: str):
     """LaMa из IOPaint в память; возвращает close(rgb, mask) -> rgb.
 
@@ -429,6 +483,8 @@ def _load_inpainter(device: str):
     import torch
     from iopaint.model_manager import ModelManager
     from iopaint.schema import HDStrategy, InpaintRequest
+
+    _ensure_lama_downloaded()
 
     # CROP-стратегия: у больших картинок обрабатываются только районы
     # вокруг маски — фон вне боксов остаётся пиксель в пиксель
