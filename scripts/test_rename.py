@@ -1,13 +1,18 @@
 """Оффлайн-тест переименования файлов в ленте «Моих картинок» (v0.8.1).
 
 Пожелание: «добавь возможность переименовывать файлы, как по меню мыши,
-так и 2-я кликами на название файла».
+так и 2-я кликами на название файла»; v0.8.16 — «нужно чтобы
+переименовывание имени файла работало от 2-х кликов на названии файла»
+(хит-тест зоны имени следует нарисованной раскладке стиля, а не константе).
 
 Проверяет:
 1. чистку имени от редактора (_clean_rename_name) и проверку допустимости
    (_name_is_allowed: пустое, точки/пробелы на конце, запрещённые символы);
 2. пункт меню «Переименовать» и клавишу F2 на ленте;
 3. геометрию подписи плитки: клик по нижней полосе — имя, по иконке — нет;
+3б. зону имени по стилю (v0.8.16): от нижнего края миниатюры до низа
+   плитки, накрывает нарисованную подпись и зазор, клик по центру
+   нарисованного имени попадает; без делегата-помощника — прежняя граница;
 4. маршрутизацию двойного клика: по имени → nameDoubleClicked (редактор),
    по картинке → itemDoubleClicked (открытие файла);
 5. полный цикл переименования: файл на диске, _paths, плитка (текст, путь,
@@ -19,7 +24,7 @@
 8. конфликт с существующим файлом: старое имя возвращается, оба файла целы;
 9. переименование «только регистр» разрешено;
 10. переименование открытой картинки обновляет имя в статусе просмотра;
-11. смоук: версия 0.8.15.
+11. смоук: версия 0.8.16.
 
 Запуск: QT_QPA_PLATFORM=offscreen python scripts/test_rename.py
 """
@@ -231,6 +236,43 @@ def main() -> int:
     check("клик мимо плитки — не имя",
           not viewer.list._pos_on_name(item, QPoint(r.right() + 40, r.bottom() - 3)))
 
+    # ---------- 3б. зона имени следует нарисованной раскладке стиля (v0.8.16) ----------
+    # Хит-тест обязан следовать тому, что делегат реально рисует, а не
+    # константе iconSize+2: у стилей Windows подпись начинается не там.
+    # Ждём миниатюру: с ней стиль отдаёт настоящий прямоугольник иконки,
+    # без неё (плитка ещё без картинки) зона честно падает на прежнюю
+    # формулу — это проверяет последний чек секции.
+    wait_until(app, lambda: not viewer.list.item(0).icon().isNull(), timeout_s=10.0)
+    dlg = viewer.list.itemDelegate()
+    idx = viewer.list.indexFromItem(item)
+    deco = dlg.icon_rect(viewer.list, idx)
+    capt = dlg.caption_rect(viewer.list, idx)
+    zone = viewer.list._name_rect(item)
+    check("зона имени от нижнего края миниатюры",
+          deco.isValid() and not deco.isEmpty()
+          and zone.top() <= deco.bottom() + 1,
+          f"deco={deco} zone={zone}")
+    check("зона имени накрывает нарисованную подпись",
+          capt.isValid() and capt.top() >= zone.top() and capt.bottom() <= zone.bottom(),
+          f"caption={capt} zone={zone}")
+    fm_h = viewer.list.fontMetrics().height()
+    on_painted = QPointF(r.x() + r.width() // 2,
+                         capt.top() + fm_h // 2)   # центр НАРИСОВАННОГО имени
+    check("клик по центру нарисованного имени — имя",
+          viewer.list._pos_on_name(item, on_painted.toPoint()),
+          f"caption={capt} point={on_painted.toPoint()}")
+    on_gap = QPointF(r.x() + r.width() // 2, deco.bottom() + 1)   # зазор иконка/подпись
+    check("клик в зазор под миниатюрой — тоже имя (v0.8.16)",
+          viewer.list._pos_on_name(item, on_gap.toPoint()),
+          f"deco={deco} point={on_gap.toPoint()}")
+    # стиль не отдал прямоугольник — прежняя формула от размера иконки
+    viewer.list.setItemDelegate(lv._RenameDelegate(viewer.list))
+    zone_fallback = viewer.list._name_rect(item)
+    check("без делегата-помощника — прежняя граница iconSize+2",
+          zone_fallback.top() == r.top() + icon_h + 2,
+          f"zone={zone_fallback}")
+    viewer.list.setItemDelegate(lv._ThumbDelegate(viewer.list))
+
     # ---------- 4. маршрутизация двойного клика ----------
     named: list = []
     viewer.list.nameDoubleClicked.connect(lambda it: named.append(it))
@@ -396,7 +438,7 @@ def main() -> int:
               and viewer.list.currentItem().text() == "финал.png")
 
     # ---------- 11. смоук ----------
-    check("версия 0.8.15", __version__ == "0.8.15", __version__)
+    check("версия 0.8.16", __version__ == "0.8.16", __version__)
 
     print()
     if FAILURES:

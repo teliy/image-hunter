@@ -168,6 +168,12 @@ Additionally, `udm=2` counts as a results page on any national Google domain (go
 
 Scenario: a name search is active in My Pictures, a batch of images is saved into the same folder from the Image Search tab — and back in the tab the strip was shown unfiltered while the query was still in the field; Enter had to be pressed again. The cause: saving calls `refresh()` on the current folder, and it re-read the folder with a plain scan, ignoring the active query. Now `refresh()` behaves like a tree click: with an active search it re-runs the search from the same folder — the new files join the same result set, nothing to retype. Without a query the behavior is unchanged — the folder is re-read as before.
 
+## Double-click on the name — the rename zone follows the drawn tile (v0.8.16)
+
+A request: “file renaming has to work from a double click on the file name”. Double-click on the name arrived in v0.7.17, but the boundary of the click zone was a constant (icon size + 2 px), while where the style actually draws the caption is up to the style: Windows styles use their own spacing, Fusion uses another. A click on the visible name could land outside the zone — and instead of the rename editor the file opened. Now the zone is computed by the style itself, with the very same calls the delegate uses to draw the tile: the zone runs from the bottom edge of the thumbnail to the bottom of the tile, so the editor opens for clicks on the name itself, on the resolution line, and on the gap under the picture; a click on the picture itself still opens it in the system viewer. If the tile has no thumbnail yet and the style returns no rectangle, the previous formula applies. Measured: the style's caption rectangle matches the drawn one pixel for pixel.
+
+Tests: `scripts/test_rename.py` — 62 checks (+5): the zone starts at the thumbnail's bottom edge, it covers the drawn caption, a click at the center of the painted name, a click in the gap under the thumbnail, the fallback formula without the helper delegate; version smoke.
+
 ## Renaming files — F2, double-click on the name, and a menu item (v0.7.17)
 
 A request: “add the ability to rename files, both via the mouse menu and by double-clicking on the file name”.

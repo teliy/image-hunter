@@ -1816,6 +1816,39 @@ class _ThumbDelegate(_RenameDelegate):
     стандартную однострочную подпись. Фон/выделение/фокус и прямоугольники
     иконки и подписи берутся у стиля — раскладка совпадает со штатной."""
 
+    def _style_rect(self, view, index, element) -> QRect:
+        """Прямоугольник элемента плитки от стиля — та же механика, что в paint().
+
+        Свежая опция пуста: initStyleOption заполняет только данные плитки
+        (текст, иконку, шрифт), а РАСКЛАДОЧНЫЕ поля (rect, размер и позиция
+        миниатюры, шрифт вьюхи) ставит сама вьюха перед paint(). Повторяем
+        её действия — иначе стиль посчитает прямоугольники по умолчаниям
+        и соврёт. Стиль раскладку знает лучше любой формулы: отступы между
+        миниатюрой и подписью у стилей Windows свои, у Fusion — свои, и
+        хит-тест двойного клика обязан следовать тому, что делегат реально
+        рисует, а не константе (v0.8.16)."""
+        opt = QStyleOptionViewItem()
+        self.initStyleOption(opt, index)
+        opt.rect = view.visualRect(index)
+        opt.widget = view.viewport()
+        opt.font = view.font()
+        opt.fontMetrics = view.fontMetrics()
+        opt.decorationSize = view.iconSize()
+        opt.decorationPosition = QStyleOptionViewItem.Position.Top
+        opt.decorationAlignment = (Qt.AlignmentFlag.AlignHCenter
+                                   | Qt.AlignmentFlag.AlignTop)
+        return view.style().subElementRect(element, opt, view.viewport())
+
+    def icon_rect(self, view, index) -> QRect:
+        """Прямоугольник миниатюры, который paint() рисует в этой плитке."""
+        return self._style_rect(
+            view, index, QStyle.SubElement.SE_ItemViewItemDecoration)
+
+    def caption_rect(self, view, index) -> QRect:
+        """Прямоугольник подписи (имя и разрешение), который рисует paint()."""
+        return self._style_rect(
+            view, index, QStyle.SubElement.SE_ItemViewItemText)
+
     def sizeHint(self, option, index):  # noqa: N802 (Qt API)
         sz = super().sizeHint(option, index)
         extra = option.fontMetrics.height()
@@ -1914,17 +1947,32 @@ class _ThumbList(QListWidget):
         return [it.data(Qt.UserRole) for it in self.selectedItems()
                 if it.data(Qt.UserRole)]
 
-    # ---------- двойной клик: по имени — переименовать (v0.7.17) ----------
+    # ---------- двойной клик: по имени — переименовать (v0.7.17, зона — v0.8.16) ----------
 
     def _name_rect(self, item) -> QRect:
-        """Прямоугольник подписи плитки (текст под миниатюрой).
+        """Зона переименования: всё, что ПОД миниатюрой плитки (v0.8.16).
 
-        В IconMode иконка занимает верх плитки, подпись — всё, что ниже.
-        Точную раскладку знает только стиль, и QStyle.SE_ItemViewItemText
-        здесь возвращает всю плитку целиком — считаем от размера иконки:
-        +2px граница между иконкой и подписью (клики в зазор — ещё иконка)."""
+        Двойной клик по подписи — переименовать, по самой картинке —
+        открыть. Границу считает стиль: делегат отдаёт прямоугольник
+        миниатюры, который сам же и рисует (initStyleOption +
+        SE_ItemViewItemDecoration — ровно механика paint()), и зона имени
+        идёт от нижнего края миниатюры до низа плитки. Так хит-тест
+        следует нарисованному при любой раскладке: раньше граница была
+        константой iconSize+2, у стилей Windows подпись начинается не там,
+        и клик по видимому имени улетал мимо зоны — вместо редактора
+        открывался файл. Зазор между миниатюрой и подписью тоже зона
+        имени: промахнуться труднее, а клик по картинке по-прежнему
+        открывает файл. Стиль не отдал прямоугольник — прежняя формула
+        от размера иконки."""
         r = self.visualItemRect(item)
-        top = r.top() + self.iconSize().height() + 2
+        deco = QRect()
+        d = self.itemDelegate()
+        if hasattr(d, "icon_rect"):
+            deco = d.icon_rect(self, self.indexFromItem(item))
+        if deco.isValid() and not deco.isEmpty() and deco.bottom() < r.bottom() - 1:
+            top = deco.bottom() + 1
+        else:
+            top = r.top() + self.iconSize().height() + 2   # прежняя граница
         return QRect(r.x(), top, r.width(), max(1, r.bottom() - top + 1))
 
     def _pos_on_name(self, item, pos: QPoint) -> bool:

@@ -55,7 +55,7 @@
   неудача проверки моделей не фатальна, подсказка о перезапуске;
   вьюер: wm_update стартует задачу с выбранным детектором, guard busy,
   итог в статусе, без модуля — не стартует;
-- i18n: все новые ключи заполнены на ru/en/zh; версия — 0.8.15.
+- i18n: все новые ключи заполнены на ru/en/zh; версия — 0.8.16.
 
 Раздел меню «Модули» проверяет scripts/test_modules_menu.py.
 Запуск: QT_QPA_PLATFORM=offscreen python scripts/test_watermark.py
@@ -130,7 +130,7 @@ def main() -> int:
     st = QSettings("ImageHunter", "ImageHunter")
     st.sync()
 
-    check("версия 0.8.15", app.__version__ == "0.8.15", app.__version__)
+    check("версия 0.8.16", app.__version__ == "0.8.16", app.__version__)
 
     # ---------- менеджер: чистые функции ----------
     check("is_installed() — булево", isinstance(watermark_manager.is_installed(), bool))
