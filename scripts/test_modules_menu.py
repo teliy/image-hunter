@@ -7,11 +7,13 @@
 2. раздел rembg: заголовок-состояние, установка/удаление по факту,
    подменю модели с галочкой; выбор модели сохраняется;
 3. раздел водяных знаков (Florence-2 + LaMa): заголовок-состояние,
-   установка/удаление, подменю детектора; выбор детектора сохраняется;
+   установка/удаление, ОБНОВЛЕНИЕ установленного модуля (v0.8.15),
+   подменю детектора; выбор детектора сохраняется;
 4. раздел веб-сервера: заголовок-состояние, запуск/остановка,
    автостарт (галочка пишет настройку и журнал), панель;
 5. ленивость: открытие меню не импортирует app.server;
-6. пункты установки/удаления/модели ушли из контекстного меню ленты;
+6. пункты установки/удаления/модели ушли из контекстного меню ленты
+   (вместе с пунктами обновления v0.8.15);
 7. перетрансляция заголовка при смене языка.
 
 Запуск: QT_QPA_PLATFORM=offscreen python scripts/test_modules_menu.py
@@ -26,7 +28,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QPoint, QSettings  # noqa: E402
+from PySide6.QtCore import QPoint, QRunnable, QSettings  # noqa: E402
 from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
 
 from app import __version__  # noqa: E402
@@ -86,7 +88,7 @@ def main() -> int:
     win.show()
     app.processEvents()
 
-    check("версия 0.8.14", __version__ == "0.8.14", __version__)
+    check("версия 0.8.15", __version__ == "0.8.15", __version__)
 
     # ---------- состав строки меню ----------
     top = win.menuBar().actions()
@@ -190,11 +192,51 @@ def main() -> int:
         check("установленный wm: пункт удаления",
               i18n.tr("viewer.wm_menu_uninstall") in texts
               and i18n.tr("viewer.wm_menu_install") not in texts, str(texts))
+        check("установленный wm: пункт обновления",
+              i18n.tr("viewer.wm_menu_update") in texts, str(texts))
         check("заголовок wm: установлен",
               any(a.text().startswith("🧽")
                   and i18n.tr("modules.installed") in a.text() for a in acts))
+        # клик по пункту обновления запускает задачу с выбранным детектором
+        real_upd_task_m = watermark_manager.UpdateTask
+        upd_started_m: list[str] = []
+
+        class StubMenuUpd(QRunnable):
+            def __init__(self, signals, model):
+                super().__init__()
+                self.signals, self.model = signals, model
+                upd_started_m.append(model)
+
+            def run(self):
+                # контракт задачи: what всегда непуст (тут — «актуально»)
+                self.signals.update_done.emit(
+                    True, i18n.tr("viewer.wm_update_nothing", pkgs="iopaint"), "")
+
+        watermark_manager.UpdateTask = StubMenuUpd
+        real_info_m = QMessageBox.information
+        QMessageBox.information = lambda *a, **k: None
+        try:
+            act_upd = next((a for a in actions_of(win._modules_menu)
+                            if a.text() == i18n.tr("viewer.wm_menu_update")),
+                           None)
+            check("пункт обновления wm на месте и активен",
+                  act_upd is not None and act_upd.isEnabled())
+            if act_upd is not None:
+                act_upd.trigger()
+                app.processEvents()
+                check("пункт обновления wm запускает задачу с детектором",
+                      upd_started_m == [win.local.wm_current_model()],
+                      str(upd_started_m))
+                wait_until(lambda: not win.local.wm_is_busy(), timeout_s=10)
+        finally:
+            watermark_manager.UpdateTask = real_upd_task_m
+            QMessageBox.information = real_info_m
     finally:
         watermark_manager.is_installed = real_wm_installed
+
+    # меню пересобирается при каждом aboutToShow — прежние QAction удалены
+    acts = actions_of(win._modules_menu)
+    texts = [a.text() for a in acts]
 
     # ---------- раздел веб-сервера (менеджер ещё не создан) ----------
     head_s = next((a for a in acts if a.text().startswith("🌐")), None)
@@ -255,11 +297,13 @@ def main() -> int:
           i18n.tr("viewer.wm") in names, str(names))
     check("в контекст-меню нет подменю модели",
           not any(a.menu() for a in menu.actions()), str(names))
-    check("в контекст-меню нет установки/удаления модуля",
+    check("в контекст-меню нет установки/удаления/обновления модуля",
           i18n.tr("viewer.rembg_menu_install") not in names
           and i18n.tr("viewer.rembg_menu_uninstall") not in names
+          and i18n.tr("viewer.rembg_menu_update") not in names
           and i18n.tr("viewer.wm_menu_install") not in names
-          and i18n.tr("viewer.wm_menu_uninstall") not in names, str(names))
+          and i18n.tr("viewer.wm_menu_uninstall") not in names
+          and i18n.tr("viewer.wm_menu_update") not in names, str(names))
     check("словарь действий без inst/uninst",
           set(lv_acts) == {"open", "copy", "rename", "bg", "wm", "del"},
           str(sorted(lv_acts)))
@@ -301,6 +345,8 @@ def main() -> int:
                   i18n.tr("viewer.rembg_menu_uninstall") in texts
                   and i18n.tr("viewer.rembg_menu_install") not in texts,
                   str(texts))
+            check("установленный модуль: пункт обновления",
+                  i18n.tr("viewer.rembg_menu_update") in texts, str(texts))
             check("заголовок rembg: установлен",
                   any(a.text().startswith("🪄")
                       and i18n.tr("modules.installed") in a.text()
@@ -324,7 +370,7 @@ def main() -> int:
         QMessageBox.warning = real_warn
         QMessageBox.question = real_quest
 
-    # ---------- занятый модуль: пункты установки запрещены ----------
+    # ---------- занятый модуль: пункты установки/обновления запрещены ----------
     win.local._rembg_busy = True
     acts = actions_of(win._modules_menu)
     act_inst = next((a for a in acts
@@ -332,12 +378,30 @@ def main() -> int:
     check("пока busy — пункт установки запрещён",
           act_inst is not None and not act_inst.isEnabled())
     win.local._rembg_busy = False
+    win.local._rembg_busy = True
+    real_inst_busy_r = rembg_manager.is_installed
+    rembg_manager.is_installed = lambda: True   # пункт обновления есть лишь у установленного
+    acts = actions_of(win._modules_menu)
+    act_upd_r = next((a for a in acts
+                      if a.text() == i18n.tr("viewer.rembg_menu_update")), None)
+    check("пока busy rembg — пункт обновления запрещён",
+          act_upd_r is not None and not act_upd_r.isEnabled())
+    rembg_manager.is_installed = real_inst_busy_r
+    win.local._rembg_busy = False
     win.local._wm_busy = True
     acts = actions_of(win._modules_menu)
     act_wm = next((a for a in acts
                    if a.text() == i18n.tr("viewer.wm_menu_install")), None)
     check("пока busy wm — пункт установки водяных знаков запрещён",
           act_wm is not None and not act_wm.isEnabled())
+    real_inst_busy_w = watermark_manager.is_installed
+    watermark_manager.is_installed = lambda: True
+    acts = actions_of(win._modules_menu)
+    act_upd_w = next((a for a in acts
+                      if a.text() == i18n.tr("viewer.wm_menu_update")), None)
+    check("пока busy wm — пункт обновления запрещён",
+          act_upd_w is not None and not act_upd_w.isEnabled())
+    watermark_manager.is_installed = real_inst_busy_w
     win.local._wm_busy = False
 
     # ---------- перетрансляция ----------

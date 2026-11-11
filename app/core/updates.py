@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -17,10 +18,29 @@ import urllib.request
 from PySide6.QtCore import QObject, QRunnable, Signal
 
 RAW_URL = "https://raw.githubusercontent.com/teliy/image-hunter/main/app/__init__.py"
+PYPI_URL = "https://pypi.org/pypi/{pkg}/json"
 
 
 class UpdatesSignals(QObject):
     done = Signal(str)   # версия из репозитория; "" — получить не удалось
+
+
+def pypi_latest(package: str) -> str:
+    """Свежая версия pip-пакета на PyPI; "" — узнать не удалось (нет сети).
+
+    Общий помощник проверки обновлений (v0.8.15): сама программа сверяет
+    версию с main-веткой репозитория, а подключаемые модули (rembg,
+    водяные знаки) — свои пакеты с PyPI. Таймаут короткий: проверка идёт
+    в рабочем потоке и не должна висеть минутами.
+    """
+    try:
+        req = urllib.request.Request(
+            PYPI_URL.format(pkg=package), headers={"User-Agent": "ImageHunter"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read(1 << 20).decode("utf-8", "replace"))
+        return str((data.get("info") or {}).get("version") or "")
+    except (OSError, ValueError):
+        return ""
 
 
 def version_tuple(s: str) -> tuple[int, ...]:

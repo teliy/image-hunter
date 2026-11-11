@@ -65,6 +65,11 @@ class ModulesMenu(QMenu):
         if installed:
             act = self.addAction(tr("viewer.rembg_menu_uninstall"))
             act.triggered.connect(viewer.rembg_uninstall)
+            # обновление установленного модуля: PyPI против локальной версии
+            # (v0.8.15); пока pip/обработка идут — второго запуска не будет
+            upd = self.addAction(tr("viewer.rembg_menu_update"))
+            upd.triggered.connect(viewer.rembg_update)
+            upd.setEnabled(not busy)
         else:
             act = self.addAction(tr("viewer.rembg_menu_install"))
             act.triggered.connect(viewer.rembg_install)
@@ -94,6 +99,11 @@ class ModulesMenu(QMenu):
         if installed:
             act = self.addAction(tr("viewer.wm_menu_uninstall"))
             act.triggered.connect(viewer.wm_uninstall)
+            # обновление установленного модуля: PyPI/Hugging Face против
+            # локальных версий (v0.8.15); пока pip/обработка идут — запрет
+            upd = self.addAction(tr("viewer.wm_menu_update"))
+            upd.triggered.connect(viewer.wm_update)
+            upd.setEnabled(not busy)
         else:
             act = self.addAction(tr("viewer.wm_menu_install"))
             act.triggered.connect(viewer.wm_install)

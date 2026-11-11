@@ -1,7 +1,8 @@
 """Оффлайн-тест модуля удаления водяных знаков (Florence-2 + LaMa, v0.8.11;
 двухшаговая установка без пина Pillow — v0.8.12; без gradio, с шимами для
 новых Python и скачиванием big-lama до ModelManager — v0.8.13; двухзадачная
-детекция OCR+grounding с фильтрами и предохранителем покрытия — v0.8.14).
+детекция OCR+grounding с фильтрами и предохранителем покрытия — v0.8.14;
+обновление установленного модуля: PyPI/Hugging Face/релиз big-lama — v0.8.15).
 
 Проверяется:
 - watermark_manager: is_installed, nowm_path (формат сохраняется, AVIF → PNG,
@@ -44,7 +45,17 @@
 - контекстное меню ленты содержит «Убрать водяные знаки»;
 - пачка через _wm_start: jpg даёт jpg-результат, итог — в статусе;
 - _ensure_stdio/_disable_hf_progress: pythonw-сценарий не роняет модуль;
-- i18n: все новые ключи заполнены на ru/en/zh; версия — 0.8.14.
+- v0.8.15, обновление модуля: pypi_latest/hf_latest_sha (JSON из сети,
+  честная пустота при отказе), _florence_cached_sha (refs/main кэша HF),
+  lama_file/_lama_url/remote_content_length, is_newer; UpdateTask —
+  «обновлений нет» без pip, обновление пакетов двумя pip-шагами с
+  --upgrade (свежие метаданные, без Pillow/gradio, с шимами), отказ
+  pypi/шага 1/пустых метаданных — честный отказ, обновление Florence-2
+  (snapshot_download) и big-lama (LaMa.download) по отличию ревизий,
+  неудача проверки моделей не фатальна, подсказка о перезапуске;
+  вьюер: wm_update стартует задачу с выбранным детектором, guard busy,
+  итог в статусе, без модуля — не стартует;
+- i18n: все новые ключи заполнены на ru/en/zh; версия — 0.8.15.
 
 Раздел меню «Модули» проверяет scripts/test_modules_menu.py.
 Запуск: QT_QPA_PLATFORM=offscreen python scripts/test_watermark.py
@@ -93,7 +104,13 @@ WM_KEYS = [
     "viewer.wm_installing", "viewer.wm_install_ok", "viewer.wm_install_fail",
     "viewer.wm_uninst_q", "viewer.wm_uninstalling", "viewer.wm_uninst_ok",
     "viewer.wm_uninst_fail", "viewer.wm_menu_install",
-    "viewer.wm_menu_uninstall", "viewer.wm_model_menu",
+    "viewer.wm_menu_uninstall", "viewer.wm_menu_update",
+    "viewer.wm_updating", "viewer.wm_update_done", "viewer.wm_update_fail",
+    "viewer.wm_update_nothing", "viewer.wm_update_model",
+    "viewer.wm_update_lama", "viewer.wm_update_model_fail",
+    "viewer.wm_update_lama_fail", "viewer.wm_update_pypi_fail",
+    "viewer.wm_update_restart",
+    "viewer.wm_model_menu",
     "viewer.wm_model_base", "viewer.wm_model_large", "viewer.wm_prepare",
     "viewer.wm_ready", "log.event.wm_start", "log.event.wm_file_err",
     "log.event.wm_cover", "log.event.wm_done", "log.event.wm_skip",
@@ -101,6 +118,8 @@ WM_KEYS = [
     "log.event.wm_install_start", "log.event.wm_install_done",
     "log.event.wm_install_fail", "log.event.wm_uninstall_start",
     "log.event.wm_uninstall_done", "log.event.wm_uninstall_fail",
+    "log.event.wm_update_start", "log.event.wm_update_done",
+    "log.event.wm_update_fail",
     "modules.wm_header",
 ]
 
@@ -111,7 +130,7 @@ def main() -> int:
     st = QSettings("ImageHunter", "ImageHunter")
     st.sync()
 
-    check("версия 0.8.14", app.__version__ == "0.8.14", app.__version__)
+    check("версия 0.8.15", app.__version__ == "0.8.15", app.__version__)
 
     # ---------- менеджер: чистые функции ----------
     check("is_installed() — булево", isinstance(watermark_manager.is_installed(), bool))
@@ -471,6 +490,377 @@ def main() -> int:
         watermark_manager._iopaint_requires = real_reqs
         watermark_manager._installed_dists = real_dists_fn
 
+    # ---------- обновление модуля: сеть и кэши (v0.8.15) ----------
+    import urllib.request as _ur
+    from app.core import updates as _updates
+
+    class _FakeResp:
+        """Ответ urlopen: JSON-тело и заголовки (для pypi/hf/HEAD)."""
+
+        def __init__(self, payload, length="12345"):
+            self._payload = payload
+            self.headers = {"Content-Length": length}
+
+        def read(self, _n):
+            return self._payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    real_urlopen = _ur.urlopen
+
+    def _net_fail(req, timeout=0):
+        raise OSError("no network")
+
+    _ur.urlopen = lambda req, timeout=0: _FakeResp(b'{"info": {"version": "9.9.9"}}')
+    try:
+        check("pypi_latest: версия из JSON",
+              _updates.pypi_latest("iopaint") == "9.9.9",
+              _updates.pypi_latest("iopaint"))
+    finally:
+        _ur.urlopen = real_urlopen
+    _ur.urlopen = _net_fail
+    try:
+        check("pypi_latest: нет сети — честная пустота",
+              _updates.pypi_latest("iopaint") == "")
+        check("hf_latest_sha: нет сети — честная пустота",
+              watermark_manager.hf_latest_sha("microsoft/Florence-2-base") == "")
+        check("remote_content_length: нет сети — 0",
+              watermark_manager.remote_content_length("http://x/y") == 0)
+    finally:
+        _ur.urlopen = real_urlopen
+    _ur.urlopen = lambda req, timeout=0: _FakeResp(b'{"sha": "cafe1234"}')
+    try:
+        check("hf_latest_sha: ревизия из API хаба",
+              watermark_manager.hf_latest_sha("microsoft/Florence-2-base")
+              == "cafe1234")
+        check("remote_content_length: размер из HEAD",
+              watermark_manager.remote_content_length("http://x/lama.pt")
+              == 12345)
+    finally:
+        _ur.urlopen = real_urlopen
+
+    check("installed_version: несуществующий пакет — пусто",
+          watermark_manager.installed_version("ih-no-such-pkg-xyz") == "")
+    check("is_newer: 1.7.0 новее 1.6.0, равные — нет",
+          _updates.is_newer("1.7.0", "1.6.0")
+          and not _updates.is_newer("1.6.0", "1.6.0"))
+
+    # кэш HF: ревизия скачанной модели читается из refs/main
+    real_hf_cache = watermark_manager._hf_hub_cache
+    hf_cache = os.path.join(tmpdir, "hfhub")
+    os.makedirs(os.path.join(hf_cache, "models--microsoft--Florence-2-base",
+                             "refs"), exist_ok=True)
+    with open(os.path.join(hf_cache, "models--microsoft--Florence-2-base",
+                           "refs", "main"), "w", encoding="utf-8") as f:
+        f.write("deadbeef\n")
+    watermark_manager._hf_hub_cache = lambda: hf_cache
+    try:
+        check("кэш HF: ревизия из refs/main",
+              watermark_manager._florence_cached_sha(
+                  "microsoft/Florence-2-base") == "deadbeef")
+        check("кэш HF: модели нет — пусто",
+              watermark_manager._florence_cached_sha("microsoft/Nope") == "")
+    finally:
+        watermark_manager._hf_hub_cache = real_hf_cache
+
+    # big-lama: файл ищется в кэше torch-hub, адрес — из iopaint или дефолт
+    real_globs_upd = watermark_manager.model_cache_globs
+    torch_dir_u = os.path.join(tmpdir, "torch_upd")
+    os.makedirs(torch_dir_u, exist_ok=True)
+    lama_u = os.path.join(torch_dir_u, "big-lama.pt")
+    with open(lama_u, "wb") as f:
+        f.write(b"L" * 1234)
+    watermark_manager.model_cache_globs = lambda: [(torch_dir_u, "big-lama*.pt")]
+    try:
+        check("big-lama: файл найден в кэше",
+              watermark_manager.lama_file() == lama_u,
+              watermark_manager.lama_file())
+    finally:
+        watermark_manager.model_cache_globs = real_globs_upd
+    check("big-lama: кэша нет — пусто", watermark_manager.lama_file() == "")
+    check("_lama_url: без iopaint — запасной адрес с big-lama.pt",
+          "big-lama.pt" in watermark_manager._lama_url(),
+          watermark_manager._lama_url())
+
+    # ---------- UpdateTask: проверка и обновление модуля ----------
+    real_pip_upd = watermark_manager._run_pip
+    real_ver = watermark_manager.installed_version
+    real_pypi = watermark_manager.pypi_latest
+    real_reqs_upd = watermark_manager._iopaint_requires
+    real_hfsha = watermark_manager.hf_latest_sha
+    real_cached = watermark_manager._florence_cached_sha
+    real_lama_file = watermark_manager.lama_file
+    real_lama_url = watermark_manager._lama_url
+    real_head = watermark_manager.remote_content_length
+
+    def upd_pip_calls():
+        calls: list[list[str]] = []
+        watermark_manager._run_pip = (
+            lambda args: (calls.append(list(args)), (True, ""))[1])
+        return calls
+
+    def run_update(model="microsoft/Florence-2-base"):
+        sig = watermark_manager.WatermarkSignals()
+        results: list[tuple] = []
+        sig.update_done.connect(
+            lambda ok, what, info: results.append((ok, what, info)))
+        QThreadPool.globalInstance().start(
+            watermark_manager.UpdateTask(sig, model))
+        wait_until(lambda: bool(results))
+        return results
+
+    ver_equal = {"iopaint": "1.6.0", "transformers": "4.48.3", "timm": "1.0.15"}
+    # всё актуально: ни pip, ни перекачек — честное «обновлений нет»
+    pip_calls = upd_pip_calls()
+    watermark_manager.installed_version = lambda n: ver_equal[n]
+    watermark_manager.pypi_latest = lambda n: ver_equal[n]
+    watermark_manager.hf_latest_sha = lambda repo: "cafe"
+    watermark_manager._florence_cached_sha = lambda repo: "cafe"
+    watermark_manager.lama_file = lambda: ""
+    try:
+        results = run_update()
+        check("UpdateTask: всё актуально — без pip",
+              results == [(True, i18n.tr("viewer.wm_update_nothing", pkgs=
+                          "iopaint 1.6.0, transformers 4.48.3, timm 1.0.15"), "")],
+              str(results))
+        check("UpdateTask: всё актуально — pip не звался", pip_calls == [],
+              str(pip_calls))
+    finally:
+        watermark_manager._run_pip = real_pip_upd
+
+    # пакеты обновились: два pip-шага с --upgrade, новые метаданные, шимы
+    ver_old = {"iopaint": "1.6.0", "transformers": "4.48.3", "timm": "1.0.15"}
+    ver_new = {"iopaint": "1.7.0", "transformers": "4.49.0", "timm": "1.0.15"}
+    pip_calls = upd_pip_calls()
+    watermark_manager.installed_version = lambda n: ver_old[n]
+    watermark_manager.pypi_latest = lambda n: ver_new[n]
+    watermark_manager._iopaint_requires = lambda: [
+        "Pillow==9.5.0", "torch>=2.0.0", "gradio==4.21.0"]
+    try:
+        results = run_update()
+        ok, what, info = results[0] if results else (None, "", "")
+        check("UpdateTask: пакеты — сигнал успеха",
+              bool(results) and ok is True and info == "", str(results))
+        check("UpdateTask: iopaint 1.6.0 → 1.7.0 в итоге",
+              "iopaint 1.6.0 → 1.7.0" in what, what)
+        check("UpdateTask: transformers 4.48.3 → 4.49.0 в итоге",
+              "transformers 4.48.3 → 4.49.0" in what, what)
+        check("UpdateTask: подсказка о перезапуске в итоге",
+              i18n.tr("viewer.wm_update_restart") in what, what)
+        check("UpdateTask: ровно два pip-вызова", len(pip_calls) == 2,
+              str(pip_calls))
+        first = pip_calls[0] if pip_calls else []
+        second = pip_calls[1] if len(pip_calls) > 1 else []
+        check("UpdateTask: шаг 1 — iopaint --no-deps --upgrade",
+              first == ["install", "--disable-pip-version-check",
+                        "--no-deps", "--upgrade", "iopaint"], str(first))
+        check("UpdateTask: шаг 2 — --upgrade, свежие зависимости и Florence-2",
+              second[:3] == ["install", "--disable-pip-version-check",
+                             "--upgrade"]
+              and "torch>=2.0.0" in second and "transformers" in second
+              and "timm" in second, str(second))
+        check("UpdateTask: Pillow и gradio не ставятся, шимы ставятся",
+              not any(str(p).lower().startswith("pillow") for p in second)
+              and "gradio==4.21.0" not in second
+              and "standard-imghdr" in second and "setuptools" in second,
+              str(second))
+    finally:
+        watermark_manager._run_pip = real_pip_upd
+
+    # pypi.org недоступен — честный отказ, обновлять вслепую нельзя
+    pip_calls = upd_pip_calls()
+    watermark_manager.installed_version = lambda n: ver_equal[n]
+    watermark_manager.pypi_latest = lambda n: ""
+    try:
+        results = run_update()
+        check("UpdateTask: pypi недоступен — отказ с именем пакета",
+              results == [(False, "", i18n.tr("viewer.wm_update_pypi_fail",
+                                              name="iopaint"))], str(results))
+        check("UpdateTask: при отказе pypi pip не запускается",
+              pip_calls == [], str(pip_calls))
+    finally:
+        watermark_manager._run_pip = real_pip_upd
+
+    # отказ шага 1: второй не запускается, ошибка доезжает
+    pip_calls = upd_pip_calls()
+    watermark_manager._run_pip = (
+        lambda args: (pip_calls.append(list(args)),
+                      (False, "No space left on device"))[1])
+    watermark_manager.pypi_latest = lambda n: ver_new[n]
+    try:
+        results = run_update()
+        check("UpdateTask: отказ шага 1 — честная ошибка",
+              results == [(False, "", "No space left on device")], str(results))
+        check("UpdateTask: при отказе шага 1 второй не запускается",
+              len(pip_calls) == 1, str(pip_calls))
+    finally:
+        watermark_manager._run_pip = real_pip_upd
+
+    # пустые метаданные обновлённого iopaint — честный отказ
+    pip_calls = upd_pip_calls()
+    watermark_manager._iopaint_requires = lambda: []
+    try:
+        results = run_update()
+        check("UpdateTask: пустые метаданные — честный отказ",
+              bool(results) and results[0][0] is False
+              and "iopaint" in results[0][2], str(results))
+        check("UpdateTask: на пустых метаданных вызов один",
+              len(pip_calls) == 1, str(pip_calls))
+    finally:
+        watermark_manager._run_pip = real_pip_upd
+
+    # модуль не установлен/метаданных нет — отказ без запуска pip
+    watermark_manager.installed_version = lambda n: ""
+    watermark_manager.pypi_latest = lambda n: ver_new[n]
+    try:
+        results = run_update()
+        check("UpdateTask: без пакета — отказ, версию не определить",
+              bool(results) and results[0][0] is False
+              and "iopaint" in results[0][2], str(results))
+    finally:
+        watermark_manager._run_pip = real_pip_upd
+
+    # Florence-2: ревизия кэша отличается — snapshot_download свежего
+    fake_hub = types.ModuleType("huggingface_hub")
+    hub_calls: list[str] = []
+    fake_hub.snapshot_download = lambda repo: hub_calls.append(repo)
+    saved_hub = sys.modules.get("huggingface_hub")
+    sys.modules["huggingface_hub"] = fake_hub
+    pip_calls = upd_pip_calls()
+    watermark_manager.installed_version = lambda n: ver_equal[n]
+    watermark_manager.pypi_latest = lambda n: ver_equal[n]
+    watermark_manager.hf_latest_sha = lambda repo: "bbb2222"
+    watermark_manager._florence_cached_sha = lambda repo: "aaa1111"
+    watermark_manager.lama_file = lambda: ""
+    try:
+        results = run_update()
+        check("UpdateTask: Florence-2 — snapshot_download свежей ревизии",
+              bool(results) and hub_calls == ["microsoft/Florence-2-base"],
+              str(hub_calls))
+        check("UpdateTask: Florence-2 — обновление в итоге",
+              bool(results) and i18n.tr("viewer.wm_update_model",
+                                        model="Florence-2-base") in results[0][1],
+              results[0][1] if results else "")
+        check("UpdateTask: Florence-2 — pip не звался", pip_calls == [])
+    finally:
+        watermark_manager._run_pip = real_pip_upd
+        if saved_hub is not None:
+            sys.modules["huggingface_hub"] = saved_hub
+        else:
+            sys.modules.pop("huggingface_hub", None)
+
+    # huggingface.co недоступен: пакеты не тронуты, отказ — не фатален
+    watermark_manager.hf_latest_sha = lambda repo: ""
+    try:
+        results = run_update()
+        check("UpdateTask: HF недоступен — итог с пометкой, успех",
+              bool(results) and results[0][0] is True
+              and i18n.tr("viewer.wm_update_model_fail",
+                          model="Florence-2-base",
+                          info="huggingface.co") in results[0][1],
+              str(results))
+    finally:
+        watermark_manager._run_pip = real_pip_upd
+
+    # snapshot_download упал: неудача докладывается, модуль остался цел
+    fake_hub = types.ModuleType("huggingface_hub")
+
+    def _hub_boom(repo):
+        raise RuntimeError("boom: disk full")
+
+    fake_hub.snapshot_download = _hub_boom
+    sys.modules["huggingface_hub"] = fake_hub
+    watermark_manager.hf_latest_sha = lambda repo: "bbb2222"
+    watermark_manager._florence_cached_sha = lambda repo: "aaa1111"
+    try:
+        results = run_update()
+        check("UpdateTask: сбой snapshot_download — честная пометка",
+              bool(results) and results[0][0] is True
+              and "boom: disk full" in results[0][1], str(results))
+    finally:
+        watermark_manager._run_pip = real_pip_upd
+        if saved_hub is not None:
+            sys.modules["huggingface_hub"] = saved_hub
+        else:
+            sys.modules.pop("huggingface_hub", None)
+
+    # big-lama: размер релиза отличается — перекачка штатным LaMa.download()
+    fake_lama_upd = types.ModuleType("iopaint.model.lama")
+    lama_state = {"downloads": 0}
+
+    class _FakeLaMaUpd:
+        @staticmethod
+        def download():
+            lama_state["downloads"] += 1
+
+    fake_lama_upd.LaMa = _FakeLaMaUpd
+    fake_lama_upd.LAMA_MODEL_URL = "http://example.com/big-lama.pt"
+    saved_lama_upd = sys.modules.get("iopaint.model.lama")
+    sys.modules["iopaint.model.lama"] = fake_lama_upd
+    watermark_manager.lama_file = lambda: lama_u
+    watermark_manager._lama_url = lambda: "http://example.com/big-lama.pt"
+    watermark_manager.hf_latest_sha = lambda repo: "cafe"
+    watermark_manager._florence_cached_sha = lambda repo: "cafe"
+    try:
+        pip_calls = upd_pip_calls()
+        watermark_manager.remote_content_length = lambda url: 2000
+        try:
+            results = run_update()
+            check("UpdateTask: big-lama — файл удалён и перекачан",
+                  not os.path.exists(lama_u) and lama_state["downloads"] == 1,
+                  str(lama_state))
+            check("UpdateTask: big-lama — обновление в итоге",
+                  bool(results)
+                  and i18n.tr("viewer.wm_update_lama") in results[0][1],
+                  results[0][1] if results else "")
+        finally:
+            watermark_manager._run_pip = real_pip_upd
+        # размер совпал — модель актуальна, файл на месте
+        with open(lama_u, "wb") as f:
+            f.write(b"L" * 2000)
+        pip_calls = upd_pip_calls()
+        watermark_manager.remote_content_length = lambda url: 2000
+        try:
+            results = run_update()
+            check("UpdateTask: big-lama актуален — файл и качание не тронуты",
+                  os.path.exists(lama_u) and lama_state["downloads"] == 1
+                  and pip_calls == []
+                  and i18n.tr("viewer.wm_update_nothing", pkgs=
+                              "iopaint 1.6.0, transformers 4.48.3, timm 1.0.15")
+                  == results[0][1], str(results))
+        finally:
+            watermark_manager._run_pip = real_pip_upd
+        # размер узнать не удалось — пометка в итоге, файл не тронут
+        watermark_manager.remote_content_length = lambda url: 0
+        try:
+            results = run_update()
+            check("UpdateTask: big-lama недоступен — пометка, файл цел",
+                  os.path.exists(lama_u) and lama_state["downloads"] == 1
+                  and i18n.tr("viewer.wm_update_lama_fail",
+                              info="github.com") in results[0][1],
+                  results[0][1] if results else "")
+        finally:
+            watermark_manager._run_pip = real_pip_upd
+    finally:
+        if saved_lama_upd is not None:
+            sys.modules["iopaint.model.lama"] = saved_lama_upd
+        else:
+            sys.modules.pop("iopaint.model.lama", None)
+
+    # восстановить всё, что подменял блок обновления
+    watermark_manager.installed_version = real_ver
+    watermark_manager.pypi_latest = real_pypi
+    watermark_manager._iopaint_requires = real_reqs_upd
+    watermark_manager.hf_latest_sha = real_hfsha
+    watermark_manager._florence_cached_sha = real_cached
+    watermark_manager.lama_file = real_lama_file
+    watermark_manager._lama_url = real_lama_url
+    watermark_manager.remote_content_length = real_head
+
     # ---------- RemoveWatermarkTask без модуля: честные ошибки ----------
     png = os.path.join(tmpdir, "cat.png")
     from PIL import Image
@@ -713,6 +1103,74 @@ def main() -> int:
               viewer.status.text())
     finally:
         watermark_manager._load_pipeline = real_pipeline
+
+    # ---------- обновление модуля из вьюера (v0.8.15) ----------
+    real_upd_installed = watermark_manager.is_installed
+    watermark_manager.is_installed = lambda: True
+    real_upd_task = watermark_manager.UpdateTask
+    upd_started: list[str] = []
+
+    class StubUpdTask(QRunnable):
+        """Стаб задачи обновления: сигнал успеха без сети и pip-а."""
+
+        def __init__(self, signals, model):
+            super().__init__()
+            self.signals, self.model = signals, model
+            upd_started.append(model)
+
+        def run(self):
+            self.signals.update_done.emit(
+                True,
+                "iopaint 1.6.0 → 1.7.0. " + i18n.tr("viewer.wm_update_restart"),
+                "")
+
+    watermark_manager.UpdateTask = StubUpdTask
+    upd_boxes: list[str] = []
+    real_info_wm = QMessageBox.information
+    real_warn_wm = QMessageBox.warning
+    QMessageBox.information = lambda *a, **k: upd_boxes.append("info")
+    QMessageBox.warning = lambda *a, **k: upd_boxes.append("warn")
+    try:
+        viewer.wm_update()
+        check("вьюер: обновление стартовало с выбранным детектором",
+              upd_started == [viewer._wm_model] and viewer._wm_busy is True,
+              str(upd_started))
+        wait_until(lambda: not viewer._wm_busy, timeout_s=10)
+        app_inst.processEvents()
+        want_upd = i18n.tr(
+            "viewer.wm_update_done",
+            what="iopaint 1.6.0 → 1.7.0. " + i18n.tr("viewer.wm_update_restart"))
+        check("вьюер: итог обновления в статусе",
+              viewer.status.text() == want_upd, viewer.status.text())
+        check("вьюер: окно об успехе обновления",
+              upd_boxes[-1:] == ["info"], str(upd_boxes))
+
+        viewer._wm_busy = True
+        viewer.wm_update()
+        check("вьюер: пока busy — второй запуск не нужен",
+              viewer._wm_busy is True and len(upd_started) == 1
+              and viewer.status.text() == i18n.tr("viewer.wm_busy"),
+              viewer.status.text())
+        viewer._wm_busy = False
+
+        # отказ: честная ошибка в статусе и окно-предупреждение
+        viewer._wm_signals.update_done.emit(False, "", "pypi недоступен")
+        app_inst.processEvents()
+        check("вьюер: отказ обновления — статус и предупреждение",
+              viewer.status.text() == i18n.tr("viewer.wm_update_fail",
+                                              info="pypi недоступен")
+              and upd_boxes[-1:] == ["warn"], str(upd_boxes))
+
+        # модуль не установлен — обновление не запускается вовсе
+        watermark_manager.is_installed = lambda: False
+        viewer.wm_update()
+        check("вьюер: без модуля обновление не стартует",
+              viewer._wm_busy is False and len(upd_started) == 1)
+    finally:
+        watermark_manager.UpdateTask = real_upd_task
+        watermark_manager.is_installed = real_upd_installed
+        QMessageBox.information = real_info_wm
+        QMessageBox.warning = real_warn_wm
 
     # ---------- _ensure_stdio: pythonw-сценарий (None-stdio) ----------
     saved_out, saved_err = sys.stdout, sys.stderr

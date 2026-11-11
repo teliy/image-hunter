@@ -20,12 +20,25 @@ Runtime, без облаков и ключей. Ставится pip-ом пря
 потом только проверяет хеш. «Удалить модуль»
 вычищает и пакет, и кэш моделей целиком — на диске не остаётся ничего.
 
-Здесь только механика; все надписи (i18n) и журнальные события — в
-local_viewer, который этими задачами распоряжается.
+Обновление установленного модуля — UpdateTask (v0.8.15, пожелание: «Если
+разработчики florence и lama обновят версию, imagehunter этого не узнает?
+Нужно добавить возможность обновлять установленные модули»): версия
+rembg сверяется с PyPI, что новее — ``pip install --upgrade``. Модели
+отдельно не трогаются: rembg качает их по хешу из кода свежего пакета —
+штатный pooch при следующем удалении фона сам перекачает изменившуюся
+модель (проверка хеша — его обычное поведение). Итог обновления
+собирается здесь же (tr, как в watermark_manager); журнальные события —
+в local_viewer.
+
+Здесь только механика; надписи (i18n) и журнальные события — в
+local_viewer, который этими задачами распоряжается. Тяжёлые зависимости
+импортируются лениво: пока модуль не установлен, файл безопасно
+импортируется в любом процессе (принцип rembg_manager, v0.7.12).
 """
 
 from __future__ import annotations
 
+import importlib.metadata
 import importlib.util
 import os
 import shutil
@@ -35,6 +48,8 @@ import time
 
 import requests
 
+from app.core.i18n import tr
+from app.core.updates import is_newer, pypi_latest
 from PySide6.QtCore import QObject, QRunnable, Signal
 
 # доступные модели: (id для rembg/QSettings, ключ i18n с названием и размером)
@@ -51,6 +66,14 @@ _NOBG_SUFFIX = "_nobg"            # метка результата: X.jpg -> X_
 def is_installed() -> bool:
     """Установлен ли пакет rembg в текущее окружение Python."""
     return importlib.util.find_spec("rembg") is not None
+
+
+def installed_version() -> str:
+    """Версия установленного rembg; "" — пакет не стоит/метаданных нет."""
+    try:
+        return importlib.metadata.version("rembg")
+    except Exception:   # noqa: BLE001 — PackageNotFoundError и битые метаданные
+        return ""
 
 
 def model_cache_dirs() -> list[str]:
@@ -114,6 +137,7 @@ class RembgSignals(QObject):
 
     install_done = Signal(bool, str)        # ok, хвост вывода pip при ошибке
     uninstall_done = Signal(bool, str, int)  # ok, хвост вывода, освобождено МБ
+    update_done = Signal(bool, str, str)     # ok, что изменилось ("" нет), ошибка
     file_done = Signal(str, str, bool, str)  # путь, результат, ok, ошибка
     batch_done = Signal(int, int)            # готово, с ошибками
     revert_done = Signal(list, list)         # удалённые результаты, [(путь, ошибка)]
@@ -268,6 +292,47 @@ class InstallTask(QRunnable):
         ok, info = _run_pip(["install", "--disable-pip-version-check",
                              "rembg[cpu]"])
         self.signals.install_done.emit(ok, info)
+
+
+class UpdateTask(QRunnable):
+    """Проверить и обновить установленный rembg (v0.8.15).
+
+    Пожелание: «Если разработчики florence и lama обновят версию,
+    imagehunter этого не узнает? Нужно добавить возможность обновлять
+    установленные модули». Версия пакета сверяется с PyPI; что новее —
+    ``pip install --upgrade rembg[cpu]``. Модели отдельно не трогаются:
+    их адреса и хеши живут в коде rembg, поэтому свежий пакет приносит
+    свежие хеши, и pooch при следующем удалении фона сам перекачает
+    изменившуюся модель (проверка хеша скачанного файла — его обычное
+    поведение).
+    """
+
+    def __init__(self, signals: RembgSignals) -> None:
+        super().__init__()
+        self.signals = signals
+
+    def run(self) -> None:  # рабочий поток
+        old = installed_version()
+        if not old:
+            self.signals.update_done.emit(
+                False, "", "rembg: не удалось определить установленную версию")
+            return
+        new = pypi_latest("rembg")
+        if not new:
+            self.signals.update_done.emit(
+                False, "", tr("viewer.rembg_update_pypi_fail"))
+            return
+        if not is_newer(new, old):
+            self.signals.update_done.emit(
+                True, tr("viewer.rembg_update_nothing", ver=old), "")
+            return
+        ok, info = _run_pip(["install", "--disable-pip-version-check",
+                             "--upgrade", "rembg[cpu]"])
+        if not ok:
+            self.signals.update_done.emit(False, "", info)
+            return
+        self.signals.update_done.emit(
+            True, f"{old} → {new}. " + tr("viewer.rembg_update_restart"), "")
 
 
 class UninstallTask(QRunnable):

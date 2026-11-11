@@ -521,6 +521,46 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ru": "🪄 Ошибка удаления модуля: {info}",
         "en": "🪄 Module removal error: {info}",
         "zh": "🪄 模块删除错误：{info}"},
+    "viewer.rembg_menu_update": {
+        "ru": "Обновить модуль rembg…",
+        "en": "Update the rembg module…",
+        "zh": "更新 rembg 模块…"},
+    "viewer.rembg_updating": {
+        "ru": "Обновляю модуль rembg: сверяю версию с PyPI…",
+        "en": "Updating the rembg module: checking the version on PyPI…",
+        "zh": "正在更新 rembg 模块：正在与 PyPI 核对版本…"},
+    "viewer.rembg_update_done": {
+        "ru": "Модуль rembg: {what}",
+        "en": "rembg module: {what}",
+        "zh": "rembg 模块：{what}"},
+    "viewer.rembg_update_nothing": {
+        "ru": "обновлений нет — rembg {ver} актуален",
+        "en": "nothing to update — rembg {ver} is up to date",
+        "zh": "无需更新——rembg {ver} 已是最新"},
+    "viewer.rembg_update_fail": {
+        "ru": "Не удалось обновить модуль rembg: {info}",
+        "en": "Failed to update the rembg module: {info}",
+        "zh": "更新 rembg 模块失败：{info}"},
+    "viewer.rembg_update_pypi_fail": {
+        "ru": "pypi.org недоступен — версию rembg сверить не удалось",
+        "en": "pypi.org is unreachable — cannot check the rembg version",
+        "zh": "pypi.org 不可用——无法核对 rembg 的版本"},
+    "viewer.rembg_update_restart": {
+        "ru": "перезапустите Image Hunter, чтобы новый rembg подхватился",
+        "en": "restart Image Hunter so the new rembg is picked up",
+        "zh": "请重启 Image Hunter 以加载新的 rembg"},
+    "log.event.rembg_update_start": {
+        "ru": "🪄 Обновляю модуль rembg: сверяю версию с PyPI…",
+        "en": "🪄 Updating the rembg module: checking the version on PyPI…",
+        "zh": "🪄 正在更新 rembg 模块：正在与 PyPI 核对版本…"},
+    "log.event.rembg_update_done": {
+        "ru": "🪄 Модуль rembg: {what}",
+        "en": "🪄 rembg module: {what}",
+        "zh": "🪄 rembg 模块：{what}"},
+    "log.event.rembg_update_fail": {
+        "ru": "🪄 Ошибка обновления модуля rembg: {info}",
+        "en": "🪄 rembg module update error: {info}",
+        "zh": "🪄 rembg 模块更新错误：{info}"},
     # ---------- выбор после удаления фона + прогресс модели (v0.7.15) ----------
     "viewer.rembg_choice_q": {
         "ru": "Готово без фона: {n}.\n"
@@ -754,6 +794,62 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ru": "🧽 Ошибка удаления модуля водяных знаков: {info}",
         "en": "🧽 Watermark removal module removal error: {info}",
         "zh": "🧽 水印去除模块删除错误：{info}"},
+    "viewer.wm_menu_update": {
+        "ru": "Обновить модуль водяных знаков…",
+        "en": "Update the watermark removal module…",
+        "zh": "更新水印去除模块…"},
+    "viewer.wm_updating": {
+        "ru": "Обновляю модуль водяных знаков: сверяю пакеты (PyPI) и модели (Hugging Face)…",
+        "en": "Updating the watermark removal module: checking packages (PyPI) and models (Hugging Face)…",
+        "zh": "正在更新水印去除模块：核对软件包（PyPI）与模型（Hugging Face）…"},
+    "viewer.wm_update_done": {
+        "ru": "Модуль водяных знаков: {what}",
+        "en": "Watermark removal module: {what}",
+        "zh": "水印去除模块：{what}"},
+    "viewer.wm_update_fail": {
+        "ru": "Не удалось обновить модуль водяных знаков: {info}",
+        "en": "Failed to update the watermark removal module: {info}",
+        "zh": "更新水印去除模块失败：{info}"},
+    "viewer.wm_update_nothing": {
+        "ru": "обновлений нет — пакеты и модели актуальны ({pkgs})",
+        "en": "nothing to update — packages and models are up to date ({pkgs})",
+        "zh": "无需更新——软件包与模型均为最新（{pkgs}）"},
+    "viewer.wm_update_model": {
+        "ru": "модель {model} обновлена (свежая ревизия Hugging Face)",
+        "en": "{model} model updated (fresh Hugging Face revision)",
+        "zh": "{model} 模型已更新（Hugging Face 最新版本）"},
+    "viewer.wm_update_lama": {
+        "ru": "big-lama перекачан (свежий релиз)",
+        "en": "big-lama re-downloaded (fresh release)",
+        "zh": "big-lama 已重新下载（最新版本）"},
+    "viewer.wm_update_model_fail": {
+        "ru": "модель {model}: проверить не удалось ({info})",
+        "en": "{model} model: check failed ({info})",
+        "zh": "{model} 模型：检查失败（{info}）"},
+    "viewer.wm_update_lama_fail": {
+        "ru": "big-lama: проверить не удалось ({info})",
+        "en": "big-lama: check failed ({info})",
+        "zh": "big-lama：检查失败（{info}）"},
+    "viewer.wm_update_pypi_fail": {
+        "ru": "pypi.org недоступен — версию {name} сверить не удалось",
+        "en": "pypi.org is unreachable — cannot check {name}",
+        "zh": "pypi.org 不可用——无法核对 {name} 的版本"},
+    "viewer.wm_update_restart": {
+        "ru": "перезапустите Image Hunter, чтобы новые версии конвейера подхватились",
+        "en": "restart Image Hunter so the new pipeline versions are picked up",
+        "zh": "请重启 Image Hunter 以加载新版本的管线"},
+    "log.event.wm_update_start": {
+        "ru": "🧽 Обновляю модуль водяных знаков: пакеты (PyPI), Florence-2 (Hugging Face), big-lama (релиз)…",
+        "en": "🧽 Updating the watermark removal module: packages (PyPI), Florence-2 (Hugging Face), big-lama (release)…",
+        "zh": "🧽 正在更新水印去除模块：软件包（PyPI）、Florence-2（Hugging Face）、big-lama（发布版）…"},
+    "log.event.wm_update_done": {
+        "ru": "🧽 Модуль водяных знаков: {what}",
+        "en": "🧽 Watermark removal module: {what}",
+        "zh": "🧽 水印去除模块：{what}"},
+    "log.event.wm_update_fail": {
+        "ru": "🧽 Ошибка обновления модуля водяных знаков: {info}",
+        "en": "🧽 Watermark removal module update error: {info}",
+        "zh": "🧽 水印去除模块更新错误：{info}"},
     "viewer.no_images": {
         "ru": "В этой папке нет изображений", "en": "No images in this folder", "zh": "此文件夹中没有图片"},
     "viewer.pick_first": {

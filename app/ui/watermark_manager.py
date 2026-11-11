@@ -58,21 +58,33 @@ Florence-2; кэши других моделей (и общие библиоте
 local_viewer, который этими задачами распоряжается. Тяжёлые зависимости
 импортируются лениво: пока модуль не установлен, файл безопасно
 импортируется в любом процессе (принцип rembg_manager, v0.7.12).
+
+Обновление установленного модуля — UpdateTask (v0.8.15, пожелание: «Если
+разработчики florence и lama обновят версию, imagehunter этого не узнает?
+Нужно добавить возможность обновлять установленные модули»). Пакеты
+(iopaint, transformers, timm) сверяются с PyPI, модели — с их первоисточниками:
+ревизия Florence-2 в кэше Hugging Face — с актуальной на хабе, big-lama —
+размером файла с релизом. Обновляются теми же безопасными механизмами,
+что и установка; проверка моделей не фатальна — пакеты обновляются,
+неудача докладывается в итоге.
 """
 
 from __future__ import annotations
 
 import importlib.metadata
 import importlib.util
+import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import urllib.request
 
 from PIL import Image, ImageDraw, ImageFilter, ImageOps
 
 from app.core.i18n import tr
+from app.core.updates import is_newer, pypi_latest
 from PySide6.QtCore import QObject, QRunnable, Signal
 
 # фраза для Florence-2: что искать на картинке (как в WatermarkRemover-AI)
@@ -422,6 +434,101 @@ def _clear_model_caches() -> int:
     return freed
 
 
+# ---------- обновление модуля: проверка пакетов и моделей (v0.8.15) ----------
+
+# API Hugging Face: актуальная ревизия (commit) репозитория модели
+HF_API_URL = "https://huggingface.co/api/models/{repo}"
+# запасной адрес big-lama — настоящий берётся из установленного iopaint
+# (_lama_url); константа совпадает с его дефолтом (iopaint/model/lama.py)
+LAMA_MODEL_URL = ("https://github.com/Sanster/models/releases/download/"
+                  "add_big_lama/big-lama.pt")
+
+
+def installed_version(name: str) -> str:
+    """Версия установленной pip-дистрибуции; "" — нет пакета/метаданных."""
+    try:
+        return importlib.metadata.version(name)
+    except Exception:   # noqa: BLE001 — PackageNotFoundError и битые метаданные
+        return ""
+
+
+def _hf_hub_cache() -> str:
+    """Кэш Hugging Face с учётом HF_HUB_CACHE/HF_HOME (как у самого hf-hub)."""
+    hub = os.environ.get("HF_HUB_CACHE")
+    if not hub:
+        home = os.environ.get("HF_HOME")
+        hub = (os.path.join(home, "hub") if home
+               else os.path.join(os.path.expanduser("~"),
+                                 ".cache", "huggingface", "hub"))
+    return hub
+
+
+def _florence_cached_sha(repo: str) -> str:
+    """Ревизия (commit) Florence-2 в локальном кэше HF; "" — не качалась.
+
+    hf-hub пишет актуальную скачанную ревизию в refs/main кэша модели —
+    сверка с хабом отвечает на вопрос «вышла ли новая версия».
+    """
+    ref = os.path.join(_hf_hub_cache(), "models--" + repo.replace("/", "--"),
+                       "refs", "main")
+    try:
+        with open(ref, "r", encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def hf_latest_sha(repo: str) -> str:
+    """Актуальная ревизия (commit) модели на Hugging Face; "" — нет связи."""
+    try:
+        req = urllib.request.Request(
+            HF_API_URL.format(repo=repo), headers={"User-Agent": "ImageHunter"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read(1 << 20).decode("utf-8", "replace"))
+        return str(data.get("sha") or "")
+    except (OSError, ValueError):
+        return ""
+
+
+def lama_file() -> str:
+    """Путь к скачанному big-lama.pt; "" — модель ещё не скачивалась."""
+    import glob
+
+    for d, pattern in model_cache_globs():
+        if "big-lama" not in pattern:
+            continue
+        for p in sorted(glob.glob(os.path.join(d, pattern))):
+            if os.path.isfile(p):
+                return p
+    return ""
+
+
+def _lama_url() -> str:
+    """Настоящий адрес big-lama из установленного iopaint (у него и md5)."""
+    try:
+        from iopaint.model.lama import LAMA_MODEL_URL as url
+        return url
+    except Exception:   # noqa: BLE001 — iopaint не импортируется, берём дефолт
+        return LAMA_MODEL_URL
+
+
+def remote_content_length(url: str) -> int:
+    """Размер файла по HEAD-запросу; 0 — узнать не удалось."""
+    try:
+        req = urllib.request.Request(url, method="HEAD",
+                                     headers={"User-Agent": "ImageHunter"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return int(resp.headers.get("Content-Length") or 0)
+    except (OSError, ValueError):
+        return 0
+
+
+def _brief(exc: Exception) -> str:
+    """Короткая причина из исключения — для строки итога обновления."""
+    text = (str(exc).strip().splitlines() or [""])[0]
+    return text[:160] if text else type(exc).__name__
+
+
 def _installed_dists(names) -> set[str]:
     """Какие из названных pip-дистрибуций реально стоят (по метаданным)."""
     try:
@@ -509,6 +616,7 @@ class WatermarkSignals(QObject):
 
     install_done = Signal(bool, str)         # ok, хвост вывода pip при ошибке
     uninstall_done = Signal(bool, str, int)  # ok, хвост вывода, освобождено МБ
+    update_done = Signal(bool, str, str)     # ok, что изменилось ("" — ничего), ошибка
     file_done = Signal(str, str, bool, str)  # путь, результат, ok, ошибка
     batch_done = Signal(int, int)            # с результатом, с ошибками
     model_prepare = Signal(str)              # модели готовятся (первый раз — качаются)
@@ -576,6 +684,122 @@ class UninstallTask(QRunnable):
             ok, info = True, ""   # уже ничего не стоит — и хорошо
         freed = _clear_model_caches()
         self.signals.uninstall_done.emit(ok, info, freed // (1024 * 1024))
+
+
+class UpdateTask(QRunnable):
+    """Проверить и обновить установленный модуль (v0.8.15).
+
+    Пожелание: «Если разработчики florence и lama обновят версию,
+    imagehunter этого не узнает? Нужно добавить возможность обновлять
+    установленные модули».
+
+    * **Пакеты** (iopaint, transformers, timm) сверяются с PyPI; что
+      новее — обновляется тем же безопасным конвейером, что и установка:
+      iopaint с ``--no-deps`` (его пин Pillow==9.5.0 не выполняется на
+      новых Python — v0.8.12), затем зависимости из УЖЕ обновлённых
+      метаданных без Pillow/gradio + transformers/timm + шимы окружения
+      (v0.8.13). ``--upgrade`` с дефолтной стратегией pip only-if-needed
+      двигает только пакеты модуля и то, что не удовлетворяет новым
+      требованиям, — numpy/Pillow самой программы не трогаются.
+    * **Florence-2**: ревизия в кэше HF (refs/main) сверяется с API хаба;
+      отличается — ``snapshot_download`` докачивает только изменившиеся
+      файлы (модель у hf-hub попадает в кэш та же, что грузит
+      from_pretrained).
+    * **big-lama**: размер локального файла сверяется с релизом; отличается —
+      файл перекачивается штатным ``LaMa.download()`` (он же проверит md5).
+
+    Пакеты, версию которых сверить не удалось (pypi.org недоступен) —
+    честный отказ: обновлять вслепую нельзя. Недоступность проверки
+    МОДЕЛЕЙ не фатальна: пакеты обновляются, а неудача докладывается
+    в итоге — модуль остаётся рабочим.
+    """
+
+    def __init__(self, signals: WatermarkSignals, model: str) -> None:
+        super().__init__()
+        self.signals = signals
+        self.model = model          # выбранный детектор (каким пользуются)
+
+    def run(self) -> None:  # рабочий поток
+        changes: list[str] = []     # что обновилось — для итога
+        fails: list[str] = []       # что проверить/обновить не удалось
+        pkgs_touched = False        # pip что-то двигал — нужен перезапуск
+        names = (_MAIN_PACKAGE, *_SIDE_PACKAGES)
+        installed = {n: installed_version(n) for n in names}
+        unknown = [n for n, v in installed.items() if not v]
+        if unknown:
+            self.signals.update_done.emit(
+                False, "",
+                f"{unknown[0]}: не удалось определить установленную версию")
+            return
+        latest = {n: pypi_latest(n) for n in names}
+        dead = [n for n, v in latest.items() if not v]
+        if dead:
+            self.signals.update_done.emit(
+                False, "", tr("viewer.wm_update_pypi_fail", name=dead[0]))
+            return
+        newer = [n for n in names if is_newer(latest[n], installed[n])]
+        if newer:
+            ok, info = _run_pip(["install", "--disable-pip-version-check",
+                                 "--no-deps", "--upgrade", _MAIN_PACKAGE])
+            if ok:
+                deps = _module_requirements()   # метаданные УЖЕ новых iopaint
+                if not deps:
+                    # как в InstallTask (v0.8.12): вслепую нельзя —
+                    # модуль остался бы без torch/opencv
+                    ok, info = False, f"{_MAIN_PACKAGE}: нет зависимостей в метаданных"
+                else:
+                    ok, info = _run_pip([
+                        "install", "--disable-pip-version-check", "--upgrade",
+                        *deps, *_SIDE_PACKAGES, *_ENV_SHIMS])
+            if not ok:
+                self.signals.update_done.emit(False, "", info)
+                return
+            pkgs_touched = True
+            changes += [f"{n} {installed[n]} → {latest[n]}" for n in newer]
+        # Florence-2 выбранного детектора: ревизия кэша против хаба
+        short = self.model.split("/")[-1]
+        remote = hf_latest_sha(self.model)
+        if remote:
+            cached = _florence_cached_sha(self.model)
+            if cached and cached != remote:
+                try:
+                    _ensure_stdio()            # pythonw: HF-прогресс-бары
+                    _disable_hf_progress()
+                    from huggingface_hub import snapshot_download
+                    snapshot_download(self.model)   # только изменённые файлы
+                    changes.append(tr("viewer.wm_update_model", model=short))
+                except Exception as exc:   # noqa: BLE001 — сеть/диск любые
+                    fails.append(tr("viewer.wm_update_model_fail", model=short,
+                                    info=_brief(exc)))
+        else:
+            fails.append(tr("viewer.wm_update_model_fail", model=short,
+                            info="huggingface.co"))
+        # big-lama: размер локального файла против релиза
+        local = lama_file()
+        if local:
+            size = remote_content_length(_lama_url())
+            if size <= 0:
+                fails.append(tr("viewer.wm_update_lama_fail", info="github.com"))
+            elif size != os.path.getsize(local):
+                try:
+                    os.remove(local)
+                    from iopaint.model.lama import LaMa
+                    LaMa.download()            # скачает свежий и проверит md5
+                    changes.append(tr("viewer.wm_update_lama"))
+                except Exception as exc:   # noqa: BLE001 — сеть/диск любые
+                    fails.append(tr("viewer.wm_update_lama_fail",
+                                    info=_brief(exc)))
+        if changes or fails:
+            what = ", ".join(changes + fails)
+            if pkgs_touched:
+                # пакеты обновились — в этой сессии могли остаться старые
+                # модули в памяти (импортируются лениво, но однажды
+                # импортированный не перечитывается)
+                what += ". " + tr("viewer.wm_update_restart")
+        else:
+            what = tr("viewer.wm_update_nothing", pkgs=", ".join(
+                f"{n} {installed[n]}" for n in names))
+        self.signals.update_done.emit(True, what, "")
 
 
 # ---------- конвейер: детекция Florence-2 + закраска LaMa ----------

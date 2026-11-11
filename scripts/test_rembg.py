@@ -5,6 +5,10 @@
 - nobg_path: X.ext -> X_nobg.png, повторная обработка результата отклоняется;
 - InstallTask вызывает pip c верными аргументами (без окна терминала) и
   сигнал install_done доходит;
+- UpdateTask (v0.8.15, обновление модуля): сверка версии rembg с PyPI,
+  «обновлений нет» без pip, обновление pip --upgrade rembg[cpu], отказ
+  при недоступном pypi/неопределимой версии — честный; вьюер: rembg_update
+  стартует задачу, guard busy, итог в статусе, без модуля — не стартует;
 - установка через вьюер продолжает отложенную обработку (_rembg_pending);
 - UninstallTask удаляет пакет и кэш моделей целиком (~/.rembg, ~/.u2net);
 - RevertTask удаляет файлы-результаты, отсутствующий — репортит ошибкой;
@@ -90,6 +94,13 @@ REMBG_KEYS = [
     "log.event.rembg_install_start", "log.event.rembg_install_done",
     "log.event.rembg_install_fail", "log.event.rembg_uninstall_start",
     "log.event.rembg_uninstall_done", "log.event.rembg_uninstall_fail",
+    # v0.8.15: обновление установленного модуля
+    "viewer.rembg_menu_update", "viewer.rembg_updating",
+    "viewer.rembg_update_done", "viewer.rembg_update_nothing",
+    "viewer.rembg_update_fail", "viewer.rembg_update_pypi_fail",
+    "viewer.rembg_update_restart",
+    "log.event.rembg_update_start", "log.event.rembg_update_done",
+    "log.event.rembg_update_fail",
     # v0.7.15: выбор после удаления фона + прогресс скачивания модели
     "viewer.rembg_choice_q", "viewer.rembg_choice_more",
     "viewer.rembg_btn_save", "viewer.rembg_btn_save_tip",
@@ -252,6 +263,159 @@ def main() -> int:
               and "rembg[cpu]" in calls[0], str(calls))
     finally:
         rembg_manager._run_pip = real_pip
+
+    # ---------- UpdateTask: обновление модуля (v0.8.15) ----------
+    from PySide6.QtWidgets import QMessageBox  # noqa: E402
+
+    real_ver_r = rembg_manager.installed_version
+    real_pypi_r = rembg_manager.pypi_latest
+    real_upd_installed_r = rembg_manager.is_installed
+
+    def run_rembg_update():
+        sig = rembg_manager.RembgSignals()
+        results: list[tuple] = []
+        sig.update_done.connect(
+            lambda ok, what, info: results.append((ok, what, info)))
+        QThreadPool.globalInstance().start(rembg_manager.UpdateTask(sig))
+        wait_until(lambda: bool(results))
+        return results
+
+    # всё актуально: pip не звался, честное «обновлений нет»
+    rembg_manager.installed_version = lambda: "1.0.197"
+    rembg_manager.pypi_latest = lambda pkg: "1.0.197"
+    calls_u: list[list[str]] = []
+    rembg_manager._run_pip = (
+        lambda args: (calls_u.append(list(args)), (True, ""))[1])
+    try:
+        results = run_rembg_update()
+        check("UpdateTask: всё актуально — без pip",
+              results == [(True, i18n.tr("viewer.rembg_update_nothing",
+                                         ver="1.0.197"), "")], str(results))
+        check("UpdateTask: всё актуально — pip не звался", calls_u == [],
+              str(calls_u))
+    finally:
+        rembg_manager._run_pip = real_pip
+
+    # вышла новая версия — pip install --upgrade rembg[cpu]
+    rembg_manager.pypi_latest = lambda pkg: "1.0.200"
+    calls_u = []
+    rembg_manager._run_pip = (
+        lambda args: (calls_u.append(list(args)), (True, ""))[1])
+    try:
+        results = run_rembg_update()
+        check("UpdateTask: pip install --upgrade rembg[cpu]",
+              calls_u == [["install", "--disable-pip-version-check",
+                           "--upgrade", "rembg[cpu]"]], str(calls_u))
+        check("UpdateTask: итог с версиями и подсказкой о перезапуске",
+              bool(results) and results[0][0] is True
+              and results[0][1] == "1.0.197 → 1.0.200. "
+              + i18n.tr("viewer.rembg_update_restart"), str(results))
+    finally:
+        rembg_manager._run_pip = real_pip
+
+    # pypi.org недоступен — честный отказ, pip не запускается
+    rembg_manager.pypi_latest = lambda pkg: ""
+    calls_u = []
+    rembg_manager._run_pip = (
+        lambda args: (calls_u.append(list(args)), (True, ""))[1])
+    try:
+        results = run_rembg_update()
+        check("UpdateTask: pypi недоступен — отказ",
+              results == [(False, "", i18n.tr("viewer.rembg_update_pypi_fail"))],
+              str(results))
+        check("UpdateTask: при отказе pypi pip не запускается", calls_u == [])
+    finally:
+        rembg_manager._run_pip = real_pip
+
+    # отказ pip-а доезжает с хвостом вывода
+    rembg_manager.pypi_latest = lambda pkg: "1.0.200"
+    rembg_manager._run_pip = lambda args: (False, "No space left on device")
+    try:
+        results = run_rembg_update()
+        check("UpdateTask: отказ pip — честная ошибка",
+              results == [(False, "", "No space left on device")], str(results))
+    finally:
+        rembg_manager._run_pip = real_pip
+
+    # версию определить не удалось — отказ без запуска pip
+    rembg_manager.installed_version = lambda: ""
+    calls_u = []
+    rembg_manager._run_pip = (
+        lambda args: (calls_u.append(list(args)), (True, ""))[1])
+    try:
+        results = run_rembg_update()
+        check("UpdateTask: версию не определить — отказ",
+              bool(results) and results[0][0] is False
+              and "rembg" in results[0][2] and calls_u == [], str(results))
+    finally:
+        rembg_manager._run_pip = real_pip
+        rembg_manager.installed_version = real_ver_r
+        rembg_manager.pypi_latest = real_pypi_r
+
+    # ---------- обновление через вьюер (v0.8.15) ----------
+    rembg_manager.is_installed = lambda: True
+    real_upd_task_r = rembg_manager.UpdateTask
+    upd_started_r: list[int] = []
+
+    class StubRembgUpd(QRunnable):
+        """Стаб задачи обновления: сигнал успеха без сети и pip-а."""
+
+        def __init__(self, signals):
+            super().__init__()
+            self.signals = signals
+            upd_started_r.append(1)
+
+        def run(self):
+            self.signals.update_done.emit(
+                True,
+                "1.0.197 → 1.0.200. " + i18n.tr("viewer.rembg_update_restart"),
+                "")
+
+    rembg_manager.UpdateTask = StubRembgUpd
+    upd_boxes_r: list[str] = []
+    real_info_r = QMessageBox.information
+    real_warn_r = QMessageBox.warning
+    QMessageBox.information = lambda *a, **k: upd_boxes_r.append("info")
+    QMessageBox.warning = lambda *a, **k: upd_boxes_r.append("warn")
+    try:
+        viewer.rembg_update()
+        check("вьюер: обновление стартовало",
+              upd_started_r == [1] and viewer._rembg_busy is True)
+        wait_until(lambda: not viewer._rembg_busy, timeout_s=10)
+        app.processEvents()
+        check("вьюер: итог обновления в статусе",
+              viewer.status.text() == i18n.tr(
+                  "viewer.rembg_update_done",
+                  what="1.0.197 → 1.0.200. "
+                  + i18n.tr("viewer.rembg_update_restart")),
+              viewer.status.text())
+        check("вьюер: окно об успехе обновления",
+              upd_boxes_r[-1:] == ["info"], str(upd_boxes_r))
+
+        viewer._rembg_busy = True
+        viewer.rembg_update()
+        check("вьюер: пока busy — второй запуск не нужен",
+              viewer._rembg_busy is True and len(upd_started_r) == 1
+              and viewer.status.text() == i18n.tr("viewer.rembg_busy"),
+              viewer.status.text())
+        viewer._rembg_busy = False
+
+        viewer._rembg_signals.update_done.emit(False, "", "pypi недоступен")
+        app.processEvents()
+        check("вьюер: отказ обновления — статус и предупреждение",
+              viewer.status.text() == i18n.tr("viewer.rembg_update_fail",
+                                              info="pypi недоступен")
+              and upd_boxes_r[-1:] == ["warn"], str(upd_boxes_r))
+
+        rembg_manager.is_installed = lambda: False
+        viewer.rembg_update()
+        check("вьюер: без модуля обновление не стартует",
+              viewer._rembg_busy is False and len(upd_started_r) == 1)
+    finally:
+        rembg_manager.UpdateTask = real_upd_task_r
+        rembg_manager.is_installed = real_upd_installed_r
+        QMessageBox.information = real_info_r
+        QMessageBox.warning = real_warn_r
 
     # ---------- установка через вьюер: очередь продолжается ----------
     tmpdir = tempfile.mkdtemp(prefix="ih_rembg_")

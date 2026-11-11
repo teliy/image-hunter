@@ -2813,6 +2813,7 @@ class LocalViewer(QWidget):
             self._on_rembg_model_dl_progress)
         self._rembg_signals.model_dl_done.connect(self._on_rembg_model_dl_done)
         self._rembg_signals.revert_done.connect(self._on_rembg_revert_done)
+        self._rembg_signals.update_done.connect(self._on_rembg_update_done)
         self._rembg_busy = False       # pip/обработка уже идут — второй запуск не нужен
         self._rembg_pending: list[str] | None = None   # очередь после установки
         self._rembg_ok = 0
@@ -2838,6 +2839,7 @@ class LocalViewer(QWidget):
         # модели готовятся/качаются при первом запуске — статус расскажет
         self._wm_signals.model_prepare.connect(self._on_wm_model_prepare)
         self._wm_signals.model_ready.connect(self._on_wm_model_ready)
+        self._wm_signals.update_done.connect(self._on_wm_update_done)
         self._wm_busy = False          # pip/обработка уже идут — второй запуск не нужен
         self._wm_pending: list[str] | None = None   # очередь после установки
         self._wm_ok = 0
@@ -3359,6 +3361,37 @@ class LocalViewer(QWidget):
         """Выбрать модель из меню «Модули» (запоминается в настройках)."""
         self._on_rembg_model(model_id)
 
+    def rembg_update(self) -> None:
+        """Обновить установленный модуль из меню «Модули» (v0.8.15).
+
+        Версия rembg сверяется с PyPI и обновляется в фоне; guard тот же,
+        что у установки/удаления — два pip-а одновременно не запускаются.
+        """
+        if self._rembg_busy:
+            self.status.setText(tr("viewer.rembg_busy"))
+            return
+        if not rembg_manager.is_installed():
+            return   # меню показывает пункт только у установленного модуля
+        self._rembg_busy = True
+        self.status.setText(tr("viewer.rembg_updating"))
+        applog.event("log.event.rembg_update_start")
+        QThreadPool.globalInstance().start(
+            rembg_manager.UpdateTask(self._rembg_signals))
+
+    def _on_rembg_update_done(self, ok: bool, what: str, info: str) -> None:
+        """Итог обновления rembg: что изменилось — в статус, журнал, диалог."""
+        self._rembg_busy = False
+        if ok:
+            msg = tr("viewer.rembg_update_done", what=what)
+            self.status.setText(msg)
+            applog.event("log.event.rembg_update_done", what=what)
+            QMessageBox.information(self, tr("viewer.rembg"), msg)
+        else:
+            msg = tr("viewer.rembg_update_fail", info=info)
+            self.status.setText(msg)
+            applog.error(tr("log.event.rembg_update_fail", info=info))
+            QMessageBox.warning(self, tr("viewer.rembg"), msg)
+
     # ---------- удаление фона (rembg, v0.7.12) ----------
 
     def _rembg_targets(self) -> list[str]:
@@ -3642,6 +3675,38 @@ class LocalViewer(QWidget):
     def wm_set_model(self, model_id: str) -> None:
         """Выбрать детектор из меню «Модули» (запоминается в настройках)."""
         self._on_wm_model(model_id)
+
+    def wm_update(self) -> None:
+        """Обновить установленный модуль из меню «Модули» (v0.8.15).
+
+        Пакеты (iopaint/transformers/timm) сверяются с PyPI, модели —
+        с Hugging Face и релизом big-lama; всё в фоне, guard тот же,
+        что у установки/удаления — два pip-а одновременно не запускаются.
+        """
+        if self._wm_busy:
+            self.status.setText(tr("viewer.wm_busy"))
+            return
+        if not watermark_manager.is_installed():
+            return   # меню показывает пункт только у установленного модуля
+        self._wm_busy = True
+        self.status.setText(tr("viewer.wm_updating"))
+        applog.event("log.event.wm_update_start")
+        QThreadPool.globalInstance().start(
+            watermark_manager.UpdateTask(self._wm_signals, self._wm_model))
+
+    def _on_wm_update_done(self, ok: bool, what: str, info: str) -> None:
+        """Итог обновления модуля: что изменилось — в статус, журнал, диалог."""
+        self._wm_busy = False
+        if ok:
+            msg = tr("viewer.wm_update_done", what=what)
+            self.status.setText(msg)
+            applog.event("log.event.wm_update_done", what=what)
+            QMessageBox.information(self, tr("viewer.wm"), msg)
+        else:
+            msg = tr("viewer.wm_update_fail", info=info)
+            self.status.setText(msg)
+            applog.error(tr("log.event.wm_update_fail", info=info))
+            QMessageBox.warning(self, tr("viewer.wm"), msg)
 
     # ---------- удаление водяных знаков (Florence-2 + LaMa, v0.8.11) ----------
 
