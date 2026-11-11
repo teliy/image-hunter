@@ -104,7 +104,7 @@ def main() -> int:
     win.show()
     app.processEvents()
 
-    check("версия 0.8.17", __version__ == "0.8.17", __version__)
+    check("версия 0.8.18", __version__ == "0.8.18", __version__)
 
     # ---------- состав строки меню ----------
     top = win.menuBar().actions()

@@ -2484,13 +2484,6 @@ class LocalViewer(QWidget):
         self.checker_slider.valueChanged.connect(self._on_checker_cell)
         bar.addWidget(self.checker_slider)
         bar.addSpacing(8)
-        # 🪄 удаление фона (rembg): если пакет ещё не стоит — предложит
-        # установить его прямо из программы (v0.7.12)
-        btn("viewer.rembg", "viewer.rembg_tip", self._on_rembg_button)
-        # 🧽 удаление водяных знаков (Florence-2 + LaMa/IOPaint): тот же
-        # принцип — модуль ставится pip-ом прямо из программы (v0.8.11)
-        btn("viewer.wm", "viewer.wm_tip", self._on_wm_button)
-        bar.addSpacing(8)
         btn("viewer.reveal", "viewer.reveal_tip", self.reveal_folder)
         bar.addSpacing(8)
         self.search_edit = _GripEdit("viewer/search_width", default_w=220)
@@ -2609,6 +2602,18 @@ class LocalViewer(QWidget):
         tools_lay.addWidget(self.picker_hex)
         self._i18n_buttons.append((self.picker_swatch, None, "viewer.picker_chip_tip"))
         self._i18n_buttons.append((self.picker_hex, None, "viewer.picker_chip_tip"))
+        tools_lay.addWidget(vline())
+        # 🪄 Удалить фон (rembg) и 🧽 Убрать водяные знаки (Florence-2 + LaMa)
+        # — переехали с верхней панели на панель инструментов (v0.8.18,
+        # пожелание: «убрать фон и водяные знаки перемести на панель ниже.
+        # они мешают отображению поиска»): на верхней панели они теснили
+        # поле поиска, здесь — рядом с инструментами картинки. Работают по
+        # выделенным файлам ленты (показанная картинка не обязательна),
+        # поэтому в отличие от Размер/Обрезать/Пипетка доступны всегда.
+        self.btn_rembg = btn("viewer.rembg", "viewer.rembg_tip",
+                             self._on_rembg_button, lay=tools_lay)
+        self.btn_wm = btn("viewer.wm", "viewer.wm_tip",
+                          self._on_wm_button, lay=tools_lay)
         tools_lay.addStretch(1)
 
         # --- список миниатюр ---

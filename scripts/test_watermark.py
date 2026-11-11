@@ -55,7 +55,7 @@
   неудача проверки моделей не фатальна, подсказка о перезапуске;
   вьюер: wm_update стартует задачу с выбранным детектором, guard busy,
   итог в статусе, без модуля — не стартует;
-- i18n: все новые ключи заполнены на ru/en/zh; версия — 0.8.17.
+- i18n: все новые ключи заполнены на ru/en/zh; версия — 0.8.18.
 
 Раздел меню «Модули» проверяет scripts/test_modules_menu.py.
 Запуск: QT_QPA_PLATFORM=offscreen python scripts/test_watermark.py
@@ -130,7 +130,7 @@ def main() -> int:
     st = QSettings("ImageHunter", "ImageHunter")
     st.sync()
 
-    check("версия 0.8.17", app.__version__ == "0.8.17", app.__version__)
+    check("версия 0.8.18", app.__version__ == "0.8.18", app.__version__)
 
     # ---------- менеджер: чистые функции ----------
     check("is_installed() — булево", isinstance(watermark_manager.is_installed(), bool))
@@ -1107,6 +1107,22 @@ def main() -> int:
     st.remove("viewer/last_folder")
     viewer = LocalViewer()
     check("кнопка 🧽 существует", hasattr(viewer, "_on_wm_button"))
+    # v0.8.18: «убрать фон и водяные знаки перемести на панель ниже» —
+    # обе кнопки переехали на панель инструментов (tools_panel)
+    from PySide6.QtWidgets import QToolButton  # noqa: E402
+    check("кнопка 🧽 на панели инструментов (v0.8.18)",
+          viewer.btn_wm.parent() is viewer.tools_panel,
+          type(viewer.btn_wm.parent()).__name__)
+    wm_btns = [b for b in viewer.findChildren(QToolButton)
+               if b.text() == i18n.tr("viewer.wm")]
+    check("🧽 ровно одна — с верхней панели убрана",
+          len(wm_btns) == 1,
+          str([b.parent().__class__.__name__ for b in wm_btns]))
+    _tl = viewer.tools_panel.layout()
+    check("🧽 рядом с 🪄, в конце инструментов",
+          _tl.indexOf(viewer.btn_wm) > _tl.indexOf(viewer.btn_rembg)
+          > _tl.indexOf(viewer.btn_picker),
+          str((_tl.indexOf(viewer.btn_wm), _tl.indexOf(viewer.btn_rembg))))
     check("модель по умолчанию",
           viewer._wm_model == watermark_manager.DEFAULT_MODEL,
           viewer._wm_model)

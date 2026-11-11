@@ -204,6 +204,22 @@ def main() -> int:
     # ---------- вьюер: кнопка и начальное состояние ----------
     viewer = LocalViewer()
     check("кнопка 🪄 существует", hasattr(viewer, "_on_rembg_button"))
+    # v0.8.18: «убрать фон и водяные знаки перемести на панель ниже» —
+    # кнопка живёт в tools_lay, её родитель — QFrame#toolsPanel, а на
+    # верхней панели (родитель — сам вьюер) её больше нет
+    from PySide6.QtWidgets import QToolButton  # noqa: E402
+    check("кнопка 🪄 на панели инструментов (v0.8.18)",
+          viewer.btn_rembg.parent() is viewer.tools_panel,
+          type(viewer.btn_rembg.parent()).__name__)
+    rembg_btns = [b for b in viewer.findChildren(QToolButton)
+                  if b.text() == i18n.tr("viewer.rembg")]
+    check("🪄 ровно одна — с верхней панели убрана",
+          len(rembg_btns) == 1,
+          str([b.parent().__class__.__name__ for b in rembg_btns]))
+    _tl = viewer.tools_panel.layout()
+    check("🪄 стоит после пипетки, в конце инструментов",
+          _tl.indexOf(viewer.btn_rembg) > _tl.indexOf(viewer.btn_picker),
+          str((_tl.indexOf(viewer.btn_rembg), _tl.indexOf(viewer.btn_picker))))
     check("модель по умолчанию",
           viewer._rembg_model == rembg_manager.DEFAULT_MODEL, viewer._rembg_model)
     check("не занят на старте", viewer._rembg_busy is False)
