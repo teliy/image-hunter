@@ -264,6 +264,27 @@ class MainWindow(QMainWindow):
             self._status.clearMessage()
             QMessageBox.warning(self, tr("main.upd_title"), tr("main.upd_no_installer"))
 
+    def restart_app(self) -> None:
+        """«Перезагрузить Image Hunter» — пункт меню «Модули» (v0.8.17).
+
+        После обновления модулей (v0.8.15) подсказка просит перезапустить
+        программу — теперь для этого есть пункт меню, и подхватываются
+        новые версии без ручных танцев с закрытием-открытием. Настройки
+        сохраняются ДО старта нового экземпляра: тот начинает с
+        секундной задержкой (updates.start_restart) и читает их уже
+        актуальными, а этот экземпляр в closeEvent сохранит ещё раз
+        (безвредно) и остановит веб-сервер.
+        """
+        self.local.save_state()
+        QSettings("ImageHunter", "ImageHunter").sync()
+        applog.event("log.event.app_restart")
+        if updates.start_restart():
+            self.close()
+        else:
+            applog.warning(tr("modules.restart_fail"))
+            QMessageBox.warning(self, tr("modules.restart_title"),
+                                tr("modules.restart_fail"))
+
     # ---------- сохранение отмеченных в выбранном формате ----------
 
     def _on_save_images(self, urls: list, referer: str, engine: str = "") -> None:

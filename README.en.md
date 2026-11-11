@@ -10,6 +10,70 @@ Written in Python + PySide6 (Qt6): heavy operations (rendering, network, image d
 
 > **⚡ Special focus — fast work over the network and with network drives** (SMB/NAS, mounted shares): a folder is read in one request, thumbnails are built only for the visible part of the list, ready previews are cached on disk. A network folder with thousands of photos opens without lags — neither in the app nor on the network. Details in [“Fast work over the network and with network drives”](#fast-work-over-the-network-and-with-network-drives).
 
+## Installation
+
+### One-line install (recommended)
+
+The installer asks for the installation folder, creates a virtual environment, downloads dependencies and creates shortcuts.
+
+**Windows** (PowerShell — copy the whole line):
+
+```powershell
+irm https://codeload.github.com/teliy/image-hunter/zip/refs/heads/main -OutFile "$env:TEMP\ih.zip"; Expand-Archive "$env:TEMP\ih.zip" "$env:TEMP\ih-src" -Force; powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\ih-src\image-hunter-main\install.ps1"
+```
+
+**Linux** (bash):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/teliy/image-hunter/main/install.sh | bash
+```
+
+The installer checks Python 3.10–3.14 (offers to install it if missing), asks where to install, downloads the code (no git needed), creates `.venv`, installs dependencies and creates a Start-menu shortcut (Windows) or a `.desktop` entry and the `image-hunter` command (Linux).
+
+> **Alpine Linux (musl):** the installer understands `apk` and accepts Python 3.10–3.14 (3.12 in stable, 3.14 in edge). PySide6 ships no musl wheels, so the installer adds `gcompat` and lets pip pick glibc wheels — usually enough, but QtWebEngine may still fail to start on musl; the reliable option is Docker or a glibc-based distro (Debian, Ubuntu, Fedora).
+
+**Update and uninstall:**
+
+| Action | Windows | Linux |
+|---|---|---|
+| Update | `ImageHunter.bat update`, or right from the app: “Help → Check for updates” / the “🔄 Update” button (Ctrl+U) | `image-hunter update` |
+| Uninstall | `ImageHunter.bat uninstall` | `image-hunter uninstall` |
+| Version | `ImageHunter.bat version` | `image-hunter --version` |
+
+### Installing from a private repository (with a token)
+
+GitHub does not serve `raw.githubusercontent.com` files of a **private** repository without authorization — the usual one-liner returns `404: Not Found`. Download the installer with an `Authorization` header and run it locally.
+
+**Windows** (PowerShell, one line — put your token in):
+
+```powershell
+$t="ghp_YOUR_TOKEN"; iwr https://raw.githubusercontent.com/teliy/image-hunter/main/install.ps1 -Headers @{Authorization="token $t"} -UseBasicParsing -OutFile "$env:TEMP\ih-install.ps1"; $env:IH_GH_TOKEN=$t; powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\ih-install.ps1"
+```
+
+**Linux** (bash):
+
+```bash
+export IH_GH_TOKEN=ghp_YOUR_TOKEN
+curl -fsSL -H "Authorization: token $IH_GH_TOKEN" https://raw.githubusercontent.com/teliy/image-hunter/main/install.sh | bash
+```
+
+The token needs read access to the repository: classic — the `repo` scope, fine-grained — “Contents: Read-only”. The installer stores the token in `.gh_token` inside the installation folder for future auto-updates; delete the file if that is not wanted.
+Variables for non-interactive runs: `IH_ASSUME_YES=1`, `IH_DIR=<path>`, `IH_PYTHON=/path/to/python` (set the interpreter manually if the auto-detection does not fit).
+
+### Manual installation
+
+Requires Windows 10/11 and Python 3.10–3.14 (64-bit).
+
+```bat
+git clone https://github.com/teliy/image-hunter.git
+cd image-hunter
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+python main.py
+```
+
+
 ## Watermark removal — the Florence-2 + LaMa module (v0.8.11)
 
 The wish: “let's add the best watermark remover from GitHub as a module (that can be installed and uninstalled)”. The best of GitHub is wired into one fully local pipeline of two open-source tools — the approach of D-Ogi/WatermarkRemover-AI: **Florence-2** (microsoft, via transformers) runs `<CAPTION_TO_PHRASE_GROUNDING>` with the phrase “watermark” to find watermark captions, and **LaMa from IOPaint** (Sanster/IOPaint) — the most alive inpainting project on GitHub — paints those areas over, rebuilding the background from the surroundings. Everything runs locally, no clouds, no keys.
@@ -20,7 +84,7 @@ The wish: “let's add the best watermark remover from GitHub as a module (that 
 
 **Detection rewritten (v0.8.14): tiled watermarks no longer turn a photo into mush.** The report “the marks were not removed, some nonsense came out” exposed this: on a watermark tiled across the whole frame the “watermark” grounding returns 3–4 giant boxes (measured: 100%, 39%, 28% and 18% of the frame), the mask covered all 100% — and LaMa “rebuilt” the entire picture (182 seconds of gray mush). Now the mark is found by Florence-2 OCR (`<OCR_WITH_REGION>`): precise rotated quadrangles of every caption, in two passes — the original plus an autocontrast copy (faint instances no longer slip away and no longer lure LaMa into painting ghosts). The median HSV saturation inside a quad separates the gray semi-transparent mark (0–25) from the colored product-label text (~180) — the label is not painted over. A logo watermark without text is still caught by grounding, but giant boxes (>25% of the frame) are discarded, and if the final mask covered more than 60% of the frame, the file is honestly marked as failed instead of being ruined. A live run on the report’s picture: the mark is gone even from the red box and the corners, the label is intact, LaMa took 9 seconds instead of 182.
 
-**The module updates from inside the app (v0.8.15).** If Florence-2, LaMa or IOPaint get a new release upstream, the module no longer stays old: the Modules menu gains an “Update the watermark removal module…” item. Packages iopaint/transformers/timm are checked against PyPI and updated with the same safe pipeline as the install (no Pillow/gradio, with shims; the app’s own numpy/Pillow are untouched); the Florence-2 revision in the Hugging Face cache is checked against the hub API — only changed files are fetched; big-lama is compared with the release by size and re-fetched by the stock iopaint loader with md5 verification. If pypi.org is unreachable — an honest refusal: no blind updates; a failed model check is not fatal and is reported in the summary. The outcome lands in the status bar, the log and a dialog; after package updates the app asks to restart so the new pipeline versions are picked up.
+**The module updates from inside the app (v0.8.15).** If Florence-2, LaMa or IOPaint get a new release upstream, the module no longer stays old: the Modules menu gains an “Update the watermark removal module…” item. Packages iopaint/transformers/timm are checked against PyPI and updated with the same safe pipeline as the install (no Pillow/gradio, with shims; the app’s own numpy/Pillow are untouched); the Florence-2 revision in the Hugging Face cache is checked against the hub API — only changed files are fetched; big-lama is compared with the release by size and re-fetched by the stock iopaint loader with md5 verification. If pypi.org is unreachable — an honest refusal: no blind updates; a failed model check is not fatal and is reported in the summary. The outcome lands in the status bar, the log and a dialog; after package updates the app asks to restart so the new pipeline versions are picked up. No manual restart is needed anymore: the Modules menu has “🔄 Restart Image Hunter” (v0.8.17), and pip success is verified in fact — a stuck package is caught up by a lone pip run, and if it still stays old, the summary says so honestly.
 
 **How it works.** Selected tiles (or the opened picture) are processed in one session in the background: models are loaded into memory once per batch, and on network drives the interface does not freeze. The result is “name_nowm.ext” next to the original, the format is preserved (AVIF → PNG), the original is never modified, existing files are never overwritten; already-results and GIF files are skipped. The paint area is the polygons of the found captions, widened by a 15 px maximum filter; files with no detected watermarks are honestly counted as “clean” (no result file, no error), and a giant mask is an honest failure with no result. Progress goes to the status line, the summary to the status line and the Log.
 
@@ -83,6 +147,16 @@ The **Modules** item in the menu bar (next to Help) gathers the management of al
 - **Background removal (rembg):** install or remove the module with one item (removal asks for confirmation and shows how much space the downloaded models take), update the installed module (v0.8.15 — a fresh package version from PyPI; pooch pulls updated models by hash on its own), the “rembg model” submenu with a checkmark on the chosen model (u2netp / u2net / isnet-general-use). The section header shows whether the module is installed. These items are gone from the “My pictures” strip context menu — only the “🪄 Remove background” action remains there.
 - **Watermark removal (Florence-2 + LaMa, v0.8.11):** install or remove the module with one item (with confirmation, the freed space and the model-cache cleanup), update the installed module (v0.8.15 — packages from PyPI, Florence-2 by the Hugging Face cache revision, big-lama by the release size), the “Florence-2 detection model” submenu with a checkmark on the chosen detector (base — fast / large — better). Only the “🧽 Remove watermarks” action remains in the strip context menu.
 - **Web server:** “▶ Start” / “⏹ Stop” right in the menu, the “Start with the app” checkbox and the “🌐 Web server panel…” item (port, token, QR code, “view only”). The section header shows the state: “Server is running — port N” or “stopped”.
+
+## Modules menu: module versions and “Restart Image Hunter” (v0.8.17)
+
+Wishes: “Add a ‘Restart’ item to the menu with the same function. And the ‘modules’ menu should show module version info”, plus the report “the module does not update — after the message appeared I closed and reopened the app, but the module is not updated”.
+
+**Versions — right in the menu.** An installed module shows disabled info lines under its state header: rembg — the package version; watermarks — the whole pipeline (“Versions: iopaint …, transformers …, timm …”) and the models (“Models:” — the Florence-2 revision in the Hugging Face cache as a short commit tail, and the big-lama size in MB; “not downloaded” is stated honestly). This is exactly what “Update the module” checks against PyPI and Hugging Face — now visible without leaving the menu.
+
+**“🔄 Restart Image Hunter”** — at the bottom of the Modules menu. The new instance starts with a one-second delay (settings are saved before the start), the current one closes by itself: the hint after “Update the module” no longer asks to close the app manually. While pip installs or updates a module the item is disabled — a restart would cut the installation short. If a new instance could not be started, an honest warning appears and the app stays open.
+
+**Module updates became honest (the report above).** pip can report success yet silently leave a package old: in one combined command the resolver rolled it back under someone else’s requirement, “only-if-needed” kept an already-satisfying one, and the newest release might not support this Python. Now pip success is not taken on faith: every target is verified in fact, a stuck one is caught up with a single `pip install --upgrade` (with no neighbours, the resolver has nobody to backtrack to), and if it still did not move, the summary says honestly “still on X — the update did not take”; the restart hint appears only when versions really changed. The same for rembg.
 
 ## Web server: control the app from your phone (v0.8.0)
 
@@ -344,69 +418,6 @@ The app icon (“a photo with a magnifier”) is drawn programmatically and embe
 ## Interface languages
 
 Russian, English and Chinese (simplified). The picker sits in the status bar; the translation applies on the fly, without restarting, and the choice is remembered.
-
-## Installation
-
-### One-line install (recommended)
-
-The installer asks for the installation folder, creates a virtual environment, downloads dependencies and creates shortcuts.
-
-**Windows** (PowerShell — copy the whole line):
-
-```powershell
-irm https://codeload.github.com/teliy/image-hunter/zip/refs/heads/main -OutFile "$env:TEMP\ih.zip"; Expand-Archive "$env:TEMP\ih.zip" "$env:TEMP\ih-src" -Force; powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\ih-src\image-hunter-main\install.ps1"
-```
-
-**Linux** (bash):
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/teliy/image-hunter/main/install.sh | bash
-```
-
-The installer checks Python 3.10–3.14 (offers to install it if missing), asks where to install, downloads the code (no git needed), creates `.venv`, installs dependencies and creates a Start-menu shortcut (Windows) or a `.desktop` entry and the `image-hunter` command (Linux).
-
-> **Alpine Linux (musl):** the installer understands `apk` and accepts Python 3.10–3.14 (3.12 in stable, 3.14 in edge). PySide6 ships no musl wheels, so the installer adds `gcompat` and lets pip pick glibc wheels — usually enough, but QtWebEngine may still fail to start on musl; the reliable option is Docker or a glibc-based distro (Debian, Ubuntu, Fedora).
-
-**Update and uninstall:**
-
-| Action | Windows | Linux |
-|---|---|---|
-| Update | `ImageHunter.bat update`, or right from the app: “Help → Check for updates” / the “🔄 Update” button (Ctrl+U) | `image-hunter update` |
-| Uninstall | `ImageHunter.bat uninstall` | `image-hunter uninstall` |
-| Version | `ImageHunter.bat version` | `image-hunter --version` |
-
-### Installing from a private repository (with a token)
-
-GitHub does not serve `raw.githubusercontent.com` files of a **private** repository without authorization — the usual one-liner returns `404: Not Found`. Download the installer with an `Authorization` header and run it locally.
-
-**Windows** (PowerShell, one line — put your token in):
-
-```powershell
-$t="ghp_YOUR_TOKEN"; iwr https://raw.githubusercontent.com/teliy/image-hunter/main/install.ps1 -Headers @{Authorization="token $t"} -UseBasicParsing -OutFile "$env:TEMP\ih-install.ps1"; $env:IH_GH_TOKEN=$t; powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\ih-install.ps1"
-```
-
-**Linux** (bash):
-
-```bash
-export IH_GH_TOKEN=ghp_YOUR_TOKEN
-curl -fsSL -H "Authorization: token $IH_GH_TOKEN" https://raw.githubusercontent.com/teliy/image-hunter/main/install.sh | bash
-```
-
-The token needs read access to the repository: classic — the `repo` scope, fine-grained — “Contents: Read-only”. The installer stores the token in `.gh_token` inside the installation folder for future auto-updates; delete the file if that is not wanted.
-Variables for non-interactive runs: `IH_ASSUME_YES=1`, `IH_DIR=<path>`, `IH_PYTHON=/path/to/python` (set the interpreter manually if the auto-detection does not fit).
-
-### Manual installation
-
-Requires Windows 10/11 and Python 3.10–3.14 (64-bit).
-
-```bat
-git clone https://github.com/teliy/image-hunter.git
-cd image-hunter
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
-python main.py
-```
 
 ## How to use
 

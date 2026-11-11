@@ -17,7 +17,7 @@
 8. новые экземпляры вьюера читают клетку из настроек;
 9. превью выбора после удаления фона (_checker_pixmap) рисует клеткой
    из настроек;
-10. смоук: версия 0.8.16.
+10. смоук: версия 0.8.17.
 
 Запуск: QT_QPA_PLATFORM=offscreen python scripts/test_checker.py
 """
@@ -237,7 +237,7 @@ def main() -> int:
     check("настройки: 1000 зажат до 32", _checker_cell_setting() == CHECKER_MAX)
 
     # ---------- 10: смоук ----------
-    check("версия 0.8.16", __version__ == "0.8.16", __version__)
+    check("версия 0.8.17", __version__ == "0.8.17", __version__)
 
     print()
     if FAILURES:

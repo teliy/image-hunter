@@ -300,7 +300,10 @@ class UpdateTask(QRunnable):
     Пожелание: «Если разработчики florence и lama обновят версию,
     imagehunter этого не узнает? Нужно добавить возможность обновлять
     установленные модули». Версия пакета сверяется с PyPI; что новее —
-    ``pip install --upgrade rembg[cpu]``. Модели отдельно не трогаются:
+    ``pip install --upgrade rembg[cpu]``. Успех pip не принимается на
+    веру (v0.8.17): после установки версия сверяется по факту, и если
+    pip молча оставил старую (свежая не подошла этому Python) — честная
+    неудача. Модели отдельно не трогаются:
     их адреса и хеши живут в коде rembg, поэтому свежий пакет приносит
     свежие хеши, и pooch при следующем удалении фона сам перекачает
     изменившуюся модель (проверка хеша скачанного файла — его обычное
@@ -331,8 +334,17 @@ class UpdateTask(QRunnable):
         if not ok:
             self.signals.update_done.emit(False, "", info)
             return
-        self.signals.update_done.emit(
-            True, f"{old} → {new}. " + tr("viewer.rembg_update_restart"), "")
+        # pip отчитался успехом, но версия сверяется по факту (v0.8.17,
+        # как у водяных знаков): самая свежая версия могла не подойти
+        # этому Python, и pip молча оставил старую — честная неудача
+        # вместо ложного «X → Y»
+        ver = installed_version()
+        if ver and not is_newer(new, ver):
+            self.signals.update_done.emit(
+                True, f"{old} → {ver}. " + tr("viewer.rembg_update_restart"), "")
+        else:
+            self.signals.update_done.emit(
+                False, "", tr("viewer.rembg_update_stuck", ver=ver or old))
 
 
 class UninstallTask(QRunnable):

@@ -5,16 +5,22 @@
 
 1. порядок меню: «Модули» → «Справка»;
 2. раздел rembg: заголовок-состояние, установка/удаление по факту,
-   подменю модели с галочкой; выбор модели сохраняется;
+   строка версий установленного модуля (v0.8.17), подменю модели с
+   галочкой; выбор модели сохраняется;
 3. раздел водяных знаков (Florence-2 + LaMa): заголовок-состояние,
    установка/удаление, ОБНОВЛЕНИЕ установленного модуля (v0.8.15),
+   строки версий конвейера и моделей — ревизия Florence-2, размер
+   big-lama, честные «не скачана»/«версия неизвестна» (v0.8.17),
    подменю детектора; выбор детектора сохраняется;
 4. раздел веб-сервера: заголовок-состояние, запуск/остановка,
    автостарт (галочка пишет настройку и журнал), панель;
-5. ленивость: открытие меню не импортирует app.server;
-6. пункты установки/удаления/модели ушли из контекстного меню ленты
+5. «Перезагрузить Image Hunter» внизу меню (v0.8.17): клик запускает
+   новый экземпляр и закрывает окно, отказ — честное предупреждение,
+   пока busy — пункт запрещён;
+6. ленивость: открытие меню не импортирует app.server;
+7. пункты установки/удаления/модели ушли из контекстного меню ленты
    (вместе с пунктами обновления v0.8.15);
-7. перетрансляция заголовка при смене языка.
+8. перетрансляция заголовка при смене языка.
 
 Запуск: QT_QPA_PLATFORM=offscreen python scripts/test_modules_menu.py
 """
@@ -32,11 +38,18 @@ from PySide6.QtCore import QPoint, QRunnable, QSettings  # noqa: E402
 from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
 
 from app import __version__  # noqa: E402
-from app.core import i18n  # noqa: E402
+from app.core import i18n, updates  # noqa: E402
 from app.ui import rembg_manager, watermark_manager  # noqa: E402
 from app.ui.main_window import MainWindow  # noqa: E402
 
 FAILURES: list[str] = []
+
+# префиксы недоступных строк-справок (до подстановки значений):
+# «Версии: » и «Модели: » — по ним строки ищутся в любом языке;
+# заполняются в main() ПОСЛЕ set_lang — при импорте язык ещё
+# не выбран и берётся сохранённый в настройках (не обязан быть ru)
+VERSIONS_PREFIX = ""
+MODELS_PREFIX = ""
 
 
 def check(name: str, cond: bool, extra: str = "") -> None:
@@ -73,8 +86,11 @@ def actions_of(menu):
 
 
 def main() -> int:
+    global VERSIONS_PREFIX, MODELS_PREFIX
     app = QApplication.instance() or QApplication(sys.argv)
     i18n.set_lang("ru", persist=False)
+    VERSIONS_PREFIX = i18n.tr("modules.versions", list="").split("{")[0]
+    MODELS_PREFIX = i18n.tr("modules.models", list="").split("{")[0]
 
     # чистые настройки: автостарт выключен, порт — свободный
     st = QSettings("ImageHunter", "ImageHunter")
@@ -88,7 +104,7 @@ def main() -> int:
     win.show()
     app.processEvents()
 
-    check("версия 0.8.16", __version__ == "0.8.16", __version__)
+    check("версия 0.8.17", __version__ == "0.8.17", __version__)
 
     # ---------- состав строки меню ----------
     top = win.menuBar().actions()
@@ -127,6 +143,10 @@ def main() -> int:
           i18n.tr("viewer.rembg_menu_install") in texts, str(texts))
     check("пункта удаления rembg нет (модуль не установлен)",
           i18n.tr("viewer.rembg_menu_uninstall") not in texts)
+    check("строк версий/моделей нет, пока модули не установлены",
+          not any(a.text().startswith(VERSIONS_PREFIX) for a in acts)
+          and not any(a.text().startswith(MODELS_PREFIX) for a in acts),
+          str(texts))
     m_model = next((a.menu() for a in acts
                     if a.menu() and a.text() == i18n.tr("modules.model_menu")),
                    None)
@@ -231,6 +251,63 @@ def main() -> int:
         finally:
             watermark_manager.UpdateTask = real_upd_task_m
             QMessageBox.information = real_info_m
+
+        # строки версий/моделей установленного конвейера (v0.8.17)
+        real_wv = watermark_manager.installed_version
+        real_fr = watermark_manager.florence_revision
+        real_ls = watermark_manager.lama_size
+        watermark_manager.installed_version = lambda n: {
+            "iopaint": "1.6.0", "transformers": "4.48.3",
+            "timm": "1.0.15"}.get(n, "")
+        watermark_manager.florence_revision = lambda repo: "0123456789abcdef" * 5
+        watermark_manager.lama_size = lambda: 196 * (1 << 20)
+        try:
+            acts = actions_of(win._modules_menu)
+            head_w = next((a for a in acts if a.text().startswith("🧽")), None)
+            vlines = [a for a in acts if a.text().startswith(VERSIONS_PREFIX)]
+            check("установленный wm: строка версий всего конвейера",
+                  len(vlines) >= 1 and not vlines[0].isEnabled()
+                  and "iopaint 1.6.0" in vlines[0].text()
+                  and "transformers 4.48.3" in vlines[0].text()
+                  and "timm 1.0.15" in vlines[0].text(),
+                  vlines[0].text() if vlines else "?")
+            check("строка версий wm стоит прямо под заголовком",
+                  head_w is not None and vlines
+                  and acts.index(vlines[0]) == acts.index(head_w) + 1)
+            mline = next((a for a in acts
+                          if a.text().startswith(MODELS_PREFIX)), None)
+            check("установленный wm: строка моделей — ревизия и размер",
+                  mline is not None and not mline.isEnabled()
+                  and "Florence-2-base rev 0123456" in mline.text()
+                  and i18n.tr("modules.size_mb", mb=196) in mline.text(),
+                  mline.text() if mline else "?")
+            check("строка моделей идёт сразу за строкой версий",
+                  mline is not None and vlines
+                  and acts.index(mline) == acts.index(vlines[0]) + 1)
+            # версии пакетов прочитать не удалось — честная справка
+            watermark_manager.installed_version = lambda n: ""
+            acts = actions_of(win._modules_menu)
+            vlines = [a for a in acts if a.text().startswith(VERSIONS_PREFIX)]
+            check("wm: неизвестная версия пакета помечена честно",
+                  vlines and all(
+                      i18n.tr("modules.version_unknown") in a.text()
+                      for a in vlines),
+                  vlines[0].text() if vlines else "?")
+            # модели ещё не качались — так и написано
+            watermark_manager.florence_revision = lambda repo: ""
+            watermark_manager.lama_size = lambda: 0
+            acts = actions_of(win._modules_menu)
+            mline = next((a for a in acts
+                          if a.text().startswith(MODELS_PREFIX)), None)
+            check("wm: нескачанные модели помечены честно",
+                  mline is not None
+                  and i18n.tr("modules.model_not_downloaded") in mline.text()
+                  and mline.text().count(i18n.tr("modules.model_not_downloaded")) == 2,
+                  mline.text() if mline else "?")
+        finally:
+            watermark_manager.installed_version = real_wv
+            watermark_manager.florence_revision = real_fr
+            watermark_manager.lama_size = real_ls
     finally:
         watermark_manager.is_installed = real_wm_installed
 
@@ -351,6 +428,32 @@ def main() -> int:
                   any(a.text().startswith("🪄")
                       and i18n.tr("modules.installed") in a.text()
                       for a in acts))
+            # строка версий установленного модуля (v0.8.17): пакет rembg
+            real_rv = rembg_manager.installed_version
+            rembg_manager.installed_version = lambda: "2.0.61"
+            try:
+                acts = actions_of(win._modules_menu)
+                head_r = next((a for a in acts if a.text().startswith("🪄")), None)
+                vline = next((a for a in acts
+                              if a.text().startswith(VERSIONS_PREFIX)), None)
+                check("установленный rembg: строка версий есть и недоступна",
+                      vline is not None and not vline.isEnabled()
+                      and "rembg 2.0.61" in vline.text(),
+                      vline.text() if vline else "?")
+                check("строка версий rembg стоит прямо под заголовком",
+                      head_r is not None and vline is not None
+                      and acts.index(vline) == acts.index(head_r) + 1)
+                # неизвестная версия — честная справка вместо пустоты
+                rembg_manager.installed_version = lambda: ""
+                acts = actions_of(win._modules_menu)
+                vline = next((a for a in acts
+                              if a.text().startswith(VERSIONS_PREFIX)), None)
+                check("rembg: неизвестная версия помечена честно",
+                      vline is not None
+                      and i18n.tr("modules.version_unknown") in vline.text(),
+                      vline.text() if vline else "?")
+            finally:
+                rembg_manager.installed_version = real_rv
             # удаление из меню: подтверждение + pip uninstall
             win.local.rembg_uninstall()
             ok = wait_until(lambda: not win.local.rembg_is_busy())
@@ -415,6 +518,59 @@ def main() -> int:
     check("заголовок меню переведён обратно (ru)",
           win._modules_menu.title() == i18n.tr("menu.modules"),
           win._modules_menu.title())
+
+    # ---------- «Перезагрузить Image Hunter» (v0.8.17) ----------
+    win.show()
+    app.processEvents()
+    acts = actions_of(win._modules_menu)
+    act_rst = next((a for a in acts if a.text() == i18n.tr("modules.restart")),
+                   None)
+    check("пункт «Перезагрузить Image Hunter» есть и активен",
+          act_rst is not None and act_rst.isEnabled(),
+          act_rst.text() if act_rst else "?")
+    check("пункт перезагрузки — после раздела сервера, в конце меню",
+          act_rst is not None
+          and acts.index(act_rst) == len(acts) - 1
+          and any(a.text().startswith("🌐") for a in acts[:acts.index(act_rst)]))
+    restart_calls: list[bool] = []
+    real_start_restart = updates.start_restart
+    updates.start_restart = lambda: (restart_calls.append(True), True)[1]
+    warn_calls: list[str] = []
+    real_warn_r = QMessageBox.warning
+    QMessageBox.warning = lambda *a, **k: warn_calls.append("warn")
+    try:
+        act_rst.trigger()
+        app.processEvents()
+        check("клик по пункту запускает новый экземпляр",
+              restart_calls == [True], str(restart_calls))
+        check("окно закрылось — программа перезагружается",
+              not win.isVisible())
+        # отказ запуска: честное предупреждение вместо молчания
+        updates.start_restart = lambda: (restart_calls.append(False), False)[1]
+        win.restart_app()
+        app.processEvents()
+        check("при отказе запуска показано предупреждение",
+              warn_calls == ["warn"], str(warn_calls))
+    finally:
+        updates.start_restart = real_start_restart
+        QMessageBox.warning = real_warn_r
+    # пока pip занят — перезагрузка оборвала бы установку: пункт запрещён
+    win.local._rembg_busy = True
+    act_rst = next((a for a in actions_of(win._modules_menu)
+                    if a.text() == i18n.tr("modules.restart")), None)
+    check("пока busy rembg — пункт перезагрузки запрещён",
+          act_rst is not None and not act_rst.isEnabled())
+    win.local._rembg_busy = False
+    win.local._wm_busy = True
+    act_rst = next((a for a in actions_of(win._modules_menu)
+                    if a.text() == i18n.tr("modules.restart")), None)
+    check("пока busy wm — пункт перезагрузки запрещён",
+          act_rst is not None and not act_rst.isEnabled())
+    win.local._wm_busy = False
+    act_rst = next((a for a in actions_of(win._modules_menu)
+                    if a.text() == i18n.tr("modules.restart")), None)
+    check("после busy пункт перезагрузки снова активен",
+          act_rst is not None and act_rst.isEnabled())
 
     # ---------- уборка ----------
     if win._server_mgr is not None:

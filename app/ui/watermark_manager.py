@@ -125,6 +125,8 @@ MASK_MARGIN = 15                  # расширение бокса, px на с�
 # (_module_requirements)
 _MAIN_PACKAGE = "iopaint"
 _SIDE_PACKAGES = ("transformers", "timm")
+# весь конвейер для строки версий в меню «Модули» (v0.8.17) и сверки с PyPI
+PIPELINE_PACKAGES = (_MAIN_PACKAGE, *_SIDE_PACKAGES)
 
 # шимы окружения для новых Python (v0.8.13): стандартная библиотека
 # похудела, а pinned-зависимости iopaint про это не знают —
@@ -452,6 +454,26 @@ def installed_version(name: str) -> str:
         return ""
 
 
+def florence_revision(repo: str) -> str:
+    """Ревизия (commit) Florence-2 в локальном кэше HF; "" — не качалась.
+
+    Публичная обёртка _florence_cached_sha для меню «Модули» (v0.8.17):
+    строка «Модели» показывает, какая ревизия выбранного детектора
+    скачана — у модели версии нет, ревизия и есть её версия.
+    """
+    return _florence_cached_sha(repo)
+
+
+def lama_size() -> int:
+    """Размер скачанного big-lama.pt в байтах; 0 — модель не скачана.
+
+    Для строки «Модели» в меню «Модули» (v0.8.17): у модели версии нет —
+    о её состоянии говорит сам факт скачивания и размер файла.
+    """
+    path = lama_file()
+    return os.path.getsize(path) if path else 0
+
+
 def _hf_hub_cache() -> str:
     """Кэш Hugging Face с учётом HF_HUB_CACHE/HF_HOME (как у самого hf-hub)."""
     hub = os.environ.get("HF_HUB_CACHE")
@@ -700,7 +722,10 @@ class UpdateTask(QRunnable):
       метаданных без Pillow/gradio + transformers/timm + шимы окружения
       (v0.8.13). ``--upgrade`` с дефолтной стратегией pip only-if-needed
       двигает только пакеты модуля и то, что не удовлетворяет новым
-      требованиям, — numpy/Pillow самой программы не трогаются.
+      требованиям, — numpy/Pillow самой программы не трогаются. Успех
+      pip не принимается на веру (v0.8.17): каждая цель сверяется по
+      факту, застрявшая — одиночным ``pip install --upgrade``, а итог
+      называет версии, которые реально стоят.
     * **Florence-2**: ревизия в кэше HF (refs/main) сверяется с API хаба;
       отличается — ``snapshot_download`` докачивает только изменившиеся
       файлы (модель у hf-hub попадает в кэш та же, что грузит
@@ -754,8 +779,28 @@ class UpdateTask(QRunnable):
             if not ok:
                 self.signals.update_done.emit(False, "", info)
                 return
-            pkgs_touched = True
-            changes += [f"{n} {installed[n]} → {latest[n]}" for n in newer]
+            # pip отчитался успехом, но это ещё не значит, что каждая цель
+            # сдвинулась (репорт v0.8.17: диалог обещал «transformers
+            # 4.48.3 → 5.22.2», после перезапуска версия была прежней).
+            # В общей команде резолвер мог откатить пакет под чужое
+            # требование, «only-if-needed» — оставить уже-удовлетворённый,
+            # а самая свежая версия могла не подойти этому Python. Сверяем
+            # каждую цель ПО ФАКТУ; застрявшую обновляем одиночным pip —
+            # без соседей резолверу не с кем откатываться; не сдвинулась
+            # и там — честная неудача вместо ложного «обновилось».
+            for n in newer:
+                ver = installed_version(n)
+                if is_newer(latest[n], ver):
+                    ok, info = _run_pip(["install",
+                                         "--disable-pip-version-check",
+                                         "--upgrade", n])
+                    ver = installed_version(n)
+                if ver and not is_newer(latest[n], ver):
+                    changes.append(f"{n} {installed[n]} → {ver}")
+                    pkgs_touched = True
+                else:
+                    fails.append(tr("viewer.wm_update_stuck", name=n,
+                                    ver=ver or installed[n]))
         # Florence-2 выбранного детектора: ревизия кэша против хаба
         short = self.model.split("/")[-1]
         remote = hf_latest_sha(self.model)

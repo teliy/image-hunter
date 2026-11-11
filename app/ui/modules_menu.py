@@ -14,6 +14,18 @@
   менеджер создаётся лениво, как и раньше: пока модуль не тронули,
   ``app.server`` не импортируется и ничего не слушает (v0.8.0).
 
+У установленных модулей под заголовком-состоянием — недоступные строки
+со справкой о версиях (v0.8.17): пакет rembg; для водяных знаков — весь
+конвейер (iopaint, transformers, timm) и модели (ревизия Florence-2 в
+кэше HF, размер big-lama) — ровно то, что «Обновить модуль» сверяет с
+PyPI/Hugging Face (v0.8.15).
+
+Внизу — «Перезагрузить Image Hunter» (v0.8.17): новый экземпляр
+подхватывает обновлённые версии модулей (подсказка после «Обновить»,
+v0.8.15, больше не требует закрывать программу руками). Пока pip
+ставит/обновляет модуль, пункт запрещён — перезагрузка оборвала бы
+установку.
+
 Меню собирается заново при каждом открывании (``aboutToShow``): состав,
 галочки и заголовки-состояния всегда соответствуют действительности —
 модуль могли установить или удалить с прошлого раза, сервер могли
@@ -53,16 +65,27 @@ class ModulesMenu(QMenu):
         self._add_watermark_section()
         self.addSeparator()
         self._add_server_section()
+        self._add_restart_section()
+
+    def _add_info_line(self, text: str) -> None:
+        """Недоступная строка-справка (заголовки-состояния, версии).
+
+        Впредь и заголовки разделов — через этот помощник."""
+        act = self.addAction(text)
+        act.setEnabled(False)   # справка, не команда
 
     def _add_rembg_section(self) -> None:
-        """Раздел удаления фона: состояние, установка/удаление, модель."""
+        """Раздел удаления фона: состояние, версии, установка/удаление, модель."""
         viewer = self._main.local
         installed = rembg_manager.is_installed()
-        head = self.addAction(tr("modules.rembg_header", state=tr(
+        self._add_info_line(tr("modules.rembg_header", state=tr(
             "modules.installed" if installed else "modules.not_installed")))
-        head.setEnabled(False)   # заголовок-состояние, не команда
         busy = viewer.rembg_is_busy()
         if installed:
+            # версии установленного модуля (v0.8.17) — пакет rembg
+            self._add_info_line(tr("modules.versions", list="rembg " + (
+                rembg_manager.installed_version()
+                or tr("modules.version_unknown"))))
             act = self.addAction(tr("viewer.rembg_menu_uninstall"))
             act.triggered.connect(viewer.rembg_uninstall)
             # обновление установленного модуля: PyPI против локальной версии
@@ -89,14 +112,22 @@ class ModulesMenu(QMenu):
                                 viewer.rembg_set_model(mid))
 
     def _add_watermark_section(self) -> None:
-        """Раздел водяных знаков: состояние, установка/удаление, детектор (v0.8.11)."""
+        """Раздел водяных знаков: состояние, версии, установка/удаление, детектор."""
         viewer = self._main.local
         installed = watermark_manager.is_installed()
-        head = self.addAction(tr("modules.wm_header", state=tr(
+        self._add_info_line(tr("modules.wm_header", state=tr(
             "modules.installed" if installed else "modules.not_installed")))
-        head.setEnabled(False)   # заголовок-состояние, не команда
         busy = viewer.wm_is_busy()
         if installed:
+            # версии конвейера (v0.8.17): пакеты + модели (ревизия
+            # Florence-2 в кэше HF, размер big-lama) — то, с чем сверяется
+            # «Обновить модуль» (v0.8.15)
+            pkgs = ", ".join(
+                f"{n} {watermark_manager.installed_version(n) or tr('modules.version_unknown')}"
+                for n in watermark_manager.PIPELINE_PACKAGES)
+            self._add_info_line(tr("modules.versions", list=pkgs))
+            self._add_info_line(tr("modules.models",
+                                   list=self._wm_models_line(viewer)))
             act = self.addAction(tr("viewer.wm_menu_uninstall"))
             act.triggered.connect(viewer.wm_uninstall)
             # обновление установленного модуля: PyPI/Hugging Face против
@@ -119,6 +150,24 @@ class ModulesMenu(QMenu):
             a.setChecked(model_id == viewer.wm_current_model())
             a.triggered.connect(lambda _=False, mid=model_id:
                                 viewer.wm_set_model(mid))
+
+    def _wm_models_line(self, viewer) -> str:
+        """Состояние моделей конвейера для строки «Модели» (v0.8.17).
+
+        Florence-2: у модели версии нет — её версия это ревизия (commit)
+        в кэше HF, короткий хвост sha; не скачана — так и написано (модель
+        докачается при первом удалении знаков). big-lama: размер файла;
+        скачивается при установке (v0.8.13), но файл могли удалить руками.
+        """
+        repo = viewer.wm_current_model()
+        short = repo.split("/")[-1]
+        sha = watermark_manager.florence_revision(repo)
+        florence = (f"{short} rev {sha[:7]}" if sha else
+                    f"{short} {tr('modules.model_not_downloaded')}")
+        size = watermark_manager.lama_size()
+        lama = (tr("modules.size_mb", mb=size >> 20) if size
+                else f"big-lama {tr('modules.model_not_downloaded')}")
+        return f"{florence}, {lama}"
 
     def _add_server_section(self) -> None:
         """Раздел веб-сервера: панель, запуск/остановка, автостарт.
@@ -147,3 +196,18 @@ class ModulesMenu(QMenu):
         act_auto.toggled.connect(self._main.server_set_autostart)
         act_panel = self.addAction(tr("modules.panel"))
         act_panel.triggered.connect(self._main.show_server_dialog)
+
+    def _add_restart_section(self) -> None:
+        """«Перезагрузить Image Hunter» внизу меню (v0.8.17).
+
+        Новый экземпляр стартует с задержкой (updates.start_restart), этот
+        закрывается — после перезагрузки программа подхватывает
+        обновлённые версии модулей (подсказка после «Обновить модуль»,
+        v0.8.15). Пока pip ставит/обновляет модуль, пункт запрещён:
+        перезагрузка оборвала бы установку.
+        """
+        self.addSeparator()
+        act = self.addAction(tr("modules.restart"))
+        act.triggered.connect(self._main.restart_app)
+        viewer = self._main.local
+        act.setEnabled(not (viewer.rembg_is_busy() or viewer.wm_is_busy()))

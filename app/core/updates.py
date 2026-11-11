@@ -12,6 +12,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import tempfile
 import urllib.request
 
@@ -152,6 +153,68 @@ def _update_script() -> str:
         ":ok",
     ]
     return "\r\n".join(lines) + "\r\n"
+
+
+def restart_command() -> list[str]:
+    """Аргументы запуска нового экземпляра Image Hunter ([] — не определить).
+
+    Те же точки запуска, что у обновления: Windows — pythonw.exe из .venv
+    (оконная подсистема, консоль не нужна) либо ImageHunter.bat, когда
+    venv побит; Linux — лаунчер ~/.local/bin/image-hunter из install.sh.
+    Запасной вариант для всех систем — текущий интерпретатор и main.py
+    рядом с программой: он верен и для запуска из исходников.
+    """
+    root = _app_root()
+    main_py = os.path.join(root, "main.py")
+    if os.name == "nt":
+        pyw = os.path.join(root, ".venv", "Scripts", "pythonw.exe")
+        if os.path.isfile(pyw) and os.path.isfile(main_py):
+            return [pyw, main_py]
+        bat = os.path.join(root, "ImageHunter.bat")
+        if os.path.isfile(bat):
+            return [bat]
+    else:
+        launcher = os.path.expanduser("~/.local/bin/image-hunter")
+        if os.path.isfile(launcher):
+            return [launcher]
+    return [sys.executable, main_py] if os.path.isfile(main_py) else []
+
+
+def start_restart() -> bool:
+    """Запустить новый экземпляр Image Hunter (v0.8.17); False — не вышло.
+
+    Новый процесс стартует с секундной задержкой: текущий экземпляр
+    успевает сохранить настройки и остановить сервер в closeEvent, и
+    новый читает их уже актуальными. Задержка и переживание закрытия
+    родителя — те же приёмы, что у обновления и установщика: Windows —
+    скрытый сеанс cmd с ping-паузой (install.ps1), пути — через
+    переменные окружения, потому что в самом батнике не может быть
+    символов вне ASCII (_restart_block); Linux/macOS — фоновой bash с
+    sleep перед exec (start_new_session, как у run_update_and_restart).
+    """
+    argv = restart_command()
+    if not argv:
+        return False
+    try:
+        if os.name == "nt":
+            script = os.path.join(tempfile.gettempdir(),
+                                  "ImageHunter_restart.bat")
+            with open(script, "w", encoding="ascii") as f:
+                f.write("@echo off\r\n"
+                        "ping -n 2 127.0.0.1 >nul\r\n"
+                        'start "" %IH_ARGS%\r\n')
+            env = dict(os.environ)
+            env["IH_ARGS"] = subprocess.list2cmdline(argv)
+            subprocess.Popen(["cmd", "/d", "/c", script],
+                             creationflags=getattr(subprocess,
+                                                   "CREATE_NO_WINDOW", 0),
+                             close_fds=True, env=env)
+        else:
+            subprocess.Popen(["bash", "-c", 'sleep 1; exec "$@"', "sh", *argv],
+                             start_new_session=True, close_fds=True)
+        return True
+    except OSError:
+        return False
 
 
 def run_update_and_restart() -> bool:

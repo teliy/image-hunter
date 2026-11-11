@@ -10,6 +10,70 @@
 
 > **⚡ 特别优化 — 网络及网络磁盘（SMB/NAS、挂载的共享文件夹）的快速工作**：文件夹一次请求即读完，缩略图仅为列表可见部分生成，已生成的预览缓存到磁盘。即使文件夹中有数千张照片，也不会卡顿 — 程序不卡，网络也不堵。详见[“网络及网络磁盘的快速工作”](#网络及网络磁盘的快速工作)。
 
+## 安装
+
+### 一行命令安装（推荐）
+
+安装程序会询问安装文件夹，创建虚拟环境，下载依赖并创建快捷方式。
+
+**Windows**（PowerShell — 整行复制）：
+
+```powershell
+irm https://codeload.github.com/teliy/image-hunter/zip/refs/heads/main -OutFile "$env:TEMP\ih.zip"; Expand-Archive "$env:TEMP\ih.zip" "$env:TEMP\ih-src" -Force; powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\ih-src\image-hunter-main\install.ps1"
+```
+
+**Linux**（bash）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/teliy/image-hunter/main/install.sh | bash
+```
+
+安装程序检查 Python 3.10–3.14（缺失时提议安装），询问安装位置，下载代码（无需 git），创建 `.venv`，安装依赖，并创建开始菜单快捷方式（Windows）或 `.desktop` 条目与 `image-hunter` 命令（Linux）。
+
+> **Alpine Linux (musl)：** 安装程序支持 `apk` 并接受 Python 3.10–3.14（stable 为 3.12，edge 为 3.14）。PySide6 没有 musl 轮子，因此安装程序会安装 `gcompat` 并允许 pip 选用 glibc 轮子——通常足够，但 QtWebEngine 在 musl 上仍可能无法启动；更稳妥的方案是使用 Docker 或基于 glibc 的发行版（Debian、Ubuntu、Fedora）。
+
+**更新与卸载：**
+
+| 操作 | Windows | Linux |
+|---|---|---|
+| 更新 | `ImageHunter.bat update`，或直接在程序内：“帮助 → 检查更新” / “🔄 更新”按钮 (Ctrl+U) | `image-hunter update` |
+| 卸载 | `ImageHunter.bat uninstall` | `image-hunter uninstall` |
+| 版本 | `ImageHunter.bat version` | `image-hunter --version` |
+
+### 从私有仓库安装（使用令牌）
+
+对于**私有**仓库，GitHub 不会在未授权的情况下通过 `raw.githubusercontent.com` 提供文件 — 常规单行命令会返回 `404: Not Found`。需携带 `Authorization` 头下载安装程序并在本地运行。
+
+**Windows**（PowerShell，一行 — 替换为你的令牌）：
+
+```powershell
+$t="ghp_YOUR_TOKEN"; iwr https://raw.githubusercontent.com/teliy/image-hunter/main/install.ps1 -Headers @{Authorization="token $t"} -UseBasicParsing -OutFile "$env:TEMP\ih-install.ps1"; $env:IH_GH_TOKEN=$t; powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\ih-install.ps1"
+```
+
+**Linux**（bash）：
+
+```bash
+export IH_GH_TOKEN=ghp_YOUR_TOKEN
+curl -fsSL -H "Authorization: token $IH_GH_TOKEN" https://raw.githubusercontent.com/teliy/image-hunter/main/install.sh | bash
+```
+
+令牌需要仓库读取权限：classic — `repo` scope；fine-grained — “Contents: Read-only”。安装程序将令牌保存在安装文件夹内的 `.gh_token` 中以便日后自动更新；不需要时请删除该文件。
+非交互运行变量：`IH_ASSUME_YES=1`、`IH_DIR=<路径>`、`IH_PYTHON=/path/to/python`（自动探测不合意时手动指定解释器）。
+
+### 手动安装
+
+需要 Windows 10/11 和 Python 3.10–3.14（64 位）。
+
+```bat
+git clone https://github.com/teliy/image-hunter.git
+cd image-hunter
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+python main.py
+```
+
+
 ## 水印去除 — Florence-2 + LaMa 模块（v0.8.11）
 
 需求：“давай как модуль (который можно установить и удалить) добавим из github самый лучший удаляльщик watermark”（把 GitHub 上最好的水印移除工具做成可安装、可卸载的模块）。把 GitHub 上最好的开源工具串成一条完全本地运行的流水线——思路同 D-Ogi/WatermarkRemover-AI：**Florence-2**（microsoft，经 transformers）用 `<CAPTION_TO_PHRASE_GROUNDING>` 任务加“watermark”短语找到水印文字，**IOPaint 的 LaMa**（Sanster/IOPaint）——GitHub 上最活跃的图像修补工具——把找到的区域涂掉，按周围内容重建背景。全部本地计算，无云端、无密钥。
@@ -20,7 +84,7 @@
 
 **检测逻辑重写（v0.8.14）：平铺水印不再把照片变成“糊状物”。** 反馈“水印没去掉，出来一团乱”暴露了问题：对铺满整个画面的水印，“watermark” 短语接地会返回 3–4 个巨型边框（实测：占画面的 100%、39%、28% 和 18%），遮罩盖住全部 100% —— LaMa 于是把整张图“重建”了一遍（182 秒的灰色糊状物）。现在由 Florence-2 OCR（`<OCR_WITH_REGION>`）寻找水印：每条文字的精确旋转四边形，并且跑两遍——原图加自动对比度副本（淡色实例不再漏检，也不会诱导 LaMa 画出“幽灵”）。四边形内的 HSV 中等饱和度可以把灰色半透明水印（0–25）与商品标签的彩色文字（约 180）分开——标签不会被涂抹。无文字的徽标水印仍由接地任务兜底，但巨型边框（>25% 画面）会被丢弃；若最终遮罩盖住超过 60% 画面，文件会被如实标记为失败，而不是被毁掉。在反馈图片上的实测：水印连红色纸盒和四角都被去除，标签完好，LaMa 用时 9 秒而非 182 秒。
 
-**模块可在程序内更新（v0.8.15）。** 如果 Florence-2、LaMa 或 IOPaint 上游发布了新版本，模块不再停留于旧版：“模块”菜单新增“更新水印去除模块…”项。软件包 iopaint/transformers/timm 与 PyPI 核对并用与安装相同的两步安全流程更新（不含 Pillow/gradio，带垫片；不碰程序自己的 numpy/Pillow）；Hugging Face 缓存中 Florence-2 的修订版与 hub API 核对——只下载有变化的文件；big-lama 按文件大小与发布版核对，不同则由 iopaint 自带加载器重新下载并校验 md5。若 pypi.org 不可用——如实拒绝，绝不盲更；模型检查失败不是致命错误，会写入汇总。结果显示在状态栏、“日志”和对话框中；包更新后程序会提示重启，以确保新版流水线被加载。
+**模块可在程序内更新（v0.8.15）。** 如果 Florence-2、LaMa 或 IOPaint 上游发布了新版本，模块不再停留于旧版：“模块”菜单新增“更新水印去除模块…”项。软件包 iopaint/transformers/timm 与 PyPI 核对并用与安装相同的两步安全流程更新（不含 Pillow/gradio，带垫片；不碰程序自己的 numpy/Pillow）；Hugging Face 缓存中 Florence-2 的修订版与 hub API 核对——只下载有变化的文件；big-lama 按文件大小与发布版核对，不同则由 iopaint 自带加载器重新下载并校验 md5。若 pypi.org 不可用——如实拒绝，绝不盲更；模型检查失败不是致命错误，会写入汇总。结果显示在状态栏、“日志”和对话框中；包更新后程序会提示重启，以确保新版流水线被加载。 无需再手动重启：“模块”菜单里有“🔄 重启 Image Hunter”（v0.8.17），pip 的成功会被实测核对——卡住的包由单独的 pip 命令追赶，若仍未更新，结果会如实说明。
 
 **工作方式。** 选中的缩略图（或当前打开的图片）在同一会话中后台处理：模型每批只加载一次，网络磁盘上界面不卡顿。结果保存为原图旁的“名称_nowm.ext”，保留原格式（AVIF → PNG），原图永不被修改，现有文件绝不覆盖；已是结果与 GIF 的文件被跳过。涂改区域为找到文字的多边形，经 15 像素最大值滤波外扩；未检出水印的文件如实计为“干净”（不产出结果文件，也不算错误），巨型遮罩则如实报错且不产出结果。进度显示在状态栏，汇总显示在状态栏与“日志”中。
 
@@ -83,6 +147,16 @@
 - **背景移除（rembg）：** 一键安装或移除模块（移除需确认，并显示已下载模型占用的空间），更新已安装的模块（v0.8.15 —— 从 PyPI 获取新版包；模型由 pooch 按哈希自行拉取），“rembg 模型”子菜单中勾选所选模型（u2netp / u2net / isnet-general-use）。分区标题显示模块是否已安装。这些菜单项已从“我的图片”缩略图条右键菜单中移出——那里只保留“🪄 删除背景”操作。
 - **水印去除（Florence-2 + LaMa，v0.8.11）：** 一键安装或移除模块（需确认、显示可释放空间并清理模型缓存），更新已安装的模块（v0.8.15 —— 软件包与 PyPI 核对，Florence-2 按 Hugging Face 缓存修订版核对，big-lama 按发布版大小核对），“Florence-2 检测模型”子菜单中勾选所选检测器（base——快 / large——更准）。缩略图条右键菜单只保留“🧽 去除水印”操作。
 - **Web 服务器：** 直接在菜单中“▶ 启动”/“⏹ 停止”，“随程序启动”复选框，以及“🌐 Web 服务器面板…”项（端口、令牌、二维码、“仅查看”）。分区标题显示状态：“服务器运行中 — 端口 N”或“已停止”。
+
+## “模块”菜单：模块版本与“重启 Image Hunter”（v0.8.17）
+
+愿望：“在菜单里加一个‘重新启动’项，功能相同。另外‘模块’菜单里需要显示模块版本信息”，以及反馈“模块没有更新——看到提示后我关掉再打开程序，模块还是没更新”。
+
+**版本就在菜单里。** 已安装模块的状态标题下方会显示不可点击的信息行：rembg——包版本；水印去除——整条流水线（“版本：iopaint …、transformers …、timm …”）与模型（“模型：”——Hugging Face 缓存中 Florence-2 的修订版（commit 短尾）和 big-lama 的体积（MB）；未下载会如实写明）。这正是“更新模块”与 PyPI、Hugging Face 核对的内容——现在无需离开菜单即可看到。
+
+**“🔄 重启 Image Hunter”**——位于“模块”菜单底部。新实例延迟一秒启动（设置在启动前保存），当前实例自动关闭：“更新模块”后的提示不再要求手动关闭程序。当 pip 正在安装或更新模块时，该项被禁用——重启会打断安装。若无法启动新实例，会如实警告，程序保持打开。
+
+**模块更新变得诚实（见上面的反馈）。** pip 可能报告成功却悄悄留下旧包：在同一条组合命令里，解析器会为了满足别家的要求而回退版本，“only-if-needed”会保留已满足要求的包，而最新版可能不支持当前 Python。现在 pip 的成功不再被无条件相信：每个目标都会实测核对，卡住的包用单独的 `pip install --upgrade` 追赶（没有邻居，解析器无从回退），若仍未更新，结果会如实写“仍为 X——更新未生效”；只有版本真正变化时才会提示重启。rembg 同样如此。
 
 ## Web 服务器：用手机控制程序（v0.8.0）
 
@@ -339,69 +413,6 @@ Image Hunter 中最重、最容易引起卡死的，是搜索标签页的内嵌�
 ## 界面语言
 
 俄语、英语和中文（简体）。切换器位于状态栏；翻译即时生效，无需重启，选择会被记住。
-
-## 安装
-
-### 一行命令安装（推荐）
-
-安装程序会询问安装文件夹，创建虚拟环境，下载依赖并创建快捷方式。
-
-**Windows**（PowerShell — 整行复制）：
-
-```powershell
-irm https://codeload.github.com/teliy/image-hunter/zip/refs/heads/main -OutFile "$env:TEMP\ih.zip"; Expand-Archive "$env:TEMP\ih.zip" "$env:TEMP\ih-src" -Force; powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\ih-src\image-hunter-main\install.ps1"
-```
-
-**Linux**（bash）：
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/teliy/image-hunter/main/install.sh | bash
-```
-
-安装程序检查 Python 3.10–3.14（缺失时提议安装），询问安装位置，下载代码（无需 git），创建 `.venv`，安装依赖，并创建开始菜单快捷方式（Windows）或 `.desktop` 条目与 `image-hunter` 命令（Linux）。
-
-> **Alpine Linux (musl)：** 安装程序支持 `apk` 并接受 Python 3.10–3.14（stable 为 3.12，edge 为 3.14）。PySide6 没有 musl 轮子，因此安装程序会安装 `gcompat` 并允许 pip 选用 glibc 轮子——通常足够，但 QtWebEngine 在 musl 上仍可能无法启动；更稳妥的方案是使用 Docker 或基于 glibc 的发行版（Debian、Ubuntu、Fedora）。
-
-**更新与卸载：**
-
-| 操作 | Windows | Linux |
-|---|---|---|
-| 更新 | `ImageHunter.bat update`，或直接在程序内：“帮助 → 检查更新” / “🔄 更新”按钮 (Ctrl+U) | `image-hunter update` |
-| 卸载 | `ImageHunter.bat uninstall` | `image-hunter uninstall` |
-| 版本 | `ImageHunter.bat version` | `image-hunter --version` |
-
-### 从私有仓库安装（使用令牌）
-
-对于**私有**仓库，GitHub 不会在未授权的情况下通过 `raw.githubusercontent.com` 提供文件 — 常规单行命令会返回 `404: Not Found`。需携带 `Authorization` 头下载安装程序并在本地运行。
-
-**Windows**（PowerShell，一行 — 替换为你的令牌）：
-
-```powershell
-$t="ghp_YOUR_TOKEN"; iwr https://raw.githubusercontent.com/teliy/image-hunter/main/install.ps1 -Headers @{Authorization="token $t"} -UseBasicParsing -OutFile "$env:TEMP\ih-install.ps1"; $env:IH_GH_TOKEN=$t; powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\ih-install.ps1"
-```
-
-**Linux**（bash）：
-
-```bash
-export IH_GH_TOKEN=ghp_YOUR_TOKEN
-curl -fsSL -H "Authorization: token $IH_GH_TOKEN" https://raw.githubusercontent.com/teliy/image-hunter/main/install.sh | bash
-```
-
-令牌需要仓库读取权限：classic — `repo` scope；fine-grained — “Contents: Read-only”。安装程序将令牌保存在安装文件夹内的 `.gh_token` 中以便日后自动更新；不需要时请删除该文件。
-非交互运行变量：`IH_ASSUME_YES=1`、`IH_DIR=<路径>`、`IH_PYTHON=/path/to/python`（自动探测不合意时手动指定解释器）。
-
-### 手动安装
-
-需要 Windows 10/11 和 Python 3.10–3.14（64 位）。
-
-```bat
-git clone https://github.com/teliy/image-hunter.git
-cd image-hunter
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
-python main.py
-```
 
 ## 使用方法
 

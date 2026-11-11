@@ -55,7 +55,7 @@
   неудача проверки моделей не фатальна, подсказка о перезапуске;
   вьюер: wm_update стартует задачу с выбранным детектором, guard busy,
   итог в статусе, без модуля — не стартует;
-- i18n: все новые ключи заполнены на ru/en/zh; версия — 0.8.16.
+- i18n: все новые ключи заполнены на ru/en/zh; версия — 0.8.17.
 
 Раздел меню «Модули» проверяет scripts/test_modules_menu.py.
 Запуск: QT_QPA_PLATFORM=offscreen python scripts/test_watermark.py
@@ -109,7 +109,7 @@ WM_KEYS = [
     "viewer.wm_update_nothing", "viewer.wm_update_model",
     "viewer.wm_update_lama", "viewer.wm_update_model_fail",
     "viewer.wm_update_lama_fail", "viewer.wm_update_pypi_fail",
-    "viewer.wm_update_restart",
+    "viewer.wm_update_stuck", "viewer.wm_update_restart",
     "viewer.wm_model_menu",
     "viewer.wm_model_base", "viewer.wm_model_large", "viewer.wm_prepare",
     "viewer.wm_ready", "log.event.wm_start", "log.event.wm_file_err",
@@ -130,7 +130,7 @@ def main() -> int:
     st = QSettings("ImageHunter", "ImageHunter")
     st.sync()
 
-    check("версия 0.8.16", app.__version__ == "0.8.16", app.__version__)
+    check("версия 0.8.17", app.__version__ == "0.8.17", app.__version__)
 
     # ---------- менеджер: чистые функции ----------
     check("is_installed() — булево", isinstance(watermark_manager.is_installed(), bool))
@@ -632,11 +632,22 @@ def main() -> int:
     finally:
         watermark_manager._run_pip = real_pip_upd
 
-    # пакеты обновились: два pip-шага с --upgrade, новые метаданные, шимы
+    # пакеты обновились: два pip-шага с --upgrade, новые метаданные, шимы;
+    # версии после pip сверяются ПО ФАКТУ (v0.8.17) — стаб двигает ровно
+    # то, что двигает настоящий pip: шаг 1 — iopaint, шаг 2 — остальные
     ver_old = {"iopaint": "1.6.0", "transformers": "4.48.3", "timm": "1.0.15"}
     ver_new = {"iopaint": "1.7.0", "transformers": "4.49.0", "timm": "1.0.15"}
-    pip_calls = upd_pip_calls()
-    watermark_manager.installed_version = lambda n: ver_old[n]
+    pip_calls: list[list[str]] = []
+    ver_now = dict(ver_old)
+
+    def upd_pip_move(args):
+        pip_calls.append(list(args))
+        ver_now.update(ver_new if "--no-deps" not in args
+                       else {"iopaint": ver_new["iopaint"]})
+        return True, ""
+
+    watermark_manager._run_pip = upd_pip_move
+    watermark_manager.installed_version = lambda n: ver_now.get(n, "")
     watermark_manager.pypi_latest = lambda n: ver_new[n]
     watermark_manager._iopaint_requires = lambda: [
         "Pillow==9.5.0", "torch>=2.0.0", "gradio==4.21.0"]
@@ -668,6 +679,106 @@ def main() -> int:
               and "gradio==4.21.0" not in second
               and "standard-imghdr" in second and "setuptools" in second,
               str(second))
+    finally:
+        watermark_manager._run_pip = real_pip_upd
+
+    # репорт v0.8.17: общий шаг 2 «успешен», но transformers не сдвинулся —
+    # сверяем по факту и спасаем одиночным pip; в итоге РЕАЛЬНАЯ версия
+    pip_calls = []
+    ver_now = dict(ver_old)
+
+    def upd_pip_skip(args):
+        pip_calls.append(list(args))
+        if "--no-deps" in args:               # шаг 1: только iopaint
+            ver_now["iopaint"] = ver_new["iopaint"]
+        elif args[1:] == ["--disable-pip-version-check",
+                          "--upgrade", "transformers"]:
+            ver_now["transformers"] = "4.50.0"  # одиночный pip спас
+        return True, ""
+
+    watermark_manager._run_pip = upd_pip_skip
+    watermark_manager.installed_version = lambda n: ver_now.get(n, "")
+    watermark_manager.pypi_latest = lambda n: ver_new[n]
+    watermark_manager.hf_latest_sha = lambda repo: "cafe"
+    watermark_manager._florence_cached_sha = lambda repo: "cafe"
+    watermark_manager.lama_file = lambda: ""
+    try:
+        results = run_update()
+        ok, what, info = results[0] if results else (None, "", "")
+        check("UpdateTask: застрявший пакет — одиночный pip зван",
+              len(pip_calls) == 3 and pip_calls[2] == ["install",
+                                                       "--disable-pip-version-check",
+                                                       "--upgrade",
+                                                       "transformers"],
+              str(pip_calls))
+        check("UpdateTask: спасённый — в итоге РЕАЛЬНАЯ версия",
+              bool(results) and ok is True
+              and "transformers 4.48.3 → 4.50.0" in what
+              and "4.49.0" not in what, what)
+        check("UpdateTask: спасённый — подсказка о перезапуске",
+              i18n.tr("viewer.wm_update_restart") in what, what)
+    finally:
+        watermark_manager._run_pip = real_pip_upd
+
+    # одиночный pip тоже не сдвинул — честная неудача вместо ложного «→»
+    pip_calls = []
+    ver_now = dict(ver_old)
+
+    def upd_pip_stuck(args):
+        pip_calls.append(list(args))
+        if "--no-deps" in args:
+            ver_now["iopaint"] = ver_new["iopaint"]
+        return True, ""                          # transformers не двигается
+
+    watermark_manager._run_pip = upd_pip_stuck
+    watermark_manager.installed_version = lambda n: ver_now.get(n, "")
+    watermark_manager.pypi_latest = lambda n: ver_new[n]
+    watermark_manager.hf_latest_sha = lambda repo: "cafe"
+    watermark_manager._florence_cached_sha = lambda repo: "cafe"
+    watermark_manager.lama_file = lambda: ""
+    try:
+        results = run_update()
+        ok, what, info = results[0] if results else (None, "", "")
+        check("UpdateTask: безнадёжный — одиночная попытка, честная пометка",
+              bool(results) and ok is True
+              and i18n.tr("viewer.wm_update_stuck", name="transformers",
+                          ver="4.48.3") in what
+              and "transformers 4.48.3 →" not in what, what)
+        check("UpdateTask: безнадёжный — сдвинувшийся сосед в итоге",
+              "iopaint 1.6.0 → 1.7.0" in what, what)
+        check("UpdateTask: безнадёжный — подсказка есть (сосед сдвинулся)",
+              i18n.tr("viewer.wm_update_restart") in what, what)
+    finally:
+        watermark_manager._run_pip = real_pip_upd
+
+    # не сдвинулось НИЧЕГО: подсказки о перезапуске нет — пакеты те же
+    pip_calls = []
+    ver_now = dict(ver_old)
+
+    def upd_pip_dead(args):
+        pip_calls.append(list(args))
+        return True, ""
+
+    watermark_manager._run_pip = upd_pip_dead
+    watermark_manager.installed_version = lambda n: ver_now.get(n, "")
+    watermark_manager.pypi_latest = lambda n: ver_new[n]
+    watermark_manager.hf_latest_sha = lambda repo: "cafe"
+    watermark_manager._florence_cached_sha = lambda repo: "cafe"
+    watermark_manager.lama_file = lambda: ""
+    try:
+        results = run_update()
+        ok, what, info = results[0] if results else (None, "", "")
+        check("UpdateTask: всё застряло — обе честные пометки",
+              bool(results) and ok is True
+              and i18n.tr("viewer.wm_update_stuck", name="iopaint",
+                          ver="1.6.0") in what
+              and i18n.tr("viewer.wm_update_stuck", name="transformers",
+                          ver="4.48.3") in what, what)
+        check("UpdateTask: всё застряло — попытки в одиночку по каждой",
+              len(pip_calls) == 4 and pip_calls[2][-1] == "iopaint"
+              and pip_calls[3][-1] == "transformers", str(pip_calls))
+        check("UpdateTask: всё застряло — подсказки о перезапуске нет",
+              i18n.tr("viewer.wm_update_restart") not in what, what)
     finally:
         watermark_manager._run_pip = real_pip_upd
 

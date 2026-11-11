@@ -545,10 +545,16 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ru": "pypi.org недоступен — версию rembg сверить не удалось",
         "en": "pypi.org is unreachable — cannot check the rembg version",
         "zh": "pypi.org 不可用——无法核对 rembg 的版本"},
+    "viewer.rembg_update_stuck": {
+        # репорт v0.8.17: pip отчитался успехом, но пакет остался старым —
+        # честная неудача вместо ложного «X → Y»
+        "ru": "rembg: остался на {ver} — обновить не удалось",
+        "en": "rembg: still on {ver} — the update did not take",
+        "zh": "rembg：仍为 {ver}——更新未生效"},
     "viewer.rembg_update_restart": {
-        "ru": "перезапустите Image Hunter, чтобы новый rembg подхватился",
-        "en": "restart Image Hunter so the new rembg is picked up",
-        "zh": "请重启 Image Hunter 以加载新的 rembg"},
+        "ru": "перезапустите Image Hunter — меню «Модули» → «Перезагрузить Image Hunter»",
+        "en": "restart Image Hunter — menu “Modules” → “Restart Image Hunter”",
+        "zh": "请重启 Image Hunter — 菜单“模块”→“重启 Image Hunter”"},
     "log.event.rembg_update_start": {
         "ru": "🪄 Обновляю модуль rembg: сверяю версию с PyPI…",
         "en": "🪄 Updating the rembg module: checking the version on PyPI…",
@@ -834,10 +840,18 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ru": "pypi.org недоступен — версию {name} сверить не удалось",
         "en": "pypi.org is unreachable — cannot check {name}",
         "zh": "pypi.org 不可用——无法核对 {name} 的版本"},
+    "viewer.wm_update_stuck": {
+        # репорт v0.8.17: pip отчитался успехом, но пакет остался старым
+        # (резолвер общей команды откатил его под чужое требование или
+        # свежая версия не подошла Python) — честная неудача вместо
+        # ложного «X → Y»; застрявшего перед этим спасает одиночный pip
+        "ru": "{name}: остался на {ver} — обновить не удалось",
+        "en": "{name}: still on {ver} — the update did not take",
+        "zh": "{name}：仍为 {ver}——更新未生效"},
     "viewer.wm_update_restart": {
-        "ru": "перезапустите Image Hunter, чтобы новые версии конвейера подхватились",
-        "en": "restart Image Hunter so the new pipeline versions are picked up",
-        "zh": "请重启 Image Hunter 以加载新版本的管线"},
+        "ru": "перезапустите Image Hunter — меню «Модули» → «Перезагрузить Image Hunter»",
+        "en": "restart Image Hunter — menu “Modules” → “Restart Image Hunter”",
+        "zh": "请重启 Image Hunter — 菜单“模块”→“重启 Image Hunter”"},
     "log.event.wm_update_start": {
         "ru": "🧽 Обновляю модуль водяных знаков: пакеты (PyPI), Florence-2 (Hugging Face), big-lama (релиз)…",
         "en": "🧽 Updating the watermark removal module: packages (PyPI), Florence-2 (Hugging Face), big-lama (release)…",
@@ -1610,6 +1624,38 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ru": "включён", "en": "on", "zh": "开"},
     "modules.state_off": {
         "ru": "выключен", "en": "off", "zh": "关"},
+    # версии установленных модулей в меню «Модули» (v0.8.17): под
+    # заголовком-состоянием — недоступные строки со справкой; имена
+    # пакетов/моделей не переводятся, переводятся только подписи
+    "modules.versions": {
+        "ru": "Версии: {list}", "en": "Versions: {list}", "zh": "版本：{list}"},
+    "modules.models": {
+        "ru": "Модели: {list}", "en": "Models: {list}", "zh": "模型：{list}"},
+    "modules.version_unknown": {
+        "ru": "версия неизвестна", "en": "version unknown", "zh": "版本未知"},
+    "modules.model_not_downloaded": {
+        "ru": "не скачана", "en": "not downloaded", "zh": "未下载"},
+    "modules.size_mb": {
+        "ru": "{mb} МБ", "en": "{mb} MB", "zh": "{mb} MB"},
+    # перезагрузка программы из меню «Модули» (v0.8.17): новый экземпляр
+    # подхватывает обновлённые версии модулей — подсказка после «Обновить
+    # модуль» (v0.8.15) больше не требует закрывать программу руками
+    "modules.restart": {
+        "ru": "🔄 Перезагрузить Image Hunter",
+        "en": "🔄 Restart Image Hunter",
+        "zh": "🔄 重启 Image Hunter"},
+    "modules.restart_title": {
+        "ru": "Перезагрузка Image Hunter",
+        "en": "Image Hunter restart",
+        "zh": "重启 Image Hunter"},
+    "modules.restart_fail": {
+        "ru": "Не удалось запустить новый экземпляр Image Hunter — запустите программу вручную.",
+        "en": "Failed to start a new Image Hunter instance — please start the app manually.",
+        "zh": "无法启动新的 Image Hunter 实例——请手动启动程序。"},
+    "log.event.app_restart": {
+        "ru": "🔄 Перезагружаю Image Hunter…",
+        "en": "🔄 Restarting Image Hunter…",
+        "zh": "🔄 正在重启 Image Hunter…"},
     "log.event.server_autostart": {
         "ru": "🌐 Автостарт веб-сервера: {state}",
         "en": "🌐 Web server autostart: {state}",

@@ -98,7 +98,7 @@ REMBG_KEYS = [
     "viewer.rembg_menu_update", "viewer.rembg_updating",
     "viewer.rembg_update_done", "viewer.rembg_update_nothing",
     "viewer.rembg_update_fail", "viewer.rembg_update_pypi_fail",
-    "viewer.rembg_update_restart",
+    "viewer.rembg_update_stuck", "viewer.rembg_update_restart",
     "log.event.rembg_update_start", "log.event.rembg_update_done",
     "log.event.rembg_update_fail",
     # v0.7.15: выбор после удаления фона + прогресс скачивания модели
@@ -296,11 +296,22 @@ def main() -> int:
     finally:
         rembg_manager._run_pip = real_pip
 
-    # вышла новая версия — pip install --upgrade rembg[cpu]
+    # вышла новая версия — pip install --upgrade rembg[cpu]; версия после
+    # pip сверяется ПО ФАКТУ (v0.8.17) — стаб двигает её вместе с pip
+    ver_now_r = ["1.0.197"]
+
+    def rembg_ver():
+        return ver_now_r[0]
+
+    def rembg_pip_move(args):
+        calls_u.append(list(args))
+        ver_now_r[0] = "1.0.200"             # pip обновил
+        return True, ""
+
+    rembg_manager.installed_version = rembg_ver
     rembg_manager.pypi_latest = lambda pkg: "1.0.200"
     calls_u = []
-    rembg_manager._run_pip = (
-        lambda args: (calls_u.append(list(args)), (True, ""))[1])
+    rembg_manager._run_pip = rembg_pip_move
     try:
         results = run_rembg_update()
         check("UpdateTask: pip install --upgrade rembg[cpu]",
@@ -310,6 +321,21 @@ def main() -> int:
               bool(results) and results[0][0] is True
               and results[0][1] == "1.0.197 → 1.0.200. "
               + i18n.tr("viewer.rembg_update_restart"), str(results))
+    finally:
+        rembg_manager._run_pip = real_pip
+
+    # репорт v0.8.17: pip отчитался успехом, но версия осталась старой —
+    # честная неудача вместо ложного «X → Y»
+    ver_now_r[0] = "1.0.197"
+    calls_u = []
+    rembg_manager._run_pip = (
+        lambda args: (calls_u.append(list(args)), (True, ""))[1])
+    try:
+        results = run_rembg_update()
+        check("UpdateTask: pip «успешен», версия не сдвинулась — отказ",
+              bool(results) and results[0][0] is False
+              and results[0][2] == i18n.tr("viewer.rembg_update_stuck",
+                                           ver="1.0.197"), str(results))
     finally:
         rembg_manager._run_pip = real_pip
 
