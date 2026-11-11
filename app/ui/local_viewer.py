@@ -246,28 +246,134 @@ _REMOTE_DRIVE_CACHE: dict[str, bool] = {}
 # не должен 200 раз ходить в shell (на сетевом диске каждый не мгновенен)
 _TRASH_DRIVE_CACHE: dict[str, bool] = {}
 
+# Типы файловых систем, которые всегда сеть (v0.8.19). fuseblk (ntfs-3g)
+# здесь НЕТ — это обычный локальный диск, просто через FUSE.
+_LINUX_REMOTE_FSTYPES = frozenset({
+    "nfs", "nfs4", "cifs", "smbfs", "smb", "smb2", "ncpfs", "afs", "openafs",
+    "9p", "drvfs",                       # WSL2 /mnt/… и WSL1 — чтения медленные
+    "davfs", "davfs2",                   # WebDAV: davfs2 (cloud.mail.ru и др.)
+    "ceph", "cephfs", "glusterfs", "glusterfs-fuse", "beegfs", "lustre",
+    "vboxsf", "vmhgfs", "prl_fs",        # общие папки виртуальных машин
+    "curlftpfs", "obexfs", "obexftpfs", "mtpfs",
+    "fuse.davfs2", "fuse.gvfsd-fuse", "fuse.gvfs", "fuse.rclone",
+    "fuse.sshfs", "fuse.smbnetfs", "fuse.webdav", "fuse.curlftpfs",
+    "fuse.afp", "fuse.kio-fuse", "fuse.obexfs", "fuse.mtpfs",
+})
+# Для незнакомых fuse.* — эвристика по имени демона: любой из этих фрагментов
+# в типе ФС почти наверняка значит сеть (fuse.yandex.disk, fuse.s3fs, …).
+_LINUX_REMOTE_FUSE_TOKENS = (
+    "dav", "ssh", "sftp", "smb", "cifs", "nfs", "ftp", "webdav", "rclone",
+    "gvfs", "kio", "cloud", "nextcloud", "owncloud", "gdrive", "onedrive",
+    "dropbox", "s3", "mega", "yandex", "afp", "obex", "mtp", "ceph",
+)
+# Известно СУГОБО локальные fuse.* — проверяются ДО эвристики по токенам:
+# в имени unionfs прячется «nfs», и без явного исключения локальный слой
+# считался бы сетью.
+_LINUX_LOCAL_FUSE = frozenset({
+    "fuse.unionfs", "fuse.mergerfs", "fuse.overlayfs", "fuse.encfs",
+    "fuse.appimage", "fuse.borgfs", "fuse.cramfs", "fuse.squashfuse",
+    "fuse.archivemount", "fuse.ext4", "fuse.zfs", "fuse.ecryptfs",
+})
+_LINUX_MOUNTS_TTL = 2.0        # секунды между перечитываниями /proc/self/mounts
+_linux_mounts_cache: list[tuple[str, str]] = []
+_linux_mounts_at: float = -1e18    # monotonic-время последнего чтения таблицы
+
+
+def _remote_fstype(fstype: str) -> bool:
+    """Сетевая ли файловая система по её типу из /proc/self/mounts.
+
+    Незнакомый fuse.* без «сетевых» фрагментов имени считается локальным:
+    это может быть encfs, appimage и другие сугубо локальные слои."""
+    fst = (fstype or "").strip().lower()
+    if not fst:
+        return False
+    if fst in _LINUX_LOCAL_FUSE:
+        return False
+    if fst in _LINUX_REMOTE_FSTYPES:
+        return True
+    return fst.startswith("fuse.") and any(
+        tok in fst for tok in _LINUX_REMOTE_FUSE_TOKENS)
+
+
+def _parse_mounts(text: str) -> list[tuple[str, str]]:
+    """[(точка монтирования, тип ФС)] из содержимого /proc/self/mounts.
+
+    Пробелы и прочие спецсимволы в точке монтирования ядро экранирует
+    восьмеричными последовательностями (\\040, \\011…) — раскрываем обратно.
+    Длинные точки первыми: поиск префикса отдаёт самый конкретный."""
+    out: list[tuple[str, str]] = []
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) >= 3 and parts[1].startswith("/"):
+            mnt = re.sub(r"\\([0-7]{3})",
+                         lambda m: chr(int(m.group(1), 8)), parts[1])
+            out.append((mnt, parts[2].lower()))
+    out.sort(key=lambda t: len(t[0]), reverse=True)
+    return out
+
+
+def _linux_mounts() -> list[tuple[str, str]]:
+    """Таблица монтирований с коротким кэшем (v0.8.19).
+
+    /proc/self/mounts генерирует само ядро и читается мгновенно, даже когда
+    сами монтирования подвисли (в отличие от stat() по файлам на них)."""
+    global _linux_mounts_cache, _linux_mounts_at
+    now = time.monotonic()
+    if _linux_mounts_cache and now - _linux_mounts_at < _LINUX_MOUNTS_TTL:
+        return _linux_mounts_cache
+    try:
+        with open("/proc/self/mounts", encoding="utf-8", errors="replace") as f:
+            parsed = _parse_mounts(f.read())
+    except OSError:
+        parsed = []
+    _linux_mounts_cache, _linux_mounts_at = parsed, now
+    return parsed
+
+
+def _linux_is_remote(path: str, mounts: list[tuple[str, str]]) -> bool:
+    """Сетевой ли путь на Linux: тип ФС самой конкретной точки монтирования,
+    в которую попадает путь, плюс пути GVFS — Nautilus монтирует WebDAV/SFTP
+    под /run/user/<uid>/gvfs/, иногда под типом, которого нет в списках."""
+    try:
+        p = os.path.abspath(path)
+    except OSError:
+        return False
+    if p.startswith(f"/run/user/{os.getuid()}/gvfs/"):
+        return True
+    for mnt, fst in mounts:
+        if p == mnt or p.startswith(mnt + "/"):
+            return _remote_fstype(fst)
+    return False
+
 
 def _is_remote_path(path: str) -> bool:
-    """Сетевой ли путь: подключённый диск (WebDAV, SMB) на Windows.
+    """Сетевой ли путь.
 
-    Чтение таких файлов идёт через отдельный узкий пул (v0.7.2): когда
-    сервер подвис, ждут одна-две задачи, а не весь пул сразу — локальные
-    миниатюры продолжают грузиться. На других ОС путь считается локальным:
-    чтение файла обычным I/O отпускает GIL и интерфейс не трогает."""
-    if sys.platform != "win32" or not path:
+    Windows — подключённый диск (WebDAV, SMB) по GetDriveTypeW == DRIVE_REMOTE;
+    Linux — тип ФС точки монтирования из /proc/self/mounts (davfs2, rclone,
+    sshfs, CIFS, NFS, 9p/WSL, GVFS…). Чтение таких файлов идёт через отдельный
+    узкий пул (v0.7.2): когда сервер подвис, ждут одна-две задачи, а не весь
+    пул сразу — локальные миниатюры продолжают грузиться. До v0.8.19 на Linux
+    сетевые пути считались локальными: подвисший WebDAV-диск занимал все
+    четыре потока обычного пула, и лента/просмотр останавливались целиком."""
+    if not path:
         return False
-    try:
-        root = os.path.splitdrive(os.path.abspath(path))[0]
-        if len(root) < 2:
+    if sys.platform == "win32":
+        try:
+            root = os.path.splitdrive(os.path.abspath(path))[0]
+            if len(root) < 2:
+                return False
+            remote = _REMOTE_DRIVE_CACHE.get(root)
+            if remote is None:
+                import ctypes
+                remote = ctypes.windll.kernel32.GetDriveTypeW(root + "\\") == 4
+                _REMOTE_DRIVE_CACHE[root] = remote
+            return remote
+        except Exception:                   # noqa: BLE001 — не получилось — считаем локальным
             return False
-        remote = _REMOTE_DRIVE_CACHE.get(root)
-        if remote is None:
-            import ctypes
-            remote = ctypes.windll.kernel32.GetDriveTypeW(root + "\\") == 4
-            _REMOTE_DRIVE_CACHE[root] = remote
-        return remote
-    except Exception:                       # noqa: BLE001 — не получилось — считаем локальным
-        return False
+    if sys.platform.startswith("linux"):
+        return _linux_is_remote(path, _linux_mounts())
+    return False
 
 # виртуальные файловые системы и точки монтирования, которые не показываем в дереве
 _VIRTUAL_FS = {
@@ -1139,7 +1245,7 @@ class _ThumbTask(QRunnable):
         if self.cache_dir:
             key = _thumb_cache_key(self.path, self.size, self.mtime)
             cache_path = os.path.join(self.cache_dir, key + ".png")
-            cached = QImage(cache_path)
+            cached = imgload.load_cached_image(cache_path)   # под замком Qt-декода (v0.8.19)
             if not cached.isNull():
                 cache_hit = True
                 img = cached

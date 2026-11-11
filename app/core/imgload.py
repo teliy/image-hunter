@@ -21,18 +21,37 @@ AVIF часто приходят картинки с маркетплейсов 
 
 Все функции потокобезопасны: QImage можно создавать в рабочих потоках,
 Pillow декодирует независимые картинки параллельно.
+
+v0.8.19: декодирование через QImageReader сериализовано мьютексом
+(_QT_DECODE_LOCK). Диагноз с живого зависания (py-spy dump, Linux,
+WebDAV-диск): два рабочих потока одновременно внутри QImageReader на
+битых/обрезанных данных — один держит внутренний мьютекс QtGui (создание
+плагина-формат-хендлера), второй внутри этого мьютекса уходит в
+обратный вызов shiboken (Sbk_GetPyOverride → GilState::acquire) и ждёт
+GIL, который в этот момент нужен третьим потокам, ждущим тот же
+мьютекс, — классический ABBA-клин «мьютекс Qt ↔ GIL»: процесс замерает
+целиком. Воспроизводится детерминированно на 6 параллельных декодах
+битых PNG (repro_wedge.py); с мьютексом — ни одного зависания, а
+ошибки декода честно возвращаются. Pillow (AVIF) идёт БЕЗ замка —
+он не трогает плагины Qt и декодирует параллельно.
 """
 
 from __future__ import annotations
 
 import io
 import os
+import threading
 
 from PySide6.QtCore import QBuffer, QByteArray, Qt
 from PySide6.QtGui import QImage, QImageReader
 
 # страховка от чудовищных файлов на сетевых дисках: не тащим в память >1 ГБ
 _MAX_FILE_BYTES = 1 << 30
+
+# Сериализация QImageReader-декода: см. докстринг модуля (v0.8.19). Один
+# замок на все потоки — decoding-секция короткая (миллисекунды), сеть и
+# Pillow в неё не попадают, поэтому узким местом замок не становится.
+_QT_DECODE_LOCK = threading.Lock()
 
 # --- Pillow + AVIF-кодек: ставится вместе с программой, но отсутствие
 # --- не должно ронять приложение — AVIF тогда просто не откроется.
@@ -84,6 +103,17 @@ def decode_bytes(data: bytes) -> tuple[QImage, str]:
     return load_bytes(data, 0)
 
 
+def load_cached_image(path: str) -> QImage:
+    """QImage(path) под общим замком декодирования (v0.8.19).
+
+    Кэш миниатюр читается рабочими потоками через QImage(путь) — внутри
+    это тот же QImageReader и тот же мьютекс QtGui, что и в основном
+    декоде, поэтому чтение кэша обязано идти в той же сериализации
+    (см. докстринг модуля)."""
+    with _QT_DECODE_LOCK:
+        return QImage(path)
+
+
 def read_file_bytes(path: str) -> tuple[bytes | None, str]:
     """Прочитать файл целиком обычным питоновским I/O.
 
@@ -118,36 +148,55 @@ def load_bytes_ex(data: bytes, max_side: int = 0) -> tuple[QImage, str, int, int
     вызывается при ``max_side > 0``), а не из уменьшенной миниатюры: из
     160×90 не восстановить, была ли исходная картинка 1920×1080 или 1280×720.
     """
-    buf = QBuffer()
-    buf.setData(QByteArray(data))
-    buf.open(QBuffer.OpenModeFlag.ReadOnly)
-    reader = QImageReader(buf)
-    reader.setAutoTransform(True)
-    orig_w = orig_h = 0
-    if max_side > 0:
-        size = reader.size()
-        if size.isValid() and size.width() > 0 and size.height() > 0:
-            orig_w, orig_h = size.width(), size.height()
-            reader.setScaledSize(size.scaled(max_side, max_side, Qt.KeepAspectRatio))
-    img = reader.read()
+    img, qt_err, orig_w, orig_h = _decode_qt(data, max_side)
+    if not img.isNull():
+        return img, "", orig_w, orig_h
+    if looks_like_avif(data):
+        return _decode_avif(data, max_side, qt_err)
+    return QImage(), qt_err, 0, 0
+
+
+def _decode_qt(data: bytes, max_side: int) -> tuple[QImage, str, int, int]:
+    """Qt-декод из памяти — целиком под _QT_DECODE_LOCK (v0.8.19).
+
+    Возвращает (картинка, ошибка, ширина, высота): картинка null и ошибка
+    непуста, если Qt формат не распознал/не смог прочитать."""
+    with _QT_DECODE_LOCK:
+        buf = QBuffer()
+        buf.setData(QByteArray(data))
+        buf.open(QBuffer.OpenModeFlag.ReadOnly)
+        reader = QImageReader(buf)
+        reader.setAutoTransform(True)
+        orig_w = orig_h = 0
+        if max_side > 0:
+            size = reader.size()
+            if size.isValid() and size.width() > 0 and size.height() > 0:
+                orig_w, orig_h = size.width(), size.height()
+                reader.setScaledSize(size.scaled(max_side, max_side,
+                                                 Qt.KeepAspectRatio))
+        img = reader.read()
     if not img.isNull():
         if orig_w == 0:
             # заголовок размер не дал — но и сжатие не включалось,
             # значит декодированная картинка и есть полноразмерная
             orig_w, orig_h = img.width(), img.height()
         return img, "", orig_w, orig_h
-    qt_err = reader.errorString() or "неизвестная ошибка"
-    if looks_like_avif(data):
-        if not AVIF_OK:
-            _warn_no_codec_once()
-            return QImage(), qt_err, 0, 0
-        try:
-            im = _PilImage.open(io.BytesIO(data))
-            orig_w, orig_h = int(im.width), int(im.height)
-            return _pil_to_qimage(im, max_side), "", orig_w, orig_h
-        except Exception as exc:                        # noqa: BLE001
-            return QImage(), f"AVIF: {exc}", 0, 0
-    return QImage(), qt_err, 0, 0
+    return QImage(), reader.errorString() or "неизвестная ошибка", 0, 0
+
+
+def _decode_avif(data: bytes, max_side: int,
+                 qt_err: str) -> tuple[QImage, str, int, int]:
+    """AVIF через Pillow — БЕЗ замка: Pillow не трогает плагины Qt и
+    декодирует независимые картинки параллельно (см. докстринг модуля)."""
+    if not AVIF_OK:
+        _warn_no_codec_once()
+        return QImage(), qt_err, 0, 0
+    try:
+        im = _PilImage.open(io.BytesIO(data))
+        orig_w, orig_h = int(im.width), int(im.height)
+        return _pil_to_qimage(im, max_side), "", orig_w, orig_h
+    except Exception as exc:                                # noqa: BLE001
+        return QImage(), f"AVIF: {exc}", 0, 0
 
 
 def load_bytes(data: bytes, max_side: int = 0) -> tuple[QImage, str]:
