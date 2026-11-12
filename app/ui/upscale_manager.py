@@ -691,19 +691,38 @@ def _tiled(net, device, t, signals, path: str):
 def _save_result(img: Image.Image, out_path: str) -> None:
     """Записать результат по расширению (JPEG 92 / WEBP 90 — как в программе).
 
-    JPEG и BMP альфу не умеют — картинка кладётся на белый фон (тот же
-    приём, что в image_saver); PNG/WEBP/TIFF сохраняют альфу как есть."""
+    Запись идёт во временный «.part» рядом и затем os.replace: сбой
+    сетевого диска не оставит на месте результата ноль-байтовый файл
+    (репорт v0.8.25: M111A2-STD_x4.webp «файл пуст» после улучшения,
+    которое по журналу прошло успешно). Размер «.part» сверяется:
+    пустая запись — честная ошибка вместо тихой порчи. Формат задаётся
+    ЯВНО: у временного файла расширение «.part», из имени PIL его не
+    возьмёт. JPEG и BMP альфу не умеют — картинка кладётся на белый фон
+    (тот же приём, что в image_saver); PNG/WEBP/TIFF хранят альфу.
+    """
     ext = os.path.splitext(out_path)[1].lower()
     if img.mode == "RGBA" and ext in (".jpg", ".jpeg", ".bmp"):
         bg = Image.new("RGB", img.size, (255, 255, 255))
         bg.paste(img, mask=img.getchannel("A"))
         img = bg
-    if ext in (".jpg", ".jpeg"):
-        img.save(out_path, "JPEG", quality=92)
-    elif ext == ".webp":
-        img.save(out_path, "WEBP", quality=90)
-    else:   # PNG / BMP / TIFF
-        img.save(out_path)
+    fmt = {".jpg": "JPEG", ".jpeg": "JPEG", ".webp": "WEBP", ".png": "PNG",
+           ".bmp": "BMP", ".tif": "TIFF", ".tiff": "TIFF"}.get(ext)
+    if fmt is None:
+        img.save(out_path)   # экзотика: имя и так содержит формат
+        return
+    tmp = out_path + ".part"
+    try:
+        if fmt in ("JPEG", "WEBP"):
+            img.save(tmp, fmt, quality=92 if fmt == "JPEG" else 90)
+        else:
+            img.save(tmp, fmt)
+        if os.path.getsize(tmp) <= 0:
+            raise OSError(f"{os.path.basename(out_path)}: "
+                          f"файл результата пуст")
+        os.replace(tmp, out_path)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
 
 
 def _upscale_image(src: str, out: str, net, device: str, scale: int,

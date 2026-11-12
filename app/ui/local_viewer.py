@@ -411,6 +411,22 @@ def _checker_tile(cell: int, dpr: float = 1.0) -> QPixmap:
     return pm
 
 
+def _tile_log_points(total: int) -> set[int]:
+    """Плитки, о которых журнал пишет «✨ …»: первая, последняя и четверти.
+
+    Репорт v0.8.25: улучшение шло 11 минут — и ни одной строки в журнале,
+    не видно, жив ли процесс (плитки были в строке статуса, но журнал —
+    главный диагностический канал, по нему присылают репорты). Чистая
+    функция — точка проверок в тестах.
+    """
+    if total <= 0:
+        return set()
+    marks = {1, total}
+    if total > 4:
+        marks.update(range(1, total + 1, max(2, total // 4)))
+    return marks
+
+
 def _mini_checker_icon(size: int = 16, cell: int = 4) -> QPixmap:
     """Маленькая шахматка — иконка у ползунка размера клеток."""
     pm = QPixmap(size, size)
@@ -4375,6 +4391,11 @@ class LocalViewer(QWidget):
             tr("viewer.up_phase", done=self._ups_idx - 1, n=self._ups_total,
                name=os.path.basename(path), phase=phase),
             frac=frac)
+        if cur in _tile_log_points(total):
+            # журнал молчал все 11 минут улучшения (репорт v0.8.25) —
+            # ключевые плитки пишем и туда: начало, четверти, последняя
+            applog.event("log.event.up_tile",
+                         name=os.path.basename(path), cur=cur, total=total)
 
     def _on_up_file_done(self, path: str, out: str, ok: bool, err: str) -> None:
         """Промежуточный итог по файлу: прогресс в статусе, ошибки в журнал."""

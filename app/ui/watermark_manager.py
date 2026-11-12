@@ -187,6 +187,31 @@ def _module_requirements() -> list[str]:
             if _req_name(raw) and _req_name(raw) not in _INSTALL_SKIP]
 
 
+# пин хаба из метаданных iopaint (v0.8.26): iopaint 1.6.0 требует
+# huggingface-hub==0.25.2, а его diffusers==0.27.2 импортирует из хаба
+# «cached_download» — в huggingface_hub 0.26+ его больше нет. Любой
+# pip-ход мимо пина (репорт v0.8.25: хаб уехал на свежую версию —
+# вероятно, через одиночное обновление transformers в «Обновить модуль»)
+# ломает импорт diffusers, и конвейер падает на первом же файле:
+# «cannot import name 'cached_download' from 'huggingface_hub'».
+# Чинится возвратом хаба на пин iopaint (_repair_hub).
+_HUB_DIST = "huggingface-hub"
+
+
+def _hub_pin() -> str:
+    """Требование iopaint к huggingface-hub из ЕГО метаданных.
+
+    «huggingface-hub==0.25.2»; пусто — пина нет (метаданных нет или
+    требование без версии). Маркер окружения отрезается: pip сам
+    оценит его выполнимость.
+    """
+    for raw in _iopaint_requires():
+        base = raw.split(";", 1)[0].strip()
+        if _req_name(base) == _HUB_DIST and base.lower() != _HUB_DIST:
+            return base
+    return ""
+
+
 # дистрибуции, которые ставились только ради этого модуля — их вычищает
 # «Удалить модуль» (зависимости iopaint добавляются из его метаданных —
 # _module_dep_names). numpy/pillow не трогаются никогда: они нужны самой
@@ -671,6 +696,31 @@ def _run_pip(args: list[str]) -> tuple[bool, str]:
     return False, " | ".join(tail) if tail else f"pip exit {proc.returncode}"
 
 
+def _repair_hub() -> tuple[bool, str]:
+    """Вернуть huggingface-hub на пин iopaint (v0.8.26).
+
+    Репорт v0.8.25: «cannot import name 'cached_download' from
+    'huggingface_hub'» на первом же файле — хаб уехал с пина
+    iopaint (huggingface-hub==0.25.2), и его diffusers==0.27.2
+    перестал импортироваться. Возврат пина одним pip-ходом ставит
+    ровно ту версию, что просит iopaint. Уже загруженные копии
+    модулей выкидываются из sys.modules: повторный импорт в том же
+    запуске увидит восстановленные файлы, перезапуск программы не
+    нужен (живых объектов нет — импорт конвейера как раз упал).
+    """
+    pin = _hub_pin()
+    if not pin:
+        return False, f"{_MAIN_PACKAGE}: в метаданных нет пина {_HUB_DIST}"
+    ok, info = _run_pip(["install", "--disable-pip-version-check", pin])
+    if ok:
+        for mod in list(sys.modules):
+            if mod.split(".", 1)[0] in ("huggingface_hub", "diffusers",
+                                        "transformers", "timm", "iopaint",
+                                        "tokenizers", "safetensors"):
+                sys.modules.pop(mod, None)
+    return ok, info
+
+
 # ---------- сигналы фоновых задач ----------
 
 
@@ -856,9 +906,15 @@ class UpdateTask(QRunnable):
             for n in newer:
                 ver = installed_version(n)
                 if is_newer(latest[n], ver):
+                    # с пином хаба (v0.8.26): одиночное обновление мимо
+                    # пина утащило huggingface-hub на свежую версию, и
+                    # diffusers==0.27.2 перестал импортироваться (репорт
+                    # v0.8.25). Пин держит хаб там, где жив iopaint.
+                    pin = _hub_pin()
                     ok, info = _run_pip(["install",
                                          "--disable-pip-version-check",
-                                         "--upgrade", n])
+                                         "--upgrade", n,
+                                         *([pin] if pin else [])])
                     ver = installed_version(n)
                 if ver and not is_newer(latest[n], ver):
                     changes.append(f"{n} {installed[n]} → {ver}")
@@ -1241,6 +1297,39 @@ def _load_pipeline(model_id: str):
     return _load_inpainter(device), _make_detector(model_id, device)
 
 
+def _load_with_repair(by_sel: bool, model_id: str):
+    """Загрузка конвейера с авто-починкой хаба (v0.8.26). Точка подмены в тестах.
+
+    ImportError с «huggingface_hub» при установленном iopaint — хаб
+    уехал с пина iopaint, и его diffusers не импортируется (репорт
+    v0.8.25: «cannot import name 'cached_download' from
+    'huggingface_hub'»). Возврат хаба на пин (_repair_hub) и повторная
+    попытка: перезапуск программы не нужен. Прочие ImportError и прочие
+    исключения — как были: модуль не ставился или сломан всерьёз.
+    """
+    last: Exception | None = None
+    for attempt in (1, 2):
+        try:
+            if by_sel:
+                # Florence-2 не грузится — рисует человек, а не детектор
+                return _load_inpainter(_torch_device()), None
+            return _load_pipeline(model_id)
+        except ImportError as exc:
+            last = exc
+            if (attempt == 1 and "huggingface_hub" in str(exc)
+                    and installed_version(_MAIN_PACKAGE)):
+                if _repair_hub()[0]:
+                    continue   # sys.modules почищены — импорт пойдёт заново
+                last = RuntimeError(
+                    f"{exc}; авто-возврат {_HUB_DIST} на пин "
+                    f"{_MAIN_PACKAGE} не удался")
+            break
+        except Exception as exc:   # noqa: BLE001 — сеть/веса/диск любые
+            last = exc
+            break
+    raise last   # каждый выход из цикла без return присваивает last
+
+
 def _save_array(rgb, out_path: str) -> None:
     """Записать результат по расширению (JPEG 92 / WEBP 90 — как в программе)."""
     img = Image.fromarray(rgb)
@@ -1296,12 +1385,7 @@ class RemoveWatermarkTask(QRunnable):
         by_sel = self.sel is not None
         self.signals.model_prepare.emit(self.model)
         try:
-            if by_sel:
-                # Florence-2 не грузится — рисует человек, а не детектор
-                inpainter = _load_inpainter(_torch_device())
-                detect = None
-            else:
-                inpainter, detect = _load_pipeline(self.model)
+            inpainter, detect = _load_with_repair(by_sel, self.model)
         except Exception as exc:   # noqa: BLE001 — модуль сломан/не стоит
             for path, _out in self.jobs:
                 self.signals.file_done.emit(path, "", False, str(exc))

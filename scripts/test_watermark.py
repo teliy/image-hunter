@@ -68,7 +68,7 @@
   неудача проверки моделей не фатальна, подсказка о перезапуске;
   вьюер: wm_update стартует задачу с выбранным детектором, guard busy,
   итог в статусе, без модуля — не стартует;
-- i18n: все новые ключи заполнены на ru/en/zh; версия — 0.8.25.
+- i18n: все новые ключи заполнены на ru/en/zh; версия — 0.8.26.
 
 Раздел меню «Модули» проверяет scripts/test_modules_menu.py.
 Запуск: QT_QPA_PLATFORM=offscreen python scripts/test_watermark.py
@@ -146,7 +146,7 @@ def main() -> int:
     st = QSettings("ImageHunter", "ImageHunter")
     st.sync()
 
-    check("версия 0.8.25", app.__version__ == "0.8.25", app.__version__)
+    check("версия 0.8.26", app.__version__ == "0.8.26", app.__version__)
 
     # ---------- менеджер: чистые функции ----------
     check("is_installed() — булево", isinstance(watermark_manager.is_installed(), bool))
@@ -320,6 +320,142 @@ def main() -> int:
           watermark_manager._module_requirements() == []
           and watermark_manager._module_dep_names() == [])
     watermark_manager._iopaint_requires = real_reqs
+
+    # ---------- пин хаба: diffusers iopaint требует cached_download ----------
+    watermark_manager._iopaint_requires = lambda: [
+        "torch>=2.0.0", "huggingface-hub==0.25.2; python_version >= '3.8'"]
+    check("пин хаба: из метаданных iopaint, маркер отрезан",
+          watermark_manager._hub_pin() == "huggingface-hub==0.25.2",
+          watermark_manager._hub_pin())
+    watermark_manager._iopaint_requires = lambda: [
+        "huggingface-hub", "torch>=2.0.0"]
+    check("пин хаба: требование без версии — пина нет",
+          watermark_manager._hub_pin() == "")
+    watermark_manager._iopaint_requires = real_reqs
+
+    # _repair_hub: pip ставит ровно пин, загруженные копии выкидываются
+    real_pip_hub = watermark_manager._run_pip
+    real_pin = watermark_manager._hub_pin
+    pip_args: list[list[str]] = []
+
+    def hub_pip(args):
+        pip_args.append(list(args))
+        return True, ""
+
+    watermark_manager._hub_pin = lambda: "huggingface-hub==0.25.2"
+    watermark_manager._run_pip = hub_pip
+    for m in ("diffusers", "diffusers.utils", "huggingface_hub", "iopaint"):
+        sys.modules[m] = type(sys)("fake_" + m.replace(".", "_"))
+    ok, info = watermark_manager._repair_hub()
+    check("починка хаба: pip ставит ровно пин iopaint",
+          ok and pip_args == [["install", "--disable-pip-version-check",
+                               "huggingface-hub==0.25.2"]], str(pip_args))
+    check("починка хаба: загруженные модули выкинуты из sys.modules",
+          all(m not in sys.modules for m in
+              ("diffusers", "diffusers.utils", "huggingface_hub", "iopaint")))
+
+    def hub_pip_fail(args):
+        pip_args.append(list(args))
+        return False, "pip недоступен"
+
+    sys.modules["huggingface_hub"] = type(sys)("fake_hf")
+    watermark_manager._run_pip = hub_pip_fail
+    ok, info = watermark_manager._repair_hub()
+    check("починка хаба: неудача pip — честная информация",
+          not ok and info == "pip недоступен", info)
+    check("починка хаба: при неудаче sys.modules не трогается",
+          "huggingface_hub" in sys.modules)
+    sys.modules.pop("huggingface_hub", None)
+    watermark_manager._hub_pin = lambda: ""
+    n_before = len(pip_args)
+    ok, info = watermark_manager._repair_hub()
+    check("починка хаба: пина нет — отказ без pip",
+          not ok and "нет пина" in info and len(pip_args) == n_before, info)
+    watermark_manager._run_pip = real_pip_hub
+    watermark_manager._hub_pin = real_pin
+
+    # _load_with_repair: ImportError хаба → починка → повтор без перезапуска
+    real_pipe = watermark_manager._load_pipeline
+    real_inp = watermark_manager._load_inpainter
+    real_ver_wm = watermark_manager.installed_version
+    real_repair = watermark_manager._repair_hub
+    watermark_manager.installed_version = lambda n: "1.6.0"
+    seq: list[str] = []
+    state = {"n": 0}
+
+    def flaky_pipeline(model_id):
+        seq.append("load")
+        state["n"] += 1
+        if state["n"] == 1:
+            raise ImportError("cannot import name 'cached_download' from "
+                              "'huggingface_hub' (…/__init__.py)")
+        return "INPAINTER", "DETECT"
+
+    def dead_pipeline(model_id):
+        seq.append("load")
+        raise ImportError("cannot import name 'cached_download' from "
+                          "'huggingface_hub' (…/__init__.py)")
+
+    watermark_manager._load_pipeline = flaky_pipeline
+    watermark_manager._repair_hub = (
+        lambda: (seq.append("repair"), (True, ""))[1])
+    got = watermark_manager._load_with_repair(False, "microsoft/Florence-2-base")
+    check("починка: ImportError хаба → repair → повтор успешен",
+          got == ("INPAINTER", "DETECT") and seq == ["load", "repair", "load"],
+          str(seq))
+
+    seq.clear()
+    watermark_manager._load_pipeline = dead_pipeline
+    watermark_manager._repair_hub = (
+        lambda: (seq.append("repair"), (False, "pip упал"))[1])
+    try:
+        watermark_manager._load_with_repair(False, "m")
+        check("починка: repair не удался — честная составная ошибка",
+              False, "не отказал")
+    except RuntimeError as exc:
+        check("починка: repair не удался — честная составная ошибка",
+              "cached_download" in str(exc) and "не удался" in str(exc),
+              str(exc)[:120])
+    check("починка: после неудачного repair повтор не идёт",
+          seq == ["load", "repair"], str(seq))
+
+    def other_pipeline(model_id):
+        seq.append("load")
+        raise ImportError("No module named 'torch'")
+
+    seq.clear()
+    watermark_manager._load_pipeline = other_pipeline
+    try:
+        watermark_manager._load_with_repair(False, "m")
+        check("починка: чужой ImportError проходит как был",
+              False, "не отказал")
+    except ImportError as exc:
+        check("починка: чужой ImportError проходит как был",
+              "torch" in str(exc), str(exc)[:80])
+    check("починка: чужой ImportError repair не зовёт",
+          seq == ["load"], str(seq))
+
+    seq.clear()   # iopaint не установлен — repair не зовётся вовсе
+    watermark_manager._load_pipeline = dead_pipeline
+    watermark_manager.installed_version = lambda n: ""
+    try:
+        watermark_manager._load_with_repair(False, "m")
+        check("починка: модуль не установлен — исходная ошибка",
+              False, "не отказал")
+    except ImportError as exc:
+        check("починка: модуль не установлен — исходная ошибка",
+              "cached_download" in str(exc), str(exc)[:80])
+    check("починка: без установленного iopaint repair не зовётся",
+          seq == ["load"], str(seq))
+
+    watermark_manager._load_inpainter = lambda dev: "INP"
+    check("починка: выделение грузит только LaMa",
+          watermark_manager._load_with_repair(True, "m") == ("INP", None))
+
+    watermark_manager._load_pipeline = real_pipe
+    watermark_manager._load_inpainter = real_inp
+    watermark_manager.installed_version = real_ver_wm
+    watermark_manager._repair_hub = real_repair
 
     # ---------- InstallTask: два pip-шага и доставка сигнала ----------
     calls: list[list[str]] = []
@@ -766,6 +902,42 @@ def main() -> int:
               i18n.tr("viewer.wm_update_restart") in what, what)
     finally:
         watermark_manager._run_pip = real_pip_upd
+
+    # v0.8.26: одиночное обновление идёт с пином хаба — pip-ход не должен
+    # уводить huggingface-hub с пина iopaint (репорт v0.8.26)
+    pip_calls = []
+    ver_now = dict(ver_old)
+
+    def upd_pip_skip_pin(args):
+        pip_calls.append(list(args))
+        if "--no-deps" in args:
+            ver_now["iopaint"] = ver_new["iopaint"]
+        elif len(args) == 5 and args[-2] == "transformers":
+            ver_now["transformers"] = "4.50.0"   # одиночный pip спас
+        return True, ""
+
+    watermark_manager._run_pip = upd_pip_skip_pin
+    watermark_manager.installed_version = lambda n: ver_now.get(n, "")
+    watermark_manager._iopaint_requires = lambda: [
+        "Pillow==9.5.0", "torch>=2.0.0", "gradio==4.21.0",
+        "huggingface-hub==0.25.2"]
+    try:
+        results = run_update()
+        ok, what, info = results[0] if results else (None, "", "")
+        check("UpdateTask: пин хаба в одиночном обновлении",
+              len(pip_calls) == 3 and pip_calls[2] == ["install",
+                                                       "--disable-pip-version-check",
+                                                       "--upgrade",
+                                                       "transformers",
+                                                       "huggingface-hub==0.25.2"],
+              str(pip_calls))
+        check("UpdateTask: спасённый с пином — в итоге реальная версия",
+              bool(results) and ok is True
+              and "transformers 4.48.3 → 4.50.0" in what, what)
+    finally:
+        watermark_manager._run_pip = real_pip_upd
+        watermark_manager._iopaint_requires = lambda: [
+            "Pillow==9.5.0", "torch>=2.0.0", "gradio==4.21.0"]
 
     # одиночный pip тоже не сдвинул — честная неудача вместо ложного «→»
     pip_calls = []

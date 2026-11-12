@@ -882,6 +882,10 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ru": "✨ Не удалось улучшить: {name} — {err}",
         "en": "✨ Failed to upscale: {name} — {err}",
         "zh": "✨ 增强失败：{name} — {err}"},
+    "log.event.up_tile": {
+        "ru": "✨ {name}: плитка {cur}/{total}",
+        "en": "✨ {name}: tile {cur}/{total}",
+        "zh": "✨ {name}：分块 {cur}/{total}"},
     "log.event.up_done": {
         "ru": "✨ Улучшение завершено: {ok}, ошибок {fail} — {ms} мс{extra}",
         "en": "✨ Upscaling finished: {ok} done, {fail} failed — {ms} ms{extra}",

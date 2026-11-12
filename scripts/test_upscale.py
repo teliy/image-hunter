@@ -27,7 +27,7 @@
   установка-продолжение (отложенная пачка после install_done), выбор
   модели запоминается и валидируется при загрузке, меню «Модули» содержит
   раздел улучшения качества;
-- i18n: все новые ключи заполнены на ru/en/zh; версия — 0.8.25.
+- i18n: все новые ключи заполнены на ru/en/zh; версия — 0.8.26.
 
 Запуск: QT_QPA_PLATFORM=offscreen QTWEBENGINE_CHROMIUM_FLAGS="--no-sandbox --disable-gpu" \
         python scripts/test_upscale.py
@@ -53,6 +53,7 @@ from app.core import i18n, modstatus  # noqa: E402
 from app.ui import upscale_manager, watermark_manager  # noqa: E402
 from app.ui.local_viewer import (  # noqa: E402
     LocalViewer, _REMBG_REVERT, _REMBG_SAVE, _RembgChoiceDialog,
+    _tile_log_points,
 )
 from app.ui.modules_menu import ModulesMenu  # noqa: E402
 
@@ -165,7 +166,7 @@ def main() -> int:
     st.sync()
 
     # ---------- чистые функции менеджера ----------
-    check("версия 0.8.25", __version__ == "0.8.25", __version__)
+    check("версия 0.8.26", __version__ == "0.8.26", __version__)
     check("is_installed возвращает bool",
           isinstance(upscale_manager.is_installed(), bool))
     check("model_scale: x4plus → 4",
@@ -309,6 +310,47 @@ def main() -> int:
           Image.open(out_t).size == (400, 240),
           str(Image.open(out_t).size))
     upscale_manager.TILE, upscale_manager.TILE_PAD = 256, 10   # откат
+
+    # журнал плиток: первая, четверти, последняя (репорт v0.8.26 —
+    # 11 минут улучшения без единой строки в журнале)
+    check("журнал плиток: 28 → 1, четверти и последняя",
+          _tile_log_points(28) == {1, 8, 15, 22, 28},
+          str(sorted(_tile_log_points(28))))
+    check("журнал плиток: 20 → 1, 6, 11, 16, 20",
+          _tile_log_points(20) == {1, 6, 11, 16, 20},
+          str(sorted(_tile_log_points(20))))
+    check("журнал плиток: короткая пачка — первая и последняя",
+          _tile_log_points(2) == {1, 2} and _tile_log_points(1) == {1}
+          and _tile_log_points(0) == set()
+          and _tile_log_points(6) == {1, 3, 5, 6},
+          str(sorted(_tile_log_points(6))))
+
+    # сохранение результата: «.part» + os.replace, пустая запись — отказ
+    # (репорт v0.8.26: M111A2-STD_x4.webp «файл пуст» после успешного
+    # по журналу улучшения)
+    out_s = os.path.join(tmp, "save_ok.png")
+    upscale_manager._save_result(Image.new("RGB", (8, 6), (5, 6, 7)), out_s)
+    check("сохранение: файл на месте, «.part» не остался",
+          os.path.exists(out_s) and os.path.getsize(out_s) > 0
+          and not os.path.exists(out_s + ".part"))
+
+    class _ZeroImg:
+        mode = "RGB"
+        size = (8, 6)
+
+        def save(self, path, *a, **k):
+            open(path, "wb").close()   # «диск отчитался, но записал ноль»
+
+    out_e = os.path.join(tmp, "save_empty.webp")
+    try:
+        upscale_manager._save_result(_ZeroImg(), out_e)
+        check("сохранение: пустая запись — отказ", False, "не отказал")
+    except OSError as exc:
+        check("сохранение: пустая запись — отказ",
+              "пуст" in str(exc), str(exc)[:80])
+    check("сохранение: после отказа нет ни результата, ни «.part»",
+          not os.path.exists(out_e)
+          and not os.path.exists(out_e + ".part"))
 
     # предохранитель: 4000×4000 ×4 = 64 МП > 50 МП — отказ ДО сети
     src_big = os.path.join(tmp, "big.png")
