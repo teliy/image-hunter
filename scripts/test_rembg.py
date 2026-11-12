@@ -32,8 +32,10 @@
 - контекстное меню ленты содержит «Удалить фон», подменю «Модель» и пункт
   установки/удаления модуля;
 - выбор модели запоминается в QSettings и валидируется при загрузке;
-- статусная строка рассказывает про модель: готовится, качается
-  (сколько из скольких, проценты), скачана, готова;
+- сообщения о модели (v0.7.15): готовится, качается (сколько из скольких,
+  проценты), скачана, готова; с v0.8.21 процессные тексты живут только
+  в виджете модулей статус-бара — подпись вьюера их не дублирует,
+  итоги («модель скачана») остаются в подписи;
 - i18n: все новые ключи заполнены на ru/en/zh.
 
 Запуск: QT_QPA_PLATFORM=offscreen python scripts/test_rembg.py
@@ -52,7 +54,7 @@ from PySide6.QtCore import QPoint, QRunnable, QSettings, QThreadPool, Qt  # noqa
 from PySide6.QtGui import QColor, QImage, QPixmap  # noqa: E402
 from PySide6.QtWidgets import QApplication, QLabel, QMenu  # noqa: E402
 
-from app.core import i18n  # noqa: E402
+from app.core import i18n, modstatus  # noqa: E402
 from app.ui import rembg_manager  # noqa: E402
 from app.ui.local_viewer import (  # noqa: E402
     LocalViewer, _REMBG_REVERT, _checker_pixmap, _fmt_bytes,
@@ -734,42 +736,74 @@ def main() -> int:
               batches2 == [(1, 0)] and os.path.isfile(out2), str(batches2))
         check("кэш: без сигналов скачивания", not dl2, str(dl2))
 
-    # ---------- v0.7.15: статусная строка рассказывает про модель ----------
+    # ---------- v0.7.15 + v0.8.21: сообщения о модели — в виджете модулей,
+    # в подписи вьюера процессные тексты не дублируются ----------
+    reports: list[tuple[str, str, float]] = []
+
+    def _grab(k: str, t: str, f: float) -> None:
+        reports.append((k, t, f))
+
+    modstatus.bridge.activity.connect(_grab)
     vsig = viewer._rembg_signals
+    caption0 = viewer.status.text()
     vsig.model_prepare.emit("u2netp")
     app.processEvents()
-    check("статус: модель готовится",
-          viewer.status.text() == i18n.tr("viewer.rembg_prepare", model="u2netp"),
-          viewer.status.text())
+    check("модель готовится: текст — в виджете модулей",
+          reports[-1:] == [("rembg", i18n.tr("viewer.rembg_prepare",
+                                             model="u2netp"), -1.0)],
+          str(reports[-1:]))
+    check("модель готовится: подпись вьюера не дублирует",
+          viewer.status.text() == caption0, viewer.status.text())
     vsig.model_dl_start.emit("u2netp", 4849)
     app.processEvents()
-    check("статус: скачивание началось",
-          viewer.status.text() == i18n.tr("viewer.rembg_dl_start", model="u2netp"),
-          viewer.status.text())
+    check("скачивание началось: виджет знает размер",
+          reports[-1:] == [("rembg", i18n.tr("viewer.rembg_dl_prog",
+                                             model="u2netp",
+                                             done=_fmt_bytes(0),
+                                             total=_fmt_bytes(4849), pct=0),
+                            0.0)],
+          str(reports[-1:]))
     vsig.model_dl_progress.emit(1200, 4849)
     app.processEvents()
     pct = round(1200 * 100 / 4849)
-    check("статус: прогресс — модель, байты и проценты",
-          "u2netp" in viewer.status.text() and _fmt_bytes(1200) in viewer.status.text()
-          and _fmt_bytes(4849) in viewer.status.text() and str(pct) in viewer.status.text(),
-          viewer.status.text())
+    check("прогресс: модель, байты и проценты — в виджете",
+          bool(reports) and reports[-1][0] == "rembg"
+          and "u2netp" in reports[-1][1]
+          and _fmt_bytes(1200) in reports[-1][1]
+          and _fmt_bytes(4849) in reports[-1][1]
+          and str(pct) in reports[-1][1]
+          and abs(reports[-1][2] - 1200 / 4849) < 1e-9,
+          str(reports[-1:]))
     vsig.model_dl_progress.emit(300, 0)
     app.processEvents()
-    check("статус: прогресс без известного размера",
-          viewer.status.text() == i18n.tr("viewer.rembg_dl_prog_na", model="u2netp",
-                                          done=_fmt_bytes(300)),
-          viewer.status.text())
+    check("прогресс без размера: виджет, доля неизвестна",
+          reports[-1:] == [("rembg",
+                            i18n.tr("viewer.rembg_dl_prog_na", model="u2netp",
+                                    done=_fmt_bytes(300)), -1.0)],
+          str(reports[-1:]))
+    check("процессные тики: подпись вьюера не дублирует",
+          viewer.status.text() == caption0, viewer.status.text())
     vsig.model_dl_done.emit("u2netp", 4849, 1500)
     app.processEvents()
-    check("статус: модель скачана",
-          viewer.status.text() == i18n.tr("viewer.rembg_dl_done", model="u2netp",
+    check("модель скачана: итог — в подписи вьюера",
+          viewer.status.text() == i18n.tr("viewer.rembg_dl_done",
+                                          model="u2netp",
                                           size=_fmt_bytes(4849)),
           viewer.status.text())
+    n_reports = len(reports)
     vsig.model_ready.emit("u2netp")
     app.processEvents()
-    check("статус: модель готова",
-          viewer.status.text() == i18n.tr("viewer.rembg_ready", model="u2netp"),
+    check("модель готова: текст — в виджете модулей",
+          len(reports) == n_reports + 1
+          and reports[-1][1] == i18n.tr("viewer.rembg_ready",
+                                        model="u2netp"),
+          str(reports[-1:]))
+    check("модель готова: подпись вьюера держит итог, не дублирует",
+          viewer.status.text() == i18n.tr("viewer.rembg_dl_done",
+                                          model="u2netp",
+                                          size=_fmt_bytes(4849)),
           viewer.status.text())
+    modstatus.bridge.activity.disconnect(_grab)
 
     # ---------- v0.7.15: выбор «Сохранить результат / Вернуть оригиналы» ----------
     class StubOkTask(QRunnable):

@@ -232,6 +232,10 @@ The Log diagnostics (⏱ lines and "⚠ The UI did not respond") showed that on 
 
 **6. Honest wording in the Log.** Slow operations from worker threads are marked "⏱ SLOW (in background, UI stays alive)", while "…this blocks the UI" remains only for operations that actually stalled the GUI thread — the log shows at a glance where the freeze was.
 
+## Module messages are no longer duplicated (v0.8.21)
+
+Report “messages in the status are duplicated”: module activity texts (“Preparing the models…”, “Downloading the model: N of M”, “Removing watermarks: 3/12”) were written both to the viewer caption on the left and to the module widget on the right — two identical lines side by side. The live process now lives ONLY in the permanent widget (progress bar, phases, seconds tick), while the viewer caption receives only the finals — “Watermarks removed: 10”, “The model is downloaded”, module install/uninstall/update results: a final appears when the widget has already cleared its activity, so every line in the status bar is visible exactly once.
+
 ## Module progress — in the status bar (v0.8.20)
 
 Module activity (especially watermark removal) is visible at the bottom of the window, in a permanent spot of the status bar next to the "My pictures" label: a progress bar and the current phase. The widget is hidden while modules are idle; its activity is never overwritten by viewer events (opening a folder, search), and if updates stop coming for a while it ticks " · N s" — you can see the process is alive and how long it has been running.
