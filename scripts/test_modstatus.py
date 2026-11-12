@@ -16,7 +16,7 @@
 5. секундный тик: активность без обновлений дольше 3 с тикает « · N с»;
 6. MainWindow: виджет — ребёнок статус-бара, рядом с подписью вьюера,
    bridge подключён — report мгновенно виден внизу окна; процессные
-   сообщения модулей НЕ дублируются в подписи вьюера (v0.8.21,
+   сообщения модулей НЕ дублируются в подписи вьюера (v0.8.22,
    репорт «сообщения в статусе дублируются»), итоги — в подписи;
 7. i18n: все новые ключи полны в ru/en/zh;
 8. RemoveWatermarkTask: file_start до file_done, фазы detect → found →
@@ -174,7 +174,7 @@ def main() -> int:
     check("done через мост скрывает виджет",
           not win._mod_status.isVisible())
 
-    # ---------- v0.8.21: подпись вьюера не дублирует сообщения модулей ----------
+    # ---------- v0.8.22: подпись вьюера не дублирует сообщения модулей ----------
     # репорт: «сообщения в статусе дублируются» — процессный текст модуля
     # писался одновременно и в подпись вьюера, и в новый виджет: две
     # одинаковые строки рядом. Теперь процесс живёт ТОЛЬКО в виджете,
@@ -183,29 +183,29 @@ def main() -> int:
     before = win.local.status.text()
     win.local._wm_signals.model_prepare.emit("Florence-2-base")
     pump(app, 200)
-    check("v0.8.21: «готовлю модели» — в виджете",
+    check("v0.8.22: «готовлю модели» — в виджете",
           win._mod_status.isVisible() and
           i18n.tr("viewer.wm_prepare", model="Florence-2-base")
           in win._mod_status._label.text(),
           win._mod_status._label.text())
-    check("v0.8.21: «готовлю модели» — подпись не дублирует",
+    check("v0.8.22: «готовлю модели» — подпись не дублирует",
           win.local.status.text() == before, win.local.status.text())
     win.local._wm_signals.file_start.emit("/tmp/pool/photo.webp", 1)
     pump(app, 200)
-    check("v0.8.21: «файл 0 из 0» — в виджете",
+    check("v0.8.22: «файл 0 из 0» — в виджете",
           "photo.webp" in win._mod_status._label.text(),
           win._mod_status._label.text())
-    check("v0.8.21: file_start — подпись не дублирует",
+    check("v0.8.22: file_start — подпись не дублирует",
           win.local.status.text() == before, win.local.status.text())
     win.local._wm_signals.file_done.emit("/tmp/pool/photo.webp",
                                          "/tmp/pool/photo_nowm.webp",
                                          True, "")
     win.local._wm_signals.batch_done.emit(1, 0)
     pump(app, 200)
-    check("v0.8.21: итог пачки — в подписи вьюера",
+    check("v0.8.22: итог пачки — в подписи вьюера",
           win.local.status.text() == i18n.tr("viewer.wm_done", ok=1),
           win.local.status.text())
-    check("v0.8.21: после итога виджет скрыт",
+    check("v0.8.22: после итога виджет скрыт",
           not win._mod_status.isVisible())
     win.close()
     pump(app, 100)

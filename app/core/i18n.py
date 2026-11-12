@@ -671,6 +671,20 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ru": "Сначала выберите картинку в ленте",
         "en": "Select an image in the strip first",
         "zh": "请先在缩略图栏中选择图片"},
+    "viewer.wm_sel": {
+        "ru": "🧽 Убрать в выделении", "en": "🧽 Erase Selection", "zh": "🧽 清除选区水印"},
+    "viewer.wm_sel_tip": {
+        "ru": "Убрать водяные знаки в выделенной области (v0.8.22): LaMa закрасит ровно её,\n"
+              "без автопоиска — Florence-2 не грузится. Результат — отдельный файл\n"
+              "«имя_nowm.ext» рядом с оригиналом; повторная чистка результата —\n"
+              "«имя_nowm-1.ext», «-2»… Оригиналы никогда не перезаписываются.",
+        "en": "Erase watermarks inside the selection (v0.8.22): LaMa fills exactly that area,\n"
+              "no auto-detection — Florence-2 is not loaded. The result is a separate file\n"
+              "“name_nowm.ext” next to the original; re-cleaning the result yields\n"
+              "“name_nowm-1.ext”, “-2”… Originals are never overwritten.",
+        "zh": "去除选区内的水印（v0.8.22）：LaMa 只填充所选区域——无需自动检测，不加载 Florence-2。\n"
+             "结果为原图旁的单独文件“名称_nowm.ext”；对结果再次清除会得到\n"
+             "“名称_nowm-1.ext”“-2”……原图永远不会被覆盖。"},
     "viewer.wm_busy": {
         "ru": "Идёт удаление водяных знаков — подождите",
         "en": "Watermark removal is already running — please wait",
@@ -801,6 +815,10 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ru": "маска заняла {pct}% кадра — детектор не отделил знак от картинки, файл не тронут",
         "en": "the mask covered {pct}% of the frame — the detector failed to separate the watermark; the file is untouched",
         "zh": "遮罩覆盖了画面的 {pct}% —— 检测器未能分离水印，文件未作改动"},
+    "log.event.wm_sel_cover": {
+        "ru": "выделение заняло {pct}% картинки — закрасить его целиком нельзя, картинка не тронута",
+        "en": "the selection covers {pct}% of the image — filling it entirely is not possible; the image is untouched",
+        "zh": "选区覆盖了图片的 {pct}% —— 无法整幅填充，图片未作改动"},
     "log.event.wm_done": {
         "ru": "🧽 Водяные знаки убраны: обработано {ok}, чистых {clean}, ошибок {fail} ({ms} мс)",
         "en": "🧽 Watermark removal finished: {ok} processed, {clean} clean, {fail} failed ({ms} ms)",
@@ -809,6 +827,10 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ru": "🧽 Пропущено файлов: {n} (уже «_nowm» или GIF)",
         "en": "🧽 Skipped {n} file(s) (already *_nowm results or GIF)",
         "zh": "🧽 跳过 {n} 个文件（已是 *_nowm 结果或 GIF）"},
+    "log.event.wm_sel_start": {
+        "ru": "🧽 Убираю водяные знаки в выделении {w}×{h}: {name}, модель {model}",
+        "en": "🧽 Removing watermarks in the {w}×{h} selection: {name}, model {model}",
+        "zh": "🧽 正在去除 {w}×{h} 选区内的水印：{name}，模型 {model}"},
     "log.event.wm_model": {
         "ru": "🧽 Модель детекции: {model}", "en": "🧽 Detection model: {model}",
         "zh": "🧽 检测模型：{model}"},

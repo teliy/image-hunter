@@ -2622,6 +2622,13 @@ class LocalViewer(QWidget):
         self.btn_fill = btn("viewer.fill", "viewer.fill_tip", self._on_fill_apply,
                             lay=tools_lay)
         self.btn_fill.setVisible(False)
+        # 🧽 Убрать в выделении: ватермарки в выделении обрезки через LaMa
+        # (v0.8.22, пожелание: «сделай возможность удалять ватермарки из
+        # выделения на картинке») — та же рамка, что у обрезки; видна
+        # только в режиме, между «🪣 Закрасить» и «✂▶ К следующему»
+        self.btn_wm_sel = btn("viewer.wm_sel", "viewer.wm_sel_tip",
+                              self._wm_sel_start, lay=tools_lay)
+        self.btn_wm_sel.setVisible(False)
         self.btn_crop_next = btn("viewer.crop_next", "viewer.crop_next_tip",
                                  self._on_crop_apply_next, lay=tools_lay)
         self.btn_crop_next.setVisible(False)
@@ -2950,6 +2957,10 @@ class LocalViewer(QWidget):
         self._wm_signals.update_done.connect(self._on_wm_update_done)
         self._wm_busy = False          # pip/обработка уже идут — второй запуск не нужен
         self._wm_pending: list[str] | None = None   # очередь после установки
+        # убирание по выделению (v0.8.22): продолжить после установки модуля
+        # и результат, который надо открыть после пересканирования ленты
+        self._wm_sel_pending = False
+        self._wm_sel_open = ""
         self._wm_ok = 0
         self._wm_clean = 0             # файлы без найденных водяных знаков
         self._wm_fail = 0
@@ -3893,6 +3904,16 @@ class LocalViewer(QWidget):
         if not jobs:
             self.status.setText(tr("viewer.wm_already"))
             return
+        self._wm_run(jobs)
+
+    def _wm_run(self, jobs: list[tuple[str, str]],
+                sel: tuple[int, int, int, int] | None = None) -> None:
+        """Общий запуск конвейера (v0.8.22): пачка после автодетекции
+
+        или одно убирание по выделению — sel (x, y, w, h) картинки.
+        Счётчики, статус-виджет и пул общие: процесс убирания по
+        выделению виден в строке статуса ровно как пачка (v0.8.20/21).
+        """
         self._wm_busy = True
         self._wm_total = len(jobs)
         self._wm_ok = 0
@@ -3904,14 +3925,63 @@ class LocalViewer(QWidget):
         modstatus.report("wm", tr("viewer.wm_progress", done=0, n=len(jobs),
                                   name=os.path.basename(jobs[0][0])),
                          frac=0.0)
-        applog.event("log.event.wm_start", n=len(jobs), model=self._wm_model)
+        if sel is None:
+            applog.event("log.event.wm_start", n=len(jobs), model=self._wm_model)
+            task = watermark_manager.RemoveWatermarkTask(
+                jobs, self._wm_model, self._wm_signals)
+        else:
+            applog.event("log.event.wm_sel_start", w=sel[2], h=sel[3],
+                         name=os.path.basename(jobs[0][0]),
+                         model=self._wm_model)
+            task = watermark_manager.RemoveWatermarkTask(
+                jobs, self._wm_model, self._wm_signals, sel=sel)
         # чтение файлов — в самой задаче, GUI не ждёт; на сетевом диске —
         # узкий отдельный пул, как у rembg (принцип v0.7.2)
         pool = (self._net_pool
                 if any(_is_remote_path(p) for p, _out in jobs)
                 else QThreadPool.globalInstance())
-        pool.start(watermark_manager.RemoveWatermarkTask(
-            jobs, self._wm_model, self._wm_signals))
+        pool.start(task)
+
+    def _wm_sel_start(self) -> None:
+        """«🧽 Убрать в выделении»: ватермарки в выделении обрезки (v0.8.22).
+
+        Пожелание: «сделай возможность удалять ватермарки из выделения на
+        картинке». Рамку рисует режим «✂ Обрезать» (v0.8.7): резинка,
+        восемь ручек, перенос — выделение живёт в координатах картинки,
+        переживает зум и совпадает с показом (у обоих EXIF-разворот).
+        LaMa закрашивает ровно выделение — детекция Florence-2 не нужна
+        и не грузится. Оригинал не трогается: результат — отдельный файл
+        «имя_nowm.ext» (принцип модуля); чистка остатков на УЖЕ готовом
+        «_nowm»-файле получает свободное «имя_nowm-1.ext» и дальше.
+        После готовности результат откроется в просмотре с рамкой на
+        месте — остатки можно чистить не перекликивая.
+        """
+        if self._wm_busy:
+            self.status.setText(tr("viewer.wm_busy"))
+            return
+        if (not self._crop_mode or self._pixmap is None
+                or not self.view_label.has_selection()):
+            return
+        if not watermark_manager.is_installed():
+            # модуля нет — предложить установить, не отпуская в терминал,
+            # после установки продолжить ровно это выделение
+            ans = QMessageBox.question(self, tr("viewer.wm"),
+                                       tr("viewer.wm_inst_q"))
+            if ans == QMessageBox.StandardButton.Yes:
+                self._wm_sel_pending = True
+                self._wm_start_install()
+            return
+        row = self.list.currentRow()
+        src = self._paths[row] if 0 <= row < len(self._paths) else ""
+        out = watermark_manager.sel_result_path(src) if src else ""
+        if not out:
+            # GIF/без расширения в режим обрезки не попадают — защита честная
+            self.status.setText(tr("viewer.wm_already"))
+            return
+        sel = self.view_label.selection()
+        self._wm_sel_open = out   # откроется после пересканирования (_on_wm_batch_done)
+        self._wm_run([(src, out)],
+                     sel=(sel.x(), sel.y(), sel.width(), sel.height()))
 
     def _on_wm_file_start(self, path: str, idx: int) -> None:
         """Начался файл пачки: строка статуса оживает до file_done (v0.8.20)."""
@@ -4000,8 +4070,16 @@ class LocalViewer(QWidget):
         self.status.setText(msg)
         applog.event("log.event.wm_done", ok=ok, clean=self._wm_clean,
                      fail=fail, ms=ms)
+        open_path, self._wm_sel_open = self._wm_sel_open, ""
         if ok:
             self.refresh()   # файлы «*_nowm» появляются в ленте
+            if open_path:
+                # убирание по выделению (v0.8.22): результат откроется после
+                # пересканирования, режим обрезки встанет на него сам —
+                # остатки знака чистятся той же рамкой без перекликивания
+                self._select_after_scan = open_path
+                self._crop_continue = True
+        # open_path при неуспехе честно сброшен: результата нет — открывать нечего
 
     def _on_wm_model_prepare(self, model: str) -> None:
         """Модели готовятся: грузятся в память, при первом запуске качаются."""
@@ -4029,11 +4107,16 @@ class LocalViewer(QWidget):
         self._wm_busy = False
         modstatus.done("wm")
         pending, self._wm_pending = self._wm_pending, None
+        sel_pending, self._wm_sel_pending = self._wm_sel_pending, False
         if ok:
             applog.event("log.event.wm_install_done")
             if pending:
                 # установка была по клику «Убрать водяные знаки» — продолжаем
                 self._wm_start(pending)
+            elif sel_pending:
+                # установка была по клику «🧽 Убрать в выделении» (v0.8.22)
+                # — продолжаем то же выделение
+                self._wm_sel_start()
             else:
                 self.status.setText(tr("viewer.wm_install_ok"))
                 QMessageBox.information(self, tr("viewer.wm"),
@@ -4991,7 +5074,7 @@ class LocalViewer(QWidget):
         self.view_label.set_crop_mode(
             on, self._pixmap.size() if (on and self._pixmap is not None) else None)
         for b in (self.btn_crop_save, self.btn_crop_saveas, self.btn_fill,
-                  self.btn_crop_next):
+                  self.btn_wm_sel, self.btn_crop_next):
             b.setVisible(on)
             b.setEnabled(False)   # включатся, когда появится выделение
         if on:
@@ -5007,7 +5090,7 @@ class LocalViewer(QWidget):
         sel = self.view_label.selection()
         has = not sel.isNull() and self._pixmap is not None
         for b in (self.btn_crop_save, self.btn_crop_saveas, self.btn_fill,
-                  self.btn_crop_next):
+                  self.btn_wm_sel, self.btn_crop_next):
             b.setEnabled(has and not self._crop_saving and not self._fill_saving)
         if self._crop_saving:
             return
@@ -5077,7 +5160,7 @@ class LocalViewer(QWidget):
             return
         self._crop_saving = True
         for b in (self.btn_crop_save, self.btn_crop_saveas, self.btn_fill,
-                  self.btn_crop_next):
+                  self.btn_wm_sel, self.btn_crop_next):
             b.setEnabled(False)
         self.status.setText(tr("viewer.crop_saving"))
         stem = os.path.splitext(os.path.basename(src))[0] if src else "image"
@@ -5122,7 +5205,7 @@ class LocalViewer(QWidget):
                 self._select_after_scan = path
         else:
             for b in (self.btn_crop_save, self.btn_crop_saveas, self.btn_fill,
-                      self.btn_crop_next):
+                      self.btn_wm_sel, self.btn_crop_next):
                 b.setEnabled(self.view_label.has_selection()
                              and not self._fill_saving)
             self.status.setText(tr("viewer.crop_save_err", err=err))
@@ -5281,7 +5364,7 @@ class LocalViewer(QWidget):
         self._apply_mode()   # закрашенное видно сразу, до записи
         self._fill_saving = True
         for b in (self.btn_crop_save, self.btn_crop_saveas, self.btn_fill,
-                  self.btn_crop_next):
+                  self.btn_wm_sel, self.btn_crop_next):
             b.setEnabled(False)
         self.status.setText(tr("viewer.fill_saving"))
         stem = os.path.splitext(os.path.basename(src))[0] if src else "image"
@@ -5301,7 +5384,7 @@ class LocalViewer(QWidget):
         self._fill_saving = False
         has = self.view_label.has_selection()
         for b in (self.btn_crop_save, self.btn_crop_saveas, self.btn_fill,
-                  self.btn_crop_next):
+                  self.btn_wm_sel, self.btn_crop_next):
             b.setEnabled(has and not self._crop_saving)
         if ok:
             self._fill_prev_pixmap = None

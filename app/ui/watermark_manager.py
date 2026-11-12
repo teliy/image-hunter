@@ -239,6 +239,35 @@ def nowm_path(path: str) -> str:
     return stem + _NOWM_SUFFIX + ext
 
 
+def sel_result_path(path: str) -> str:
+    """Имя файла-результата убирания ПО ВЫДЕЛЕНИЮ (v0.8.22).
+
+    Пожелание: «сделай возможность удалять ватермарки из выделения на
+    картинке». База та же, что у ``nowm_path`` — ``X.ext`` →
+    ``X_nowm.ext`` (AVIF → PNG; GIF/без расширения — не обрабатывать),
+    но у выделения есть сценарий, которого у пачки нет: пользователь
+    чистит остатки знака на УЖЕ готовом результате — значит, входом
+    бывает ``X_nowm.ext``, и отказывать нельзя. Поэтому: вход ``X_nowm.*``
+    не отбраковывается, а результат получает следующее свободное имя
+    ``X_nowm-1.ext``, ``X_nowm-2.ext``… (проверка прямо перед стартом
+    задачи, приём _free_crop_name v0.8.7 — чужие файлы не затираются).
+    """
+    stem, ext = os.path.splitext(path)
+    low = ext.lower()
+    if low in (".gif", ""):
+        return ""
+    base = stem if stem.endswith(_NOWM_SUFFIX) else stem + _NOWM_SUFFIX
+    out_ext = ".png" if low == ".avif" else ext
+    # вход — уже «_nowm»: имя результата обязано отличаться от входного
+    # файла (он и есть base+ext), поэтому нумерация начинается с −1
+    n = 1 if base == stem else 0
+    candidate = f"{base}{out_ext}" if n == 0 else f"{base}-{n}{out_ext}"
+    while os.path.lexists(candidate):
+        n += 1
+        candidate = f"{base}-{n}{out_ext}"
+    return candidate
+
+
 def _poly_area(poly) -> float:
     """Площадь полигона (формула шнурования); точки — пары (x, y)."""
     s = 0.0
@@ -1223,14 +1252,24 @@ class RemoveWatermarkTask(QRunnable):
     запись результатов — здесь же, в рабочем потоке: на сетевом диске
     GUI не замораживается (принцип v0.7.2). Оригиналы никогда не
     перезаписываются: результат — отдельный файл «*_nowm.ext».
+
+    v0.8.22 — убирание ПО ВЫДЕЛЕНИЮ: ``sel`` — прямоугольник (x, y, w, h)
+    в координатах картинки, нарисованный рамкой режима обрезки. Детекция
+    Florence-2 не нужна и НЕ ГРУЗИТСЯ (в память идёт только LaMa —
+    секунды экономии и полгигабайта RAM), маска — ровно выделение, без
+    расширения: человек нарисовал рамку сам, расширять её — закрасить
+    больше, чем он выбрал (WYSIWYG). Покрытие по-прежнему проверяется:
+    выделение на весь кадр — не «удаление знака», а уничтожение картинки.
     """
 
     def __init__(self, jobs: list[tuple[str, str]], model: str,
-                 signals: WatermarkSignals) -> None:
+                 signals: WatermarkSignals,
+                 sel: tuple[int, int, int, int] | None = None) -> None:
         super().__init__()
         self.jobs = jobs            # (исходный путь, путь результата)
         self.model = model
         self.signals = signals
+        self.sel = sel              # (x, y, w, h) выделения — None: автодетекция
 
     def run(self) -> None:  # рабочий поток
         # на время пачки скачивания моделей докладывают её сигналам
@@ -1245,9 +1284,15 @@ class RemoveWatermarkTask(QRunnable):
     def _run_inner(self) -> None:
         _ensure_stdio()          # pythonw: без этого падают HF-прогресс-бары
         _disable_hf_progress()   # свои прогресс-сигналы; консольных нет у pythonw
+        by_sel = self.sel is not None
         self.signals.model_prepare.emit(self.model)
         try:
-            inpainter, detect = _load_pipeline(self.model)
+            if by_sel:
+                # Florence-2 не грузится — рисует человек, а не детектор
+                inpainter = _load_inpainter(_torch_device())
+                detect = None
+            else:
+                inpainter, detect = _load_pipeline(self.model)
         except Exception as exc:   # noqa: BLE001 — модуль сломан/не стоит
             for path, _out in self.jobs:
                 self.signals.file_done.emit(path, "", False, str(exc))
@@ -1261,26 +1306,43 @@ class RemoveWatermarkTask(QRunnable):
             # прогресс замирал на «N/M» до завершения файла
             self.signals.file_start.emit(path, idx)
             try:
-                self.signals.phase.emit(path, "detect", -1)
                 with Image.open(path) as im:
                     # EXIF-поворот: фото телефонов иначе уедут «головой вбок»
+                    # (тот же разворот, что у показа вьюера — QImageReader
+                    # setAutoTransform — выделение совпадает с показом)
                     rgb = _exif_rgb(im)
-                polys = detect(Image.fromarray(rgb))
-                mask = mask_from_polys((rgb.shape[1], rgb.shape[0]), polys)
-                if mask.max() == 0:
-                    # водяных знаков не нашлось — писать нечего, это не ошибка
-                    self.signals.file_done.emit(path, "", True, "")
-                    continue
-                self.signals.phase.emit(path, "found", len(polys))
+                if by_sel:
+                    # маска ровно выделение (v0.8.22): (x, y, w, h) →
+                    # срез numpy не включает правый/нижний край — пиксели
+                    # рамки x..x+w-1 / y..y+h-1, ровно то, что нарисовано
+                    x, y, w, h = self.sel
+                    mask = mask_from_boxes(
+                        (rgb.shape[1], rgb.shape[0]),
+                        [(x, y, x + w, y + h)], margin=0)
+                    if mask.max() == 0:   # выделение ≥1×1 — защита на всякий случай
+                        self.signals.file_done.emit(path, "", True, "")
+                        continue
+                else:
+                    self.signals.phase.emit(path, "detect", -1)
+                    polys = detect(Image.fromarray(rgb))
+                    mask = mask_from_polys((rgb.shape[1], rgb.shape[0]), polys)
+                    if mask.max() == 0:
+                        # водяных знаков не нашлось — писать нечего, это не ошибка
+                        self.signals.file_done.emit(path, "", True, "")
+                        continue
+                    self.signals.phase.emit(path, "found", len(polys))
                 cover = float((mask > 0).mean())
                 if cover > _MAX_MASK_COVER:
                     # маска-гигант не «удаляет знак», а уничтожает картинку
                     # (репорт v0.8.14: маска на 100% кадра → каша) — честный
-                    # отказ лучше испорченного файла
+                    # отказ лучше испорченного файла; у выделения свой текст:
+                    # тут рисовал человек, детектор ни при чём (v0.8.22)
                     fail += 1
                     self.signals.file_done.emit(
                         path, "", False,
-                        tr("log.event.wm_cover", pct=round(cover * 100)))
+                        tr("log.event.wm_sel_cover" if by_sel
+                           else "log.event.wm_cover",
+                           pct=round(cover * 100)))
                     continue
                 self.signals.phase.emit(path, "inpaint", -1)
                 result = inpainter(rgb, mask)

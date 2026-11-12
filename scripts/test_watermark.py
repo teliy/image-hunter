@@ -2,7 +2,8 @@
 двухшаговая установка без пина Pillow — v0.8.12; без gradio, с шимами для
 новых Python и скачиванием big-lama до ModelManager — v0.8.13; двухзадачная
 детекция OCR+grounding с фильтрами и предохранителем покрытия — v0.8.14;
-обновление установленного модуля: PyPI/Hugging Face/релиз big-lama — v0.8.15).
+обновление установленного модуля: PyPI/Hugging Face/релиз big-lama — v0.8.15;
+убирание по выделению без детекции — v0.8.22).
 
 Проверяется:
 - watermark_manager: is_installed, nowm_path (формат сохраняется, AVIF → PNG,
@@ -37,6 +38,18 @@
   каждому файлу (batch_done(0, N)); со стабами конвейера (_load_pipeline)
   создаёт «имя_nowm.ext»: область маски перекрашена, остальное — оригинал,
   оригинал цел; файл без найденных знаков не даёт файла-результата;
+- v0.8.22, убирание по выделению: sel_result_path (свежий «X.ext» →
+  «X_nowm.ext», занятые имена → «-1»/«-2», вход уже «_nowm» → номер с −1,
+  AVIF → PNG, GIF/без расширения — отказ); RemoveWatermarkTask с sel —
+  детекция НЕ грузится (_load_pipeline не вызывается), маска ровно
+  выделение без расширения, фазы без detect/found, предохранитель
+  покрытия со своим текстом (wm_sel_cover); вьюер: кнопка «🧽 Убрать в
+  выделении» на панели инструментов между «Закрасить» и «К следующему»,
+  видна только в режиме обрезки, рамка рисуется честной доставкой мыши,
+  клик стартует задачу с sel, результат открывается после пересканирования
+  с режимом обрезки на нём, чистка результата даёт «-1», без модуля —
+  вопрос установки (отказ ничего не делает, согласие ставит pip и
+  продолжает выделение из _on_wm_install_done);
 - кнопка 🧽 есть, клик без выбора картинки даёт подсказку в статусе;
 - «Убрать водяные знаки» без модуля предлагает установку (стаб вопроса):
   отказ ничего не запускает, согласие ставит pip и продолжает очередь
@@ -55,7 +68,7 @@
   неудача проверки моделей не фатальна, подсказка о перезапуске;
   вьюер: wm_update стартует задачу с выбранным детектором, guard busy,
   итог в статусе, без модуля — не стартует;
-- i18n: все новые ключи заполнены на ru/en/zh; версия — 0.8.21.
+- i18n: все новые ключи заполнены на ru/en/zh; версия — 0.8.22.
 
 Раздел меню «Модули» проверяет scripts/test_modules_menu.py.
 Запуск: QT_QPA_PLATFORM=offscreen python scripts/test_watermark.py
@@ -69,7 +82,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QSettings, QRunnable, QThreadPool  # noqa: E402
+from PySide6.QtCore import (QEvent, QPointF, QRect, QRunnable, QSettings,  # noqa: E402
+                            Qt, QThreadPool)
+from PySide6.QtGui import QMouseEvent  # noqa: E402
 from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
 
 import app  # noqa: E402
@@ -101,6 +116,7 @@ WM_KEYS = [
     "viewer.wm", "viewer.wm_tip", "viewer.wm_none", "viewer.wm_busy",
     "viewer.wm_already", "viewer.wm_progress", "viewer.wm_done",
     "viewer.wm_clean", "viewer.wm_done_fail", "viewer.wm_inst_q",
+    "viewer.wm_sel", "viewer.wm_sel_tip",
     "viewer.wm_installing", "viewer.wm_install_ok", "viewer.wm_install_fail",
     "viewer.wm_uninst_q", "viewer.wm_uninstalling", "viewer.wm_uninst_ok",
     "viewer.wm_uninst_fail", "viewer.wm_menu_install",
@@ -113,8 +129,8 @@ WM_KEYS = [
     "viewer.wm_model_menu",
     "viewer.wm_model_base", "viewer.wm_model_large", "viewer.wm_prepare",
     "viewer.wm_ready", "log.event.wm_start", "log.event.wm_file_err",
-    "log.event.wm_cover", "log.event.wm_done", "log.event.wm_skip",
-    "log.event.wm_model",
+    "log.event.wm_cover", "log.event.wm_sel_cover", "log.event.wm_done",
+    "log.event.wm_skip", "log.event.wm_sel_start", "log.event.wm_model",
     "log.event.wm_install_start", "log.event.wm_install_done",
     "log.event.wm_install_fail", "log.event.wm_uninstall_start",
     "log.event.wm_uninstall_done", "log.event.wm_uninstall_fail",
@@ -130,7 +146,7 @@ def main() -> int:
     st = QSettings("ImageHunter", "ImageHunter")
     st.sync()
 
-    check("версия 0.8.21", app.__version__ == "0.8.21", app.__version__)
+    check("версия 0.8.22", app.__version__ == "0.8.22", app.__version__)
 
     # ---------- менеджер: чистые функции ----------
     check("is_installed() — булево", isinstance(watermark_manager.is_installed(), bool))
@@ -146,6 +162,21 @@ def main() -> int:
     for bad in ("cat_nowm.jpg", "cat.gif", "cat"):
         got = watermark_manager.nowm_path(bad)
         check(f"nowm_path {bad!r} → отказ", got == "", repr(got))
+
+    # ---------- sel_result_path: имя результата убирания по выделению (v0.8.22) ----------
+    sel_cases = {"cat.jpg": "cat_nowm.jpg", "cat.png": "cat_nowm.png",
+                 "cat.webp": "cat_nowm.webp", "cat.avif": "cat_nowm.png"}
+    for src, want in sel_cases.items():
+        got = watermark_manager.sel_result_path(src)
+        check(f"sel_result_path {src} → {want}", got == want, got)
+    for bad in ("cat.gif", "cat"):
+        got = watermark_manager.sel_result_path(bad)
+        check(f"sel_result_path {bad!r} → отказ", got == "", repr(got))
+    # вход уже «_nowm» — не отбраковывается: это чистка остатков на
+    # готовом результате, имя уедет в следующий свободный номер
+    got = watermark_manager.sel_result_path("cat_nowm.webp")
+    check("sel_result_path «cat_nowm.webp» → «cat_nowm-1.webp»",
+          got == "cat_nowm-1.webp", got)
 
     # ---------- mask_from_boxes: геометрия маски ----------
     mask = watermark_manager.mask_from_boxes((10, 10), [])
@@ -1100,6 +1131,96 @@ def main() -> int:
     check("чистый файл: batch_done(0, 0)", batches == [(0, 0)], str(batches))
     watermark_manager._load_pipeline = real_pipeline
 
+    # ---------- убирание по выделению: RemoveWatermarkTask с sel (v0.8.22) ----------
+    # пожелание: «сделай возможность удалять ватермарки из выделения на
+    # картинке». Sel-поток грузит ТОЛЬКО LaMa (_load_inpainter) —
+    # _load_pipeline не вызывается вовсе; маска — ровно выделение.
+    real_inpainter = watermark_manager._load_inpainter
+    pipeline_touched: list[str] = []
+
+    def boom_pipeline(model_id):
+        # если sel-поток сунется за детекцией — это увидит проверка ниже
+        pipeline_touched.append(model_id)
+        return (fake_inpaint, fake_detect)
+
+    sel_masks: list = []
+
+    def sel_inpaint(rgb, mask):
+        sel_masks.append(mask.copy())
+        return fake_inpaint(rgb, mask)
+
+    watermark_manager._load_pipeline = boom_pipeline
+    watermark_manager._load_inpainter = lambda device: sel_inpaint
+    sel_png = os.path.join(tmpdir, "selphoto.png")
+    Image.new("RGB", (60, 45), (0, 128, 0)).save(sel_png, "PNG")
+    sig = watermark_manager.WatermarkSignals()
+    files, batches, phases, starts = [], [], [], []
+    sig.file_done.connect(
+        lambda p, out, ok, err: files.append((p, out, ok, err)))
+    sig.batch_done.connect(lambda ok, fail: batches.append((ok, fail)))
+    sig.phase.connect(lambda p, code, extra: phases.append(code))
+    sig.file_start.connect(lambda p, idx: starts.append((p, idx)))
+    QThreadPool.globalInstance().start(
+        watermark_manager.RemoveWatermarkTask(
+            [(sel_png, os.path.join(tmpdir, "selphoto_nowm.png"))], "m", sig,
+            sel=(10, 8, 24, 12)))
+    wait_until(lambda: bool(batches))
+    check("sel: batch_done(1, 0)", batches == [(1, 0)], str(batches))
+    check("sel: детекция не вызывалась (_load_pipeline не трогали)",
+          not pipeline_touched, str(pipeline_touched))
+    check("sel: file_start до фаз", bool(starts) and starts[0][1] == 1,
+          str(starts))
+    check("sel: фазы без детекции/поиска — сразу закраска и сохранение",
+          phases == ["inpaint", "save"], str(phases))
+    m = sel_masks[0]
+    check("sel: маска ровно выделение — внутри 255",
+          bool((m[8:20, 10:34] == 255).all()), str(m.shape))
+    check("sel: маска ровно выделение — рамка чистая (без расширения)",
+          m[7, 10] == 0 and m[20, 10] == 0 and m[8, 9] == 0 and m[8, 34] == 0,
+          f"{m[7, 10]} {m[20, 10]} {m[8, 9]} {m[8, 34]}")
+    out_sel = os.path.join(tmpdir, "selphoto_nowm.png")
+    check("sel: файл-результат создан", os.path.exists(out_sel))
+    if os.path.exists(out_sel):
+        dst = Image.open(out_sel).convert("RGB")
+        check("sel: внутри выделения — закраска", dst.getpixel((20, 12)) == (255, 0, 0))
+        check("sel: снаружи — оригинал", dst.getpixel((2, 2)) == (0, 128, 0))
+        check("sel: оригинал цел",
+              Image.open(sel_png).convert("RGB").getpixel((20, 12)) == (0, 128, 0))
+
+    # sel_result_path по диску: занятые имена не затираются
+    open(os.path.join(tmpdir, "busy_nowm.png"), "wb").close()
+    got = watermark_manager.sel_result_path(os.path.join(tmpdir, "busy.png"))
+    check("sel_result_path: имя занято → «busy_nowm-1.png»",
+          got == os.path.join(tmpdir, "busy_nowm-1.png"), got)
+    open(os.path.join(tmpdir, "busy_nowm-1.png"), "wb").close()
+    got = watermark_manager.sel_result_path(os.path.join(tmpdir, "busy.png"))
+    check("sel_result_path: заняты оба → «busy_nowm-2.png»",
+          got == os.path.join(tmpdir, "busy_nowm-2.png"), got)
+
+    # предохранитель покрытия и для выделения: весь кадр — честный отказ
+    sel_big = os.path.join(tmpdir, "selbig.png")
+    Image.new("RGB", (100, 100), (0, 128, 0)).save(sel_big, "PNG")
+    sig = watermark_manager.WatermarkSignals()
+    files, batches = [], []
+    sig.file_done.connect(
+        lambda p, out, ok, err: files.append((p, out, ok, err)))
+    sig.batch_done.connect(lambda ok, fail: batches.append((ok, fail)))
+    QThreadPool.globalInstance().start(
+        watermark_manager.RemoveWatermarkTask(
+            [(sel_big, os.path.join(tmpdir, "selbig_nowm.png"))], "m", sig,
+            sel=(0, 0, 100, 100)))
+    wait_until(lambda: bool(batches))
+    check("sel: покрытие 100% — честный отказ",
+          batches == [(0, 1)] and bool(files) and files[0][2] is False,
+          str(files))
+    check("sel: текст отказа — свой ключ wm_sel_cover (без детектора)",
+          bool(files) and files[0][3] == i18n.tr("log.event.wm_sel_cover", pct=100),
+          files[0][3] if files else "")
+    check("sel: файла-результата нет",
+          not os.path.exists(os.path.join(tmpdir, "selbig_nowm.png")))
+    watermark_manager._load_pipeline = real_pipeline
+    watermark_manager._load_inpainter = real_inpainter
+
     # ---------- вьюер: кнопка, статус, модель, контекстное меню ----------
     # чужая сохранённая папка (персистентный QSettings от других наборов
     # тестов) не должна восстанавливаться: её фоновый скан перебивает
@@ -1230,6 +1351,215 @@ def main() -> int:
               viewer.status.text())
     finally:
         watermark_manager._load_pipeline = real_pipeline
+
+    # ---------- убирание по выделению в вьюере (v0.8.22) ----------
+    # кнопка живёт в режиме обрезки: «🪣 Закрасить» → «🧽 Убрать в выделении»
+    # → «✂▶ К следующему»
+    viewer.resize(1000, 720)
+    viewer.show()
+    app_inst.processEvents()
+    check("вьюер-sel: кнопка на панели инструментов",
+          viewer.btn_wm_sel.parent() is viewer.tools_panel,
+          type(viewer.btn_wm_sel.parent()).__name__)
+    check("вьюер-sel: между «Закрасить» и «К следующему»",
+          _tl.indexOf(viewer.btn_wm_sel) > _tl.indexOf(viewer.btn_fill)
+          and _tl.indexOf(viewer.btn_wm_sel) < _tl.indexOf(viewer.btn_crop_next),
+          str(_tl.indexOf(viewer.btn_wm_sel)))
+    check("вьюер-sel: текст и подсказка по i18n",
+          viewer.btn_wm_sel.text() == i18n.tr("viewer.wm_sel")
+          and i18n.tr("viewer.wm_sel_tip") in viewer.btn_wm_sel.toolTip(),
+          viewer.btn_wm_sel.text())
+    check("вьюер-sel: скрыта вне режима обрезки",
+          not viewer.btn_wm_sel.isVisible(), str(viewer.btn_wm_sel.isVisible()))
+
+    sel_folder = tempfile.mkdtemp(prefix="ih_wm_sel_")
+    sel_src = os.path.join(sel_folder, "selphoto.png")
+    Image.new("RGB", (60, 45), (0, 128, 0)).save(sel_src, "PNG")
+    viewer.load_folder(sel_folder)
+    check("вьюер-sel: папка открыта, картинка показана",
+          wait_until(lambda: viewer.list.count() == 1
+                     and viewer._pixmap is not None and viewer.btn_crop.isEnabled(),
+                     timeout_s=15))
+    viewer.list.setCurrentRow(0)
+    check("вьюер-sel: плитка открыта в просмотре",
+          wait_until(lambda: viewer._paths
+                     and viewer._paths[viewer.list.currentRow()] == sel_src,
+                     timeout_s=10))
+
+    viewer.set_crop_mode(True)
+    check("вьюер-sel: в режиме «Убрать в выделении» видна и погашена",
+          viewer.btn_wm_sel.isVisible() and not viewer.btn_wm_sel.isEnabled())
+    check("вьюер-sel: «Сохранить»/«К следующему» по-прежнему рядом",
+          viewer.btn_crop_save.isVisible() and viewer.btn_crop_next.isVisible())
+
+    # выделение честной доставкой событий мыши: (10, 8) → (33, 19) = 24×12
+    def sel_drag(view, a, b):
+        r = view.pixmap_rect()
+        iw = max(1, view._crop_img.width())
+        ih = max(1, view._crop_img.height())
+
+        def wpt(ix, iy):
+            return QPointF(r.x() + ix * r.width() / iw,
+                           r.y() + iy * r.height() / ih)
+
+        pa, pb = wpt(*a), wpt(*b)
+        view.mousePressEvent(QMouseEvent(QEvent.Type.MouseButtonPress, pa,
+                                         Qt.MouseButton.LeftButton,
+                                         Qt.MouseButton.LeftButton, Qt.NoModifier))
+        view.mouseMoveEvent(QMouseEvent(QEvent.Type.MouseMove, pb,
+                                        Qt.NoButton, Qt.MouseButton.LeftButton,
+                                        Qt.NoModifier))
+        view.mouseReleaseEvent(QMouseEvent(QEvent.Type.MouseButtonRelease,
+                                           pb, Qt.MouseButton.LeftButton,
+                                           Qt.NoButton, Qt.NoModifier))
+
+    sel_drag(viewer.view_label, (10, 8), (33, 19))
+    check("вьюер-sel: рамка 24×12 в координатах картинки",
+          viewer.view_label.selection() == QRect(10, 8, 24, 12),
+          str(viewer.view_label.selection()))
+    check("вьюер-sel: с выделением кнопка включилась",
+          viewer.btn_wm_sel.isEnabled())
+
+    captured: dict = {}
+
+    class StubSelTask(QRunnable):
+        """Стаб sel-задачи: рисует файл-результат и докладывает успех."""
+
+        def __init__(self, jobs, model, signals, sel=None):
+            super().__init__()
+            self.jobs, self.sel = jobs, sel
+            self.signals = signals
+            captured["jobs"], captured["sel"] = jobs, sel
+            captured["signals"] = signals
+
+        def run(self):
+            Image.new("RGB", (60, 45), (255, 0, 0)).save(self.jobs[0][1], "PNG")
+            self.signals.file_done.emit(self.jobs[0][0], self.jobs[0][1],
+                                        True, "")
+            self.signals.batch_done.emit(1, 0)
+
+    real_task_sel = watermark_manager.RemoveWatermarkTask
+    real_installed_sel = watermark_manager.is_installed
+    watermark_manager.RemoveWatermarkTask = StubSelTask
+    watermark_manager.is_installed = lambda: True
+    try:
+        viewer.btn_wm_sel.click()
+        app_inst.processEvents()
+        check("вьюер-sel: клик стартовал задачу с выделением",
+              captured.get("sel") == (10, 8, 24, 12), str(captured.get("sel")))
+        check("вьюер-sel: работа — один файл «имя_nowm.ext»",
+              captured.get("jobs") == [(sel_src, os.path.join(sel_folder,
+                                                             "selphoto_nowm.png"))],
+              str(captured.get("jobs")))
+        check("вьюер-sel: busy на время работы", viewer._wm_busy is True)
+        wait_until(lambda: not viewer._wm_busy, timeout_s=10)
+        check("вьюер-sel: флаг открытия потреблён (итог прошёл через batch_done)",
+              viewer._wm_sel_open == "", viewer._wm_sel_open)
+        check("вьюер-sel: результат появляется в ленте",
+              wait_until(lambda: viewer.list.count() == 2, timeout_s=15))
+        # результат открывается в просмотре, режим обрезки встаёт на него —
+        # остатки знака можно чистить той же рамкой без перекликивания
+        check("вьюер-sel: результат открыт и режим на месте",
+              wait_until(lambda: viewer._paths
+                         and 0 <= viewer.list.currentRow() < len(viewer._paths)
+                         and viewer._paths[viewer.list.currentRow()].endswith(
+                             "selphoto_nowm.png")
+                         and viewer._crop_mode and viewer._pixmap is not None,
+                         timeout_s=15),
+              f"row={viewer.list.currentRow()} crop={viewer._crop_mode}")
+
+        # итеративная чистка: выделение на УЖЕ готовом «_nowm»-результате —
+        # имя уезжает в следующий свободный номер, ничего не затирается
+        sel_drag(viewer.view_label, (40, 30), (59, 44))
+        captured.clear()
+        viewer.btn_wm_sel.click()
+        app_inst.processEvents()
+        check("вьюер-sel: чистка результата → «selphoto_nowm-1.png»",
+              captured.get("jobs")
+              == [(os.path.join(sel_folder, "selphoto_nowm.png"),
+                   os.path.join(sel_folder, "selphoto_nowm-1.png"))],
+              str(captured.get("jobs")))
+        wait_until(lambda: not viewer._wm_busy, timeout_s=10)
+        check("вьюер-sel: второй результат в ленте",
+              wait_until(lambda: viewer.list.count() == 3, timeout_s=15))
+        # дождаться, пока второй результат открылся и режим встал на него:
+        # дальше рисуется новое выделение на УЖЕ показанном результате
+        check("вьюер-sel: второй результат открыт, режим на нём",
+              wait_until(lambda: viewer._paths
+                         and 0 <= viewer.list.currentRow() < len(viewer._paths)
+                         and viewer._paths[viewer.list.currentRow()].endswith(
+                             "selphoto_nowm-1.png")
+                         and viewer._pixmap is not None and viewer._crop_mode,
+                         timeout_s=15),
+              f"row={viewer.list.currentRow()} crop={viewer._crop_mode}")
+    finally:
+        watermark_manager.RemoveWatermarkTask = real_task_sel
+        watermark_manager.is_installed = real_installed_sel
+
+    # ---------- «Убрать в выделении» без модуля: отказ и согласие ----------
+    viewer.set_crop_mode(True)   # идемпотентно: режим уже на результате
+    sel_drag(viewer.view_label, (5, 5), (20, 15))
+    captured.clear()
+    inst_calls: list[int] = []
+
+    def fake_installed_once():
+        # #1 — клик-отказ, #2 — клик-согласие (пока модуля нет),
+        # #3 — продолжение из _on_wm_install_done (модуль «установился»)
+        inst_calls.append(1)
+        return len(inst_calls) > 2
+
+    pip_calls: list[list[str]] = []
+
+    def fake_pip_sel(args):
+        pip_calls.append(list(args))
+        return True, ""
+
+    real_installed2 = watermark_manager.is_installed
+    real_pip_sel = watermark_manager._run_pip
+    real_reqs_sel = watermark_manager._iopaint_requires
+    real_task3 = watermark_manager.RemoveWatermarkTask
+    watermark_manager.is_installed = fake_installed_once
+    watermark_manager._run_pip = fake_pip_sel
+    watermark_manager._iopaint_requires = lambda: ["torch>=2.0.0"]
+    watermark_manager.RemoveWatermarkTask = StubSelTask   # после установки sel продолжится стабом
+    real_question = QMessageBox.question
+    QMessageBox.question = lambda *a, **kw: QMessageBox.StandardButton.No
+    try:
+        viewer.btn_wm_sel.click()
+        app_inst.processEvents()
+        check("вьюер-sel: отказ установки — ничего не стартовало",
+              viewer._wm_busy is False and not viewer._wm_sel_pending
+              and not pip_calls and not captured,
+              f"busy={viewer._wm_busy} pip={len(pip_calls)}")
+
+        QMessageBox.question = (lambda *a, **kw: QMessageBox.StandardButton.Yes)
+        viewer.btn_wm_sel.click()
+        app_inst.processEvents()
+        # pip идёт в рабочем потоке — дождаться первых вызовов поллингом
+        check("вьюер-sel: согласие — pip стартовал",
+              wait_until(lambda: bool(pip_calls), timeout_s=10),
+              f"pip={len(pip_calls)} busy={viewer._wm_busy}")
+        wait_until(lambda: not viewer._wm_busy, timeout_s=15)
+        app_inst.processEvents()
+        check("вьюер-sel: после установки выделение обработано",
+              bool(captured) and captured.get("sel") == (5, 5, 16, 11),
+              str(captured.get("sel")))
+        check("вьюер-sel: флаг ожидания снят", viewer._wm_sel_pending is False)
+        st.sync()
+    finally:
+        QMessageBox.question = real_question
+        watermark_manager.is_installed = real_installed2
+        watermark_manager._run_pip = real_pip_sel
+        watermark_manager._iopaint_requires = real_reqs_sel
+        watermark_manager.RemoveWatermarkTask = real_task3
+
+    # клик без выделения — молчаливый выход (кнопка и так погашена)
+    viewer.view_label._crop_sel = None
+    viewer.view_label.crop_selection_changed.emit()
+    app_inst.processEvents()
+    check("вьюер-sel: без выделения кнопка погашена и клик ничего не делает",
+          not viewer.btn_wm_sel.isEnabled() and viewer._wm_busy is False)
+    viewer.set_crop_mode(False)
 
     # ---------- обновление модуля из вьюера (v0.8.15) ----------
     real_upd_installed = watermark_manager.is_installed
