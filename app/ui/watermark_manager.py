@@ -609,6 +609,15 @@ def _dists_to_remove() -> list[str]:
         rembg_alive = False
     if not rembg_alive:
         dists += [d for d in _SHARED_DISTS if d in _installed_dists(_SHARED_DISTS)]
+    try:
+        from app.ui import upscale_manager
+        upscale_alive = upscale_manager.is_installed()
+    except Exception:   # noqa: BLE001 — сосед-модуль не критичен для решения
+        upscale_alive = False
+    if upscale_alive:
+        # torch нужен соседу-модулю улучшения качества — не вычищается
+        # (v0.8.24, тот же принцип «чужое не вычищать», что у opencv/rembg)
+        dists = [d for d in dists if d not in ("torch", "torchvision")]
     return dists
 
 

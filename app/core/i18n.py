@@ -655,6 +655,301 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ru": "🪄 Не удалось удалить результат: {name} — {err}",
         "en": "🪄 Failed to remove the result: {name} — {err}",
         "zh": "🪄 删除结果失败：{name} — {err}"},
+    # ---------- улучшение качества (Real-ESRGAN, v0.8.24) ----------
+    "viewer.up": {
+        "ru": "✨ Улучшить", "en": "✨ Upscale", "zh": "✨ 增强"},
+    "viewer.up_tip": {
+        "ru": "Улучшить качество и увеличить разрешение картинки\n"
+              "(модуль Real-ESRGAN, веса качаются с GitHub, всё локально).\n"
+              "Результат — «имя_x4.ext»/«имя_x2.ext» рядом с оригиналом;\n"
+              "после обработки можно сохранить его или вернуть оригиналы.\n"
+              "При первом улучшении скачаются веса выбранной модели.",
+        "en": "Improve quality and enlarge the image resolution\n"
+              "(Real-ESRGAN module, weights are downloaded from GitHub,\n"
+              "fully local). The result is “name_x4.ext”/“name_x2.ext” next\n"
+              "to the original; afterwards you can keep it or revert to the\n"
+              "originals. The first run downloads the selected weights.",
+        "zh": "提升画质并放大图片分辨率（Real-ESRGAN 模块，权重从 GitHub\n"
+              "下载，完全本地）。结果为原图旁的“名称_x4.ext”/“名称_x2.ext”；\n"
+              "处理后可保留结果或恢复原图。首次增强会下载所选权重。"},
+    "viewer.up_none": {
+        "ru": "Сначала выберите картинку в ленте",
+        "en": "Select an image in the strip first",
+        "zh": "请先在缩略图栏中选择图片"},
+    "viewer.up_already": {
+        "ru": "Улучшать нечего: GIF, файлы без расширения или уже результаты",
+        "en": "Nothing to upscale: GIFs, extensionless files or existing results",
+        "zh": "无可增强项：GIF、无扩展名文件或已是结果"},
+    "viewer.up_busy": {
+        "ru": "Идёт улучшение качества — подождите",
+        "en": "Upscaling is already running — please wait",
+        "zh": "正在增强画质，请稍候"},
+    "viewer.up_progress": {
+        "ru": "Улучшение: {done}/{n} — {name}…",
+        "en": "Upscaling: {done}/{n} — {name}…",
+        "zh": "增强画质：{done}/{n} — {name}…"},
+    "viewer.up_phase": {
+        "ru": "Улучшение: {done}/{n} — {name}: {phase}",
+        "en": "Upscaling: {done}/{n} — {name}: {phase}",
+        "zh": "增强画质：{done}/{n} — {name}：{phase}"},
+    "viewer.up_phase_tile": {
+        "ru": "плитка {cur}/{total}",
+        "en": "tile {cur}/{total}",
+        "zh": "分块 {cur}/{total}"},
+    "viewer.up_done": {
+        "ru": "Улучшено: {ok}", "en": "Upscaled: {ok}", "zh": "已增强：{ok}"},
+    "viewer.up_done_fail": {
+        "ru": ", с ошибками: {fail}", "en": ", {fail} failed", "zh": "，失败：{fail}"},
+    "viewer.up_inst_q": {
+        "ru": "Модуль улучшения качества (Real-ESRGAN) не установлен.\n\n"
+              "Установить сейчас? Скачается torch — порядка 200 МБ (CPU)\n"
+              "до пары гигабайт, всё работает локально, без облака. Веса\n"
+              "модели (~17–64 МБ в зависимости от выбранной) скачаются\n"
+              "с GitHub при первом улучшении.",
+        "en": "The upscaling module (Real-ESRGAN) is not installed.\n\n"
+              "Install it now? torch will be downloaded — from ~200 MB (CPU)\n"
+              "up to a couple of GB; everything runs locally, no cloud. The\n"
+              "model weights (~17–64 MB depending on the chosen one) are\n"
+              "downloaded from GitHub on first use.",
+        "zh": "画质增强模块（Real-ESRGAN）尚未安装。\n\n"
+              "现在安装吗？将下载 torch——约 200 MB（CPU）到数 GB，\n"
+              "完全本地运行，无需云端。模型权重（约 17–64 MB，视所选）\n"
+              "会在首次增强时从 GitHub 下载。"},
+    "viewer.up_installing": {
+        "ru": "Устанавливаю модуль улучшения качества (torch)…",
+        "en": "Installing the upscaling module (torch)…",
+        "zh": "正在安装画质增强模块（torch）…"},
+    "viewer.up_install_ok": {
+        "ru": "Модуль установлен — нажмите «Улучшить» ещё раз",
+        "en": "Module installed — click “Upscale” again",
+        "zh": "模块已安装——请再次点击“增强”"},
+    "viewer.up_install_fail": {
+        "ru": "Не удалось установить модуль улучшения качества: {info}",
+        "en": "Failed to install the upscaling module: {info}",
+        "zh": "安装画质增强模块失败：{info}"},
+    "viewer.up_uninst_q": {
+        "ru": "Удалить модуль улучшения качества и скачанные веса ({mb})?\n"
+              "Из программы и с диска будет вычищено всё целиком. torch,\n"
+              "нужный модулю водяных знаков, останется.",
+        "en": "Remove the upscaling module and the downloaded weights ({mb})?\n"
+              "Everything will be cleaned from the program and disk. torch\n"
+              "needed by the watermark module stays.",
+        "zh": "删除画质增强模块及已下载的权重（{mb}）？\n程序和磁盘上的内容将被完全清除。\n水印模块所需的 torch 将保留。"},
+    "viewer.up_uninstalling": {
+        "ru": "Удаляю модуль улучшения качества и веса…",
+        "en": "Removing the upscaling module and weights…",
+        "zh": "正在删除画质增强模块和权重…"},
+    "viewer.up_uninst_ok": {
+        "ru": "Модуль улучшения качества и веса удалены (освобождено {mb})",
+        "en": "Upscaling module and weights removed ({mb} freed)",
+        "zh": "画质增强模块和权重已删除（释放 {mb}）"},
+    "viewer.up_uninst_fail": {
+        "ru": "Не удалось удалить модуль: {info}",
+        "en": "Failed to remove the module: {info}",
+        "zh": "删除模块失败：{info}"},
+    "viewer.up_menu_install": {
+        "ru": "Установить модуль улучшения качества (Real-ESRGAN)…",
+        "en": "Install the upscaling module (Real-ESRGAN)…",
+        "zh": "安装画质增强模块（Real-ESRGAN）…"},
+    "viewer.up_menu_uninstall": {
+        "ru": "Удалить модуль улучшения качества и веса…",
+        "en": "Uninstall the upscaling module and weights…",
+        "zh": "卸载画质增强模块和权重…"},
+    "viewer.up_menu_update": {
+        "ru": "Обновить модуль улучшения качества",
+        "en": "Update the upscaling module",
+        "zh": "更新画质增强模块"},
+    "viewer.up_updating": {
+        "ru": "Обновляю модуль улучшения качества: сверяю веса с GitHub…",
+        "en": "Updating the upscaling module: checking the weights on GitHub…",
+        "zh": "正在更新画质增强模块：正在与 GitHub 核对权重…"},
+    "viewer.up_update_done": {
+        "ru": "Модуль улучшения качества: {what}",
+        "en": "Upscaling module: {what}",
+        "zh": "画质增强模块：{what}"},
+    "viewer.up_update_fail": {
+        "ru": "Ошибка обновления модуля улучшения качества: {info}",
+        "en": "Upscaling module update error: {info}",
+        "zh": "画质增强模块更新错误：{info}"},
+    "viewer.up_update_nothing": {
+        "ru": "веса {model} актуальны (размер совпадает с релизом); torch {ver} — не перекладывается",
+        "en": "the {model} weights are current (size matches the release); torch {ver} is left as is",
+        "zh": "权重 {model} 最新（大小与发布版一致）；torch {ver} 保持不变"},
+    "viewer.up_update_weights": {
+        "ru": "веса {model} перекачаны с GitHub; torch {ver}",
+        "en": "the {model} weights were re-downloaded from GitHub; torch {ver}",
+        "zh": "权重 {model} 已从 GitHub 重新下载；torch {ver}"},
+    "viewer.up_update_dl_fail": {
+        "ru": "не удалось проверить {model} на github.com; torch {ver}",
+        "en": "could not check {model} on github.com; torch {ver}",
+        "zh": "无法在 github.com 上检查 {model}；torch {ver}"},
+    "viewer.up_update_no_dl": {
+        "ru": "веса {model} ещё не скачивались (скачаются при первом улучшении); torch {ver}",
+        "en": "the {model} weights were not downloaded yet (they download on first use); torch {ver}",
+        "zh": "权重 {model} 尚未下载（首次增强时下载）；torch {ver}"},
+    "viewer.up_model_menu": {
+        "ru": "Модель", "en": "Model", "zh": "模型"},
+    "viewer.up_model_x4plus": {
+        "ru": "RealESRGAN x4plus — универсальная ×4 (~64 МБ)",
+        "en": "RealESRGAN x4plus — universal ×4 (~64 MB)",
+        "zh": "RealESRGAN x4plus — 通用 ×4（约 64 MB）"},
+    "viewer.up_model_anime": {
+        "ru": "RealESRGAN x4 anime 6B — для аниме и рисованной графики ×4 (~17 МБ)",
+        "en": "RealESRGAN x4 anime 6B — for anime and drawn art ×4 (~17 MB)",
+        "zh": "RealESRGAN x4 anime 6B — 动漫与手绘插画 ×4（约 17 MB）"},
+    "viewer.up_model_x2plus": {
+        "ru": "RealESRGAN x2plus — умеренная ×2, безопаснее для фото (~64 МБ)",
+        "en": "RealESRGAN x2plus — moderate ×2, safer for photos (~64 MB)",
+        "zh": "RealESRGAN x2plus — 适度 ×2，对照片更稳妥（约 64 MB）"},
+    "viewer.up_prepare": {
+        "ru": "Готовлю веса модели {model}",
+        "en": "Preparing the {model} weights",
+        "zh": "正在准备 {model} 权重"},
+    "viewer.up_ready": {
+        "ru": "Модель {model} готова",
+        "en": "The {model} model is ready",
+        "zh": "模型 {model} 已就绪"},
+    "viewer.up_dl_start": {
+        "ru": "Скачиваются веса {model}…",
+        "en": "Downloading the {model} weights…",
+        "zh": "正在下载 {model} 权重…"},
+    "viewer.up_dl_prog": {
+        "ru": "Скачиваются веса {model}: {done} из {total} ({pct} %)",
+        "en": "Downloading the {model} weights: {done} of {total} ({pct} %)",
+        "zh": "正在下载 {model} 权重：{done}/{total}（{pct}%）"},
+    "viewer.up_dl_prog_na": {
+        "ru": "Скачиваются веса {model}: {done}…",
+        "en": "Downloading the {model} weights: {done}…",
+        "zh": "正在下载 {model} 权重：{done}…"},
+    "viewer.up_dl_done": {
+        "ru": "Веса {model} скачаны ({size})",
+        "en": "The {model} weights downloaded ({size})",
+        "zh": "{model} 权重已下载（{size}）"},
+    "viewer.up_choice_q": {
+        "ru": "Готово улучшений: {n}.\n"
+              "Файлы «*_x4.ext»/«*_x2.ext» лежат рядом с оригиналами — пока\n"
+              "это окно открыто, ленту можно щёлкать и рассматривать\n"
+              "результаты.\n\n"
+              "Сохранить результат или вернуть оригиналы?",
+        "en": "Upscales done: {n}.\n"
+              "The “*_x4.ext”/“*_x2.ext” files sit next to the originals —\n"
+              "while this window is open you can click the strip and inspect\n"
+              "them.\n\n"
+              "Keep the result or revert to the originals?",
+        "zh": "已增强：{n} 个。\n"
+              "“*_x4.ext”/“*_x2.ext”文件保存在原图旁——当前窗口打开时仍可\n"
+              "点击缩略图栏查看结果。\n\n"
+              "保留结果还是恢复原图？"},
+    "viewer.up_choice_more": {
+        "ru": "(ещё {n})", "en": "(plus {n} more)", "zh": "（另有 {n} 个）"},
+    "viewer.up_btn_revert": {
+        "ru": "Вернуть оригиналы", "en": "Revert to originals", "zh": "恢复原图"},
+    "viewer.up_btn_revert_tip": {
+        "ru": "Удалить файлы-результаты этой пачки; оригиналы не тронуты",
+        "en": "Delete the result files of this batch; originals are untouched",
+        "zh": "删除本批的结果文件；原图不受影响"},
+    "viewer.up_btn_save": {
+        "ru": "Сохранить", "en": "Keep", "zh": "保留"},
+    "viewer.up_btn_save_tip": {
+        "ru": "Оставить файлы-результаты на диске",
+        "en": "Keep the result files on disk",
+        "zh": "将结果文件保留在磁盘上"},
+    "viewer.up_reverting": {
+        "ru": "Возвращаю оригиналы — убираю результаты улучшения…",
+        "en": "Restoring originals — removing the upscale results…",
+        "zh": "正在恢复原图——删除增强结果…"},
+    "viewer.up_saved": {
+        "ru": "Результат улучшения сохранён: {n}",
+        "en": "Upscale results kept: {n}",
+        "zh": "已保留增强结果：{n}"},
+    "viewer.up_revert_fail": {
+        "ru": "Вернуть оригиналы не удалось: удалено {ok}, ошибок {fail}",
+        "en": "Failed to revert: {ok} removed, {fail} failed",
+        "zh": "恢复失败：已删除 {ok} 个，{fail} 个失败"},
+    "viewer.up_reverted": {
+        "ru": "Оригиналы возвращены: удалено результатов {n}",
+        "en": "Originals restored: {n} result file(s) removed",
+        "zh": "已恢复原图：删除 {n} 个结果文件"},
+    "modules.up_header": {
+        "ru": "Улучшение качества (Real-ESRGAN): {state}",
+        "en": "Upscaling (Real-ESRGAN): {state}",
+        "zh": "画质增强（Real-ESRGAN）：{state}"},
+    "log.event.up_start": {
+        "ru": "✨ Улучшение качества: файлов {n}, модель {model}",
+        "en": "✨ Upscaling: {n} file(s), model {model}",
+        "zh": "✨ 画质增强：{n} 个文件，模型 {model}"},
+    "log.event.up_file_err": {
+        "ru": "✨ Не удалось улучшить: {name} — {err}",
+        "en": "✨ Failed to upscale: {name} — {err}",
+        "zh": "✨ 增强失败：{name} — {err}"},
+    "log.event.up_done": {
+        "ru": "✨ Улучшение завершено: {ok}, ошибок {fail} — {ms} мс{extra}",
+        "en": "✨ Upscaling finished: {ok} done, {fail} failed — {ms} ms{extra}",
+        "zh": "✨ 画质增强完成：{ok} 个成功，{fail} 个失败 — {ms} 毫秒{extra}"},
+    "log.event.up_skip": {
+        "ru": "✨ Пропущено файлов: {n} — GIF/без расширения или уже результат",
+        "en": "✨ Skipped {n} file(s) — GIFs, extensionless files or existing results",
+        "zh": "✨ 已跳过 {n} 个文件——GIF/无扩展名或已是结果"},
+    "log.event.up_model": {
+        "ru": "✨ Выбрана модель: {model}",
+        "en": "✨ Model selected: {model}",
+        "zh": "✨ 已选择模型：{model}"},
+    "log.event.up_model_dl": {
+        "ru": "✨ Веса {model} скачаны: {size}, {ms} мс",
+        "en": "✨ The {model} weights downloaded: {size}, {ms} ms",
+        "zh": "✨ {model} 权重已下载：{size}，{ms} 毫秒"},
+    "log.event.up_install_start": {
+        "ru": "✨ Устанавливаю модуль улучшения качества (pip install torch)…",
+        "en": "✨ Installing the upscaling module (pip install torch)…",
+        "zh": "✨ 正在安装画质增强模块（pip install torch）…"},
+    "log.event.up_install_done": {
+        "ru": "✨ Модуль улучшения качества установлен",
+        "en": "✨ The upscaling module installed",
+        "zh": "✨ 画质增强模块已安装"},
+    "log.event.up_install_fail": {
+        "ru": "✨ Ошибка установки модуля улучшения качества: {info}",
+        "en": "✨ Upscaling module install error: {info}",
+        "zh": "✨ 画质增强模块安装错误：{info}"},
+    "log.event.up_uninstall_start": {
+        "ru": "✨ Удаляю модуль улучшения качества и скачанные веса…",
+        "en": "✨ Removing the upscaling module and downloaded weights…",
+        "zh": "✨ 正在删除画质增强模块和已下载的权重…"},
+    "log.event.up_uninstall_done": {
+        "ru": "✨ Модуль улучшения качества удалён (освобождено {mb})",
+        "en": "✨ Upscaling module removed ({mb} freed)",
+        "zh": "✨ 画质增强模块已删除（释放 {mb}）"},
+    "log.event.up_uninstall_fail": {
+        "ru": "✨ Ошибка удаления модуля улучшения качества: {info}",
+        "en": "✨ Upscaling module removal error: {info}",
+        "zh": "✨ 画质增强模块删除错误：{info}"},
+    "log.event.up_update_start": {
+        "ru": "✨ Обновляю модуль улучшения качества: сверяю веса с GitHub…",
+        "en": "✨ Updating the upscaling module: checking the weights on GitHub…",
+        "zh": "✨ 正在更新画质增强模块：正在与 GitHub 核对权重…"},
+    "log.event.up_update_done": {
+        "ru": "✨ Модуль улучшения качества: {what}",
+        "en": "✨ Upscaling module: {what}",
+        "zh": "✨ 画质增强模块：{what}"},
+    "log.event.up_update_fail": {
+        "ru": "✨ Ошибка обновления модуля улучшения качества: {info}",
+        "en": "✨ Upscaling module update error: {info}",
+        "zh": "✨ 画质增强模块更新错误：{info}"},
+    "log.event.up_saved": {
+        "ru": "✨ Результат улучшения сохранён: {n}",
+        "en": "✨ Upscale results kept: {n}",
+        "zh": "✨ 已保留增强结果：{n}"},
+    "log.event.up_revert_start": {
+        "ru": "✨ Возвращаю оригиналы: удаляю результаты ({n})",
+        "en": "✨ Restoring originals: removing the results ({n})",
+        "zh": "✨ 正在恢复原图：删除结果（{n}）"},
+    "log.event.up_revert": {
+        "ru": "✨ Оригиналы возвращены: удалено файлов {n}, ошибок {fail}",
+        "en": "✨ Originals restored: {n} file(s) removed, {fail} failed",
+        "zh": "✨ 已恢复原图：删除 {n} 个文件，{fail} 个失败"},
+    "log.event.up_revert_err": {
+        "ru": "✨ Не удалось удалить результат: {name} — {err}",
+        "en": "✨ Failed to remove the result: {name} — {err}",
+        "zh": "✨ 删除结果失败：{name} — {err}"},
     # ---------- удаление водяных знаков (Florence-2 + LaMa/IOPaint, v0.8.11) ----------
     "viewer.wm": {
         "ru": "🧽 Убрать водяные знаки", "en": "🧽 Remove Watermarks", "zh": "🧽 去除水印"},

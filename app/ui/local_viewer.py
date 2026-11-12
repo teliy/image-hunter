@@ -85,7 +85,7 @@ from PySide6.QtWidgets import (
 
 from app.core import applog, i18n, imgload, modstatus, netfs
 from app.core.i18n import tr
-from app.ui import rembg_manager, watermark_manager
+from app.ui import rembg_manager, upscale_manager, watermark_manager
 
 # .avif добавлен явно: PySide6 не умеет AVIF без Pillow-кодека (см. imgload),
 # но сами файлы в ленте показывать надо — декодирует imgload
@@ -2242,21 +2242,32 @@ _REMBG_REVERT = 2   # …вернуть оригиналы (Esc/крестик �
 
 
 class _RembgChoiceDialog(QDialog):
-    """Выбор после удаления фона: сохранить результат или вернуть оригиналы.
+    """Выбор после модуля: сохранить результат или вернуть оригиналы.
 
     Немодальный: пока окно открыто, лента живёт — можно щёлкать по плиткам
     «*_nobg.png» и смотреть результаты в полном размере, решать не
     вслепую. Превью первого результата рисуется на «шахматке», чтобы
     прозрачность была видна сразу. Esc и крестик закрывают окно как
-    «Сохранить» — результат теряется только по явному клику."""
+    «Сохранить» — результат теряется только по явному клику.
+
+    Тексты параметризуются (v0.8.24): диалог делит модуль улучшения
+    качества — по умолчанию остаются ключи удаления фона, чтобы прежние
+    вызовы не менялись."""
 
     def __init__(self, parent, results: list[str],
-                 preview: QPixmap | None) -> None:
+                 preview: QPixmap | None,
+                 title_key: str = "viewer.rembg",
+                 q_key: str = "viewer.rembg_choice_q",
+                 more_key: str = "viewer.rembg_choice_more",
+                 revert_key: str = "viewer.rembg_btn_revert",
+                 revert_tip_key: str = "viewer.rembg_btn_revert_tip",
+                 save_key: str = "viewer.rembg_btn_save",
+                 save_tip_key: str = "viewer.rembg_btn_save_tip") -> None:
         super().__init__(parent)
-        self.setWindowTitle(tr("viewer.rembg"))
+        self.setWindowTitle(tr(title_key))
         self.setMinimumWidth(340)
         lay = QVBoxLayout(self)
-        info = QLabel(tr("viewer.rembg_choice_q", n=len(results)))
+        info = QLabel(tr(q_key, n=len(results)))
         info.setWordWrap(True)
         lay.addWidget(info)
         if preview is not None:
@@ -2266,18 +2277,18 @@ class _RembgChoiceDialog(QDialog):
             lay.addWidget(pic)
             cap = os.path.basename(results[0])
             if len(results) > 1:
-                cap += " " + tr("viewer.rembg_choice_more", n=len(results) - 1)
+                cap += " " + tr(more_key, n=len(results) - 1)
             cap_lbl = QLabel(cap)
             cap_lbl.setAlignment(Qt.AlignmentFlag.AlignHCenter)
             lay.addWidget(cap_lbl)
         row = QHBoxLayout()
         row.addStretch(1)
-        self.btn_revert = QPushButton(tr("viewer.rembg_btn_revert"))
-        self.btn_revert.setToolTip(tr("viewer.rembg_btn_revert_tip"))
+        self.btn_revert = QPushButton(tr(revert_key))
+        self.btn_revert.setToolTip(tr(revert_tip_key))
         self.btn_revert.clicked.connect(lambda: self.done(_REMBG_REVERT))
         row.addWidget(self.btn_revert)
-        self.btn_save = QPushButton(tr("viewer.rembg_btn_save"))
-        self.btn_save.setToolTip(tr("viewer.rembg_btn_save_tip"))
+        self.btn_save = QPushButton(tr(save_key))
+        self.btn_save.setToolTip(tr(save_tip_key))
         self.btn_save.setDefault(True)
         self.btn_save.clicked.connect(self.accept)   # accept() = «сохранить»
         row.addWidget(self.btn_save)
@@ -2667,6 +2678,10 @@ class LocalViewer(QWidget):
                              self._on_rembg_button, lay=tools_lay)
         self.btn_wm = btn("viewer.wm", "viewer.wm_tip",
                           self._on_wm_button, lay=tools_lay)
+        # ✨ Улучшить (Real-ESRGAN, v0.8.24) — третий модуль на панели
+        # инструментов: по выделенным файлам ленты, как соседние
+        self.btn_up = btn("viewer.up", "viewer.up_tip",
+                          self._on_up_button, lay=tools_lay)
         tools_lay.addStretch(1)
 
         # --- список миниатюр ---
@@ -2973,6 +2988,40 @@ class LocalViewer(QWidget):
         self._wm_model = (saved_wm_model if saved_wm_model in
                           {m for m, _k in watermark_manager.FLORENCE_MODELS}
                           else watermark_manager.DEFAULT_MODEL)
+
+        # улучшение качества (Real-ESRGAN): сигналы + состояние (v0.8.24)
+        self._ups_signals = upscale_manager.UpscaleSignals()
+        self._ups_signals.install_done.connect(self._on_up_install_done)
+        self._ups_signals.uninstall_done.connect(self._on_up_uninstall_done)
+        self._ups_signals.update_done.connect(self._on_up_update_done)
+        self._ups_signals.file_done.connect(self._on_up_file_done)
+        self._ups_signals.batch_done.connect(self._on_up_batch_done)
+        # процесс внутри пачки — в строку статуса (v0.8.20), как у соседей
+        self._ups_signals.file_start.connect(self._on_up_file_start)
+        self._ups_signals.phase.connect(self._on_up_phase)
+        self._ups_signals.model_dl_start.connect(self._on_up_model_dl_start)
+        self._ups_signals.model_dl_progress.connect(
+            self._on_up_model_dl_progress)
+        self._ups_signals.model_dl_done.connect(self._on_up_model_dl_done)
+        # модели готовятся/качаются при первом запуске — статус расскажет
+        self._ups_signals.model_prepare.connect(self._on_up_model_prepare)
+        self._ups_signals.model_ready.connect(self._on_up_model_ready)
+        self._ups_signals.revert_done.connect(self._on_up_revert_done)
+        self._ups_busy = False         # pip/обработка уже идут — второй запуск не нужен
+        self._ups_pending: list[str] | None = None   # очередь после установки
+        self._ups_ok = 0
+        self._ups_fail = 0
+        self._ups_total = 0
+        self._ups_t0 = 0.0
+        self._ups_idx = 0              # какой файл пачки сейчас в работе
+        self._ups_dl_model = ""        # какие веса сейчас качаются
+        self._ups_results: list[str] = []   # результаты пачки (выбор сохранить/вернуть)
+        self._ups_choice: QDialog | None = None   # открытый диалог выбора
+        saved_up_model = QSettings("ImageHunter", "ImageHunter").value(
+            upscale_manager.MODEL_KEY, upscale_manager.DEFAULT_MODEL, type=str)
+        self._ups_model = (saved_up_model if saved_up_model in
+                           {m for m, _k in upscale_manager.UPSCALE_MODELS}
+                           else upscale_manager.DEFAULT_MODEL)
 
         # избранные папки читаются до построения дерева (v0.7.9)
         self._favorites = self._load_favorites()
@@ -3439,6 +3488,8 @@ class LocalViewer(QWidget):
         acts["bg"].setToolTip(tr("viewer.rembg_tip"))
         acts["wm"] = menu.addAction(tr("viewer.wm"))
         acts["wm"].setToolTip(tr("viewer.wm_tip"))
+        acts["up"] = menu.addAction(tr("viewer.up"))
+        acts["up"].setToolTip(tr("viewer.up_tip"))
         acts["del"] = menu.addAction(tr("viewer.ctx_delete"))
         acts["del"].setToolTip(tr("viewer.ctx_delete_tip"))
         return menu, acts
@@ -3459,6 +3510,8 @@ class LocalViewer(QWidget):
             self._on_rembg_button()
         elif chosen is acts.get("wm"):
             self._on_wm_button()
+        elif chosen is acts.get("up"):
+            self._on_up_button()
         elif chosen is acts.get("del"):
             self.delete_selected_files()
 
@@ -4167,6 +4220,365 @@ class LocalViewer(QWidget):
         QSettings("ImageHunter", "ImageHunter").setValue(
             watermark_manager.MODEL_KEY, model_id)
         applog.event("log.event.wm_model", model=model_id)
+
+    # ---------- улучшение качества: публичный доступ для меню «Модули» (v0.8.24) ----------
+
+    def ups_is_installed(self) -> bool:
+        """Установлен ли модуль (меню «Модули» строит по этому пункты)."""
+        return upscale_manager.is_installed()
+
+    def ups_is_busy(self) -> bool:
+        """Идёт ли pip-установка/удаление или обработка пачки (guard меню)."""
+        return self._ups_busy
+
+    def ups_current_model(self) -> str:
+        """Выбранные веса — для галочки в меню «Модули»."""
+        return self._ups_model
+
+    def ups_install(self) -> None:
+        """Установить модуль из меню «Модули» (без отложенной пачки файлов)."""
+        self._ups_start_install()
+
+    def ups_uninstall(self) -> None:
+        """Удалить модуль и скачанные веса из меню «Модули» (с подтверждением)."""
+        self._ups_start_uninstall()
+
+    def ups_set_model(self, model_id: str) -> None:
+        """Выбрать модель из меню «Модули» (запоминается в настройках)."""
+        self._on_up_model(model_id)
+
+    def ups_update(self) -> None:
+        """Обновить установленный модуль из меню «Модули» (v0.8.24).
+
+        Веса выбранной модели сверяются с релизом GitHub (torch не
+        перекладывается — общее достояние с модулем водяных знаков);
+        guard тот же, что у установки/удаления — два действия одновременно
+        не запускаются.
+        """
+        if self._ups_busy:
+            self.status.setText(tr("viewer.up_busy"))
+            return
+        if not upscale_manager.is_installed():
+            return   # меню показывает пункт только у установленного модуля
+        self._ups_busy = True
+        modstatus.report("up", tr("viewer.up_updating"), frac=-1.0)
+        applog.event("log.event.up_update_start")
+        QThreadPool.globalInstance().start(
+            upscale_manager.UpdateTask(self._ups_signals, self._ups_model))
+
+    def _on_up_update_done(self, ok: bool, what: str, info: str) -> None:
+        """Итог обновления модуля: что изменилось — в статус, журнал, диалог."""
+        self._ups_busy = False
+        modstatus.done("up")
+        if ok:
+            msg = tr("viewer.up_update_done", what=what)
+            self.status.setText(msg)
+            applog.event("log.event.up_update_done", what=what)
+            QMessageBox.information(self, tr("viewer.up"), msg)
+        else:
+            msg = tr("viewer.up_update_fail", info=info)
+            self.status.setText(msg)
+            applog.error(tr("log.event.up_update_fail", info=info))
+            QMessageBox.warning(self, tr("viewer.up"), msg)
+
+    # ---------- улучшение качества (Real-ESRGAN, v0.8.24) ----------
+
+    def _ups_targets(self) -> list[str]:
+        """Файлы для «Улучшить»: выделенные плитки, иначе открытая."""
+        paths = self.list.selected_paths()
+        if not paths:
+            row = self.list.currentRow()
+            if 0 <= row < len(self._paths):
+                paths = [self._paths[row]]
+        return paths
+
+    def _on_up_button(self) -> None:
+        """Кнопка/пункт меню «Улучшить»: пачка уходит в фоновую задачу."""
+        if self._ups_busy:
+            self.status.setText(tr("viewer.up_busy"))
+            return
+        targets = self._ups_targets()
+        if not targets:
+            self.status.setText(tr("viewer.up_none"))
+            return
+        if not upscale_manager.is_installed():
+            # модуля нет — предложить установить, не отпуская в терминал
+            ans = QMessageBox.question(self, tr("viewer.up"),
+                                       tr("viewer.up_inst_q"))
+            if ans == QMessageBox.StandardButton.Yes:
+                self._ups_start_install(pending=targets)
+            return
+        self._ups_start(targets)
+
+    def _ups_start(self, paths: list[str]) -> None:
+        """Запустить фоновую обработку пачки (модель грузится один раз)."""
+        # новый запуск закрывает прошлый вопрос «Сохранить/Вернуть» как
+        # «Сохранить»: результаты прежней пачки остаются на диске
+        dlg, self._ups_choice = self._ups_choice, None
+        if dlg is not None:
+            try:
+                dlg.done(_REMBG_SAVE)
+            except RuntimeError:
+                pass   # окно уже уничтожено вместе с вьюером
+        self._ups_results = []
+        scale = upscale_manager.model_scale(self._ups_model)
+        jobs: list[tuple[str, str]] = []
+        skipped = 0
+        for p in paths:
+            out = upscale_manager.up_path(p, scale)
+            if out:
+                jobs.append((p, out))
+            else:
+                skipped += 1   # GIF/без расширения/уже результат
+        if skipped:
+            applog.event("log.event.up_skip", n=skipped)
+        if not jobs:
+            self.status.setText(tr("viewer.up_already"))
+            return
+        self._ups_busy = True
+        self._ups_total = len(jobs)
+        self._ups_ok = 0
+        self._ups_fail = 0
+        self._ups_t0 = time.perf_counter()
+        # процесс модуля — на постоянном месте статус-бара (v0.8.20);
+        # в подписи вьюера тот же текст НЕ дублируется (v0.8.21)
+        modstatus.report("up", tr("viewer.up_progress", done=0, n=len(jobs),
+                                  name=os.path.basename(jobs[0][0])),
+                         frac=0.0)
+        applog.event("log.event.up_start", n=len(jobs),
+                     model=self._ups_model)
+        # чтение файлов — в самой задаче, GUI не ждёт; на сетевом диске —
+        # узкий отдельный пул, чтобы подвисший сервер не занял всех
+        # потоков миниатюр (принцип v0.7.2)
+        pool = (self._net_pool
+                if any(_is_remote_path(p) for p, _out in jobs)
+                else QThreadPool.globalInstance())
+        pool.start(upscale_manager.UpscaleTask(jobs, self._ups_model,
+                                               self._ups_signals))
+
+    def _on_up_file_start(self, path: str, idx: int) -> None:
+        """Начался файл пачки: строка статуса оживает до file_done (v0.8.20)."""
+        self._ups_idx = idx
+        modstatus.report("up", tr("viewer.up_progress", done=idx - 1,
+                                  n=self._ups_total,
+                                  name=os.path.basename(path)),
+                         frac=(idx - 1) / max(1, self._ups_total))
+
+    def _on_up_phase(self, path: str, code: str, cur: int, total: int) -> None:
+        """Плитки внутри файла: Real-ESRGAN на большой картинке идёт долго,
+        без фаз прогресс замирал на «N/M» до завершения файла."""
+        phase = tr("viewer.up_phase_tile", cur=cur, total=total)
+        frac = ((self._ups_idx - 1) + min(cur / max(1, total), 0.95)) \
+            / max(1, self._ups_total)
+        modstatus.report(
+            "up",
+            tr("viewer.up_phase", done=self._ups_idx - 1, n=self._ups_total,
+               name=os.path.basename(path), phase=phase),
+            frac=frac)
+
+    def _on_up_file_done(self, path: str, out: str, ok: bool, err: str) -> None:
+        """Промежуточный итог по файлу: прогресс в статусе, ошибки в журнал."""
+        if ok:
+            self._ups_ok += 1
+            self._ups_results.append(out)   # результат этой пачки — для выбора
+        else:
+            self._ups_fail += 1
+            applog.error(tr("log.event.up_file_err",
+                            name=os.path.basename(path), err=err))
+        done = self._ups_ok + self._ups_fail
+        modstatus.report("up", tr("viewer.up_progress", done=done,
+                                  n=self._ups_total,
+                                  name=os.path.basename(path)),
+                         frac=done / max(1, self._ups_total))
+
+    def _on_up_batch_done(self, ok: int, fail: int) -> None:
+        self._ups_busy = False
+        modstatus.done("up")   # активность снята; итог — в статусе и журнале
+        ms = round((time.perf_counter() - self._ups_t0) * 1000)
+        tail = tr("viewer.up_done_fail", fail=fail) if fail else ""
+        self.status.setText(tr("viewer.up_done", ok=ok) + tail)
+        applog.event("log.event.up_done", ok=ok, fail=fail, ms=ms,
+                     extra=applog.extra(model=self._ups_model))
+        if ok:
+            self.refresh()   # файлы «_x4/_x2» появляются в ленте
+            self._open_up_choice()   # сохранить результат или вернуть оригиналы
+
+    # ---------- выбор после улучшения: сохранить или вернуть (v0.8.24) ----------
+
+    def _open_up_choice(self) -> None:
+        """Спросить после пачки: сохранить результат или вернуть оригиналы.
+
+        Тот же немодальный диалог, что у удаления фона: пока окно открыто,
+        лента кликается, и результат можно рассмотреть в полном размере."""
+        results = list(self._ups_results)
+        if not results:
+            return
+        preview = (None if _is_remote_path(results[0])
+                   else _checker_pixmap(results[0]))
+        dlg = _RembgChoiceDialog(self, results, preview,
+                                 title_key="viewer.up",
+                                 q_key="viewer.up_choice_q",
+                                 more_key="viewer.up_choice_more",
+                                 revert_key="viewer.up_btn_revert",
+                                 revert_tip_key="viewer.up_btn_revert_tip",
+                                 save_key="viewer.up_btn_save",
+                                 save_tip_key="viewer.up_btn_save_tip")
+        dlg.finished.connect(self._on_up_choice_done)
+        dlg.finished.connect(dlg.deleteLater)   # закрытый диалог — уничтожить
+        self._ups_choice = dlg
+        dlg.show()
+
+    def _on_up_choice_done(self, code: int) -> None:
+        """Диалог выбора закрыт: сохранить результат или вернуть оригиналы.
+
+        Любое закрытие, кроме явного «Вернуть оригиналы» (кнопка), — это
+        «Сохранить»: результат теряется только по осознанному клику."""
+        results, self._ups_results = self._ups_results, []
+        self._ups_choice = None
+        if code == _REMBG_REVERT and results:
+            self.status.setText(tr("viewer.up_reverting"))
+            applog.event("log.event.up_revert_start", n=len(results))
+            QThreadPool.globalInstance().start(
+                upscale_manager.RevertTask(results, self._ups_signals))
+        elif results:
+            applog.event("log.event.up_saved", n=len(results))
+            self.status.setText(tr("viewer.up_saved", n=len(results)))
+
+    def _on_up_revert_done(self, removed: list, errors: list) -> None:
+        """Результаты убраны: лента без «_x4/_x2», статус и журнал в курсе.
+
+        Оригиналы не трогались, так что «вернуть» — это просто убрать
+        файлы-результаты этой пачки; порядок в ленте чинится как после
+        обычного удаления (v0.7.11)."""
+        for p in removed:
+            self._remove_row_by_path(p)
+        if removed:
+            # строки сместились — кэш миниатюр по номерам строк больше не верен
+            self._list_rows_changed()
+        for p, err in errors:
+            applog.error(tr("log.event.up_revert_err",
+                            name=os.path.basename(p), err=err))
+        applog.event("log.event.up_revert", n=len(removed), fail=len(errors))
+        if errors:
+            self.status.setText(tr("viewer.up_revert_fail",
+                                   ok=len(removed), fail=len(errors)))
+        else:
+            self.status.setText(tr("viewer.up_reverted", n=len(removed)))
+
+    # ---------- статусная строка рассказывает про модель (v0.8.24) ----------
+
+    def _on_up_model_prepare(self, model: str) -> None:
+        """Веса готовятся: грузятся в память, при отсутствии качаются."""
+        modstatus.report("up", tr("viewer.up_prepare", model=model),
+                         frac=-1.0)
+
+    def _on_up_model_ready(self, model: str) -> None:
+        """Веса готовы — дальше идут уже сообщения обработки файлов."""
+        modstatus.report("up", tr("viewer.up_ready", model=model),
+                         frac=-1.0)
+
+    def _on_up_model_dl_start(self, model: str, total: int) -> None:
+        """Началось скачивание весов — имя запоминаем для тиков прогресса."""
+        self._ups_dl_model = model
+        if total > 0:
+            modstatus.report("up", tr("viewer.up_dl_prog", model=model,
+                                      done=_fmt_bytes(0),
+                                      total=_fmt_bytes(total), pct=0),
+                             frac=0.0)
+        else:
+            modstatus.report("up", tr("viewer.up_dl_start", model=model),
+                             frac=-1.0)
+
+    def _on_up_model_dl_progress(self, done: int, total: int) -> None:
+        """Тик скачивания: только виджет модулей, журнал не заваливаем."""
+        if total > 0:
+            pct = round(done * 100 / total)
+            text = tr("viewer.up_dl_prog", model=self._ups_dl_model,
+                      done=_fmt_bytes(done), total=_fmt_bytes(total), pct=pct)
+            modstatus.report("up", text, frac=done / total)
+        else:
+            text = tr("viewer.up_dl_prog_na", model=self._ups_dl_model,
+                      done=_fmt_bytes(done))
+            modstatus.report("up", text, frac=-1.0)
+
+    def _on_up_model_dl_done(self, model: str, size: int, ms: int) -> None:
+        """Веса скачаны: строка в журнал и итог в статусной строке."""
+        applog.event("log.event.up_model_dl", model=model,
+                     size=_fmt_bytes(size), ms=ms)
+        self.status.setText(tr("viewer.up_dl_done", model=model,
+                               size=_fmt_bytes(size)))
+
+    def _ups_start_install(self, pending: list[str] | None = None) -> None:
+        """Установить модуль в фоне; ``pending`` — что обработать после."""
+        if self._ups_busy:
+            self.status.setText(tr("viewer.up_busy"))
+            return
+        self._ups_busy = True
+        self._ups_pending = list(pending or [])
+        modstatus.report("up", tr("viewer.up_installing"), frac=-1.0)
+        applog.event("log.event.up_install_start")
+        QThreadPool.globalInstance().start(
+            upscale_manager.InstallTask(self._ups_signals))
+
+    def _on_up_install_done(self, ok: bool, info: str) -> None:
+        self._ups_busy = False
+        modstatus.done("up")
+        pending, self._ups_pending = self._ups_pending, None
+        if ok:
+            applog.event("log.event.up_install_done")
+            if pending:
+                # установка была по клику «Улучшить» — сразу продолжаем
+                self._ups_start(pending)
+            else:
+                self.status.setText(tr("viewer.up_install_ok"))
+                QMessageBox.information(self, tr("viewer.up"),
+                                        tr("viewer.up_install_ok"))
+        else:
+            self.status.setText(tr("viewer.up_install_fail", info=info))
+            applog.error(tr("log.event.up_install_fail", info=info))
+            QMessageBox.warning(self, tr("viewer.up"),
+                                tr("viewer.up_install_fail", info=info))
+
+    def _ups_start_uninstall(self) -> None:
+        """Удалить модуль и скачанные веса целиком (после подтверждения)."""
+        if self._ups_busy:
+            self.status.setText(tr("viewer.up_busy"))
+            return
+        mb = _fmt_bytes(upscale_manager.models_size())
+        ans = QMessageBox.question(self, tr("viewer.up"),
+                                   tr("viewer.up_uninst_q", mb=mb))
+        if ans != QMessageBox.StandardButton.Yes:
+            return
+        self._ups_busy = True
+        modstatus.report("up", tr("viewer.up_uninstalling"), frac=-1.0)
+        applog.event("log.event.up_uninstall_start")
+        QThreadPool.globalInstance().start(
+            upscale_manager.UninstallTask(self._ups_signals))
+
+    def _on_up_uninstall_done(self, ok: bool, info: str,
+                              freed_mb: int) -> None:
+        self._ups_busy = False
+        modstatus.done("up")
+        if ok:
+            freed = _fmt_bytes(freed_mb * 1024 * 1024)
+            self.status.setText(tr("viewer.up_uninst_ok", mb=freed))
+            applog.event("log.event.up_uninstall_done", mb=freed_mb)
+            QMessageBox.information(self, tr("viewer.up"),
+                                    tr("viewer.up_uninst_ok", mb=freed))
+        else:
+            self.status.setText(tr("viewer.up_uninst_fail", info=info))
+            applog.error(tr("log.event.up_uninstall_fail", info=info))
+            QMessageBox.warning(self, tr("viewer.up"),
+                                tr("viewer.up_uninst_fail", info=info))
+
+    def _on_up_model(self, model_id: str) -> None:
+        """Выбор модели в подменю: запоминается между запусками."""
+        if model_id == self._ups_model:
+            return
+        self._ups_model = model_id
+        QSettings("ImageHunter", "ImageHunter").setValue(
+            upscale_manager.MODEL_KEY, model_id)
+        applog.event("log.event.up_model", model=model_id)
 
     def load_folder(self, folder: str, entries: list[tuple[str, int, float]] | None = None,
                     sync_tree: bool = False) -> None:

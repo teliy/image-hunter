@@ -39,7 +39,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
 
 from app import __version__  # noqa: E402
 from app.core import i18n, updates  # noqa: E402
-from app.ui import rembg_manager, watermark_manager  # noqa: E402
+from app.ui import rembg_manager, upscale_manager, watermark_manager  # noqa: E402
 from app.ui.main_window import MainWindow  # noqa: E402
 
 FAILURES: list[str] = []
@@ -50,6 +50,7 @@ FAILURES: list[str] = []
 # не выбран и берётся сохранённый в настройках (не обязан быть ru)
 VERSIONS_PREFIX = ""
 MODELS_PREFIX = ""
+UP_PREFIX = ""
 
 
 def check(name: str, cond: bool, extra: str = "") -> None:
@@ -86,11 +87,18 @@ def actions_of(menu):
 
 
 def main() -> int:
-    global VERSIONS_PREFIX, MODELS_PREFIX
+    global VERSIONS_PREFIX, MODELS_PREFIX, UP_PREFIX
     app = QApplication.instance() or QApplication(sys.argv)
     i18n.set_lang("ru", persist=False)
     VERSIONS_PREFIX = i18n.tr("modules.versions", list="").split("{")[0]
     MODELS_PREFIX = i18n.tr("modules.models", list="").split("{")[0]
+    UP_PREFIX = i18n.tr("modules.up_header", state="").split("{")[0]
+
+    # состояние модуля улучшения качества управляется явно (v0.8.24):
+    # torch мог быть установлен в песочнице сами по себе — для меню это
+    # не «модуль установлен»; в своей секции ниже ставится True
+    real_ups_installed = upscale_manager.is_installed
+    upscale_manager.is_installed = lambda: False
 
     # чистые настройки: автостарт выключен, порт — свободный
     st = QSettings("ImageHunter", "ImageHunter")
@@ -104,7 +112,7 @@ def main() -> int:
     win.show()
     app.processEvents()
 
-    check("версия 0.8.23", __version__ == "0.8.23", __version__)
+    check("версия 0.8.24", __version__ == "0.8.24", __version__)
 
     # ---------- состав строки меню ----------
     top = win.menuBar().actions()
@@ -311,6 +319,59 @@ def main() -> int:
     finally:
         watermark_manager.is_installed = real_wm_installed
 
+    # ---------- раздел улучшения качества (v0.8.24) ----------
+    acts = actions_of(win._modules_menu)
+    texts = [a.text() for a in acts]
+    head_u = next((a for a in acts if a.text().startswith(UP_PREFIX)), None)
+    check("заголовок улучшения качества: не установлен",
+          head_u is not None and not head_u.isEnabled()
+          and i18n.tr("modules.not_installed") in head_u.text(),
+          head_u.text() if head_u else "?")
+    check("пункт установки улучшения качества на месте",
+          i18n.tr("viewer.up_menu_install") in texts, str(texts))
+    check("пунктов удаления/обновления улучшения нет (модуль не установлен)",
+          i18n.tr("viewer.up_menu_uninstall") not in texts
+          and i18n.tr("viewer.up_menu_update") not in texts)
+    m_up = next((a.menu() for a in acts
+                 if a.menu() is not None
+                 and a.menu().title() == i18n.tr("viewer.up_model_menu")), None)
+    check("подменю модели улучшения есть с тремя моделями",
+          m_up is not None and len(m_up.actions()) == 3
+          and sum(1 for a in m_up.actions() if a.isChecked()) == 1
+          and m_up.actions()[0].isChecked(),
+          str([a.text() for a in m_up.actions()] if m_up else None))
+    # меню улучшения в «установленном» состоянии: версии, удаление, обновление
+    upscale_manager.is_installed = lambda: True
+    real_uv = upscale_manager.installed_version
+    upscale_manager.installed_version = lambda: "2.9.9"
+    real_uf = upscale_manager.model_file
+    upscale_manager.model_file = lambda fname: ""   # веса ещё не качались
+    acts = actions_of(win._modules_menu)
+    head_u = next((a for a in acts if a.text().startswith(UP_PREFIX)), None)
+    check("заголовок улучшения качества: установлен",
+          head_u is not None
+          and i18n.tr("modules.installed") in head_u.text(),
+          head_u.text() if head_u else "?")
+    vline_u = next((a for a in acts
+                    if a.text().startswith(VERSIONS_PREFIX)
+                    and "torch" in a.text()), None)
+    check("строка версий показывает torch честно",
+          vline_u is not None and "torch 2.9.9" in vline_u.text(),
+          vline_u.text() if vline_u else "?")
+    mline_u = next((a for a in acts
+                    if a.text().startswith(MODELS_PREFIX)), None)
+    check("веса не скачаны — строка моделей говорит об этом",
+          mline_u is not None
+          and i18n.tr("modules.model_not_downloaded") in mline_u.text()
+          and "x4plus" in mline_u.text(),
+          mline_u.text() if mline_u else "?")
+    check("пункты удаления и обновления улучшения на месте",
+          i18n.tr("viewer.up_menu_uninstall") in [a.text() for a in acts]
+          and i18n.tr("viewer.up_menu_update") in [a.text() for a in acts])
+    upscale_manager.installed_version = real_uv
+    upscale_manager.model_file = real_uf
+    upscale_manager.is_installed = real_ups_installed
+
     # меню пересобирается при каждом aboutToShow — прежние QAction удалены
     acts = actions_of(win._modules_menu)
     texts = [a.text() for a in acts]
@@ -372,6 +433,8 @@ def main() -> int:
           i18n.tr("viewer.rembg") in names, str(names))
     check("в контекст-меню ленты есть «Убрать водяные знаки»",
           i18n.tr("viewer.wm") in names, str(names))
+    check("в контекст-меню ленты есть «Улучшить»",
+          i18n.tr("viewer.up") in names, str(names))
     check("в контекст-меню нет подменю модели",
           not any(a.menu() for a in menu.actions()), str(names))
     check("в контекст-меню нет установки/удаления/обновления модуля",
@@ -380,9 +443,12 @@ def main() -> int:
           and i18n.tr("viewer.rembg_menu_update") not in names
           and i18n.tr("viewer.wm_menu_install") not in names
           and i18n.tr("viewer.wm_menu_uninstall") not in names
-          and i18n.tr("viewer.wm_menu_update") not in names, str(names))
+          and i18n.tr("viewer.wm_menu_update") not in names
+          and i18n.tr("viewer.up_menu_install") not in names
+          and i18n.tr("viewer.up_menu_uninstall") not in names
+          and i18n.tr("viewer.up_menu_update") not in names, str(names))
     check("словарь действий без inst/uninst",
-          set(lv_acts) == {"open", "copy", "rename", "bg", "wm", "del"},
+          set(lv_acts) == {"open", "copy", "rename", "bg", "wm", "up", "del"},
           str(sorted(lv_acts)))
     menu.close()
 

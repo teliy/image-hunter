@@ -40,7 +40,7 @@ from PySide6.QtWidgets import QMenu
 
 from app.core import applog
 from app.core.i18n import tr
-from app.ui import rembg_manager, watermark_manager
+from app.ui import rembg_manager, upscale_manager, watermark_manager
 
 
 class ModulesMenu(QMenu):
@@ -63,6 +63,7 @@ class ModulesMenu(QMenu):
         self.clear()
         self._add_rembg_section()
         self._add_watermark_section()
+        self._add_upscale_section()
         self.addSeparator()
         self._add_server_section()
         self._add_restart_section()
@@ -169,6 +170,50 @@ class ModulesMenu(QMenu):
                 else f"big-lama {tr('modules.model_not_downloaded')}")
         return f"{florence}, {lama}"
 
+    def _add_upscale_section(self) -> None:
+        """Раздел улучшения качества: состояние, версии, установка/удаление, модель.
+
+        Real-ESRGAN (v0.8.24): единственный пакет — torch (общий с модулем
+        водяных знаков), веса качаются с релизов GitHub при первом
+        улучшении — строка «Модели» показывает, скачаны ли они."""
+        viewer = self._main.local
+        installed = upscale_manager.is_installed()
+        self._add_info_line(tr("modules.up_header", state=tr(
+            "modules.installed" if installed else "modules.not_installed")))
+        busy = viewer.ups_is_busy()
+        if installed:
+            ver = (upscale_manager.installed_version()
+                   or tr("modules.version_unknown"))
+            self._add_info_line(tr("modules.versions", list="torch " + ver))
+            fname = viewer.ups_current_model()
+            local = upscale_manager.model_file(fname)
+            models = (tr("modules.size_mb",
+                         mb=upscale_manager.models_size() >> 20) if local
+                      else f"{fname.split('_')[-1].removesuffix('.pth')} "
+                           f"{tr('modules.model_not_downloaded')}")
+            self._add_info_line(tr("modules.models", list=models))
+            act = self.addAction(tr("viewer.up_menu_uninstall"))
+            act.triggered.connect(viewer.ups_uninstall)
+            upd = self.addAction(tr("viewer.up_menu_update"))
+            upd.triggered.connect(viewer.ups_update)
+            upd.setEnabled(not busy)
+        else:
+            act = self.addAction(tr("viewer.up_menu_install"))
+            act.triggered.connect(viewer.ups_install)
+        act.setEnabled(not busy)   # pip уже идёт — второго запуска не будет
+        # выбор модели: x4 универсальная, anime для рисованной графики,
+        # x2 умеренная (v0.8.24); подменю с явным C++-родителем — приём
+        # из _add_rembg_section
+        m_model = QMenu(self)
+        m_model.setTitle(tr("viewer.up_model_menu"))
+        self.addMenu(m_model)
+        for model_id, key in upscale_manager.UPSCALE_MODELS:
+            a = m_model.addAction(tr(key))
+            a.setCheckable(True)
+            a.setChecked(model_id == viewer.ups_current_model())
+            a.triggered.connect(lambda _=False, mid=model_id:
+                                viewer.ups_set_model(mid))
+
     def _add_server_section(self) -> None:
         """Раздел веб-сервера: панель, запуск/остановка, автостарт.
 
@@ -210,4 +255,5 @@ class ModulesMenu(QMenu):
         act = self.addAction(tr("modules.restart"))
         act.triggered.connect(self._main.restart_app)
         viewer = self._main.local
-        act.setEnabled(not (viewer.rembg_is_busy() or viewer.wm_is_busy()))
+        act.setEnabled(not (viewer.rembg_is_busy() or viewer.wm_is_busy()
+                            or viewer.ups_is_busy()))

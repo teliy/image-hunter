@@ -46,8 +46,8 @@ def main() -> int:
     win.show()
     app.processEvents()
 
-    check("версия 0.8.23", __version__ == "0.8.23", __version__)
-    check("в заголовке версия", "0.8.23" in win.windowTitle(), win.windowTitle())
+    check("версия 0.8.24", __version__ == "0.8.24", __version__)
+    check("в заголовке версия", "0.8.24" in win.windowTitle(), win.windowTitle())
     # сигналы поиска несут имя поисковика (v0.7.8): emit с 3 аргументами
     # через релей SearchTabs доходит до приёмника MainWindow
     got_engines: list[str] = []

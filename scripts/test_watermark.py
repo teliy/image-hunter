@@ -68,7 +68,7 @@
   неудача проверки моделей не фатальна, подсказка о перезапуске;
   вьюер: wm_update стартует задачу с выбранным детектором, guard busy,
   итог в статусе, без модуля — не стартует;
-- i18n: все новые ключи заполнены на ru/en/zh; версия — 0.8.23.
+- i18n: все новые ключи заполнены на ru/en/zh; версия — 0.8.24.
 
 Раздел меню «Модули» проверяет scripts/test_modules_menu.py.
 Запуск: QT_QPA_PLATFORM=offscreen python scripts/test_watermark.py
@@ -89,7 +89,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
 
 import app  # noqa: E402
 from app.core import i18n  # noqa: E402
-from app.ui import rembg_manager, watermark_manager  # noqa: E402
+from app.ui import rembg_manager, upscale_manager, watermark_manager  # noqa: E402
 from app.ui.local_viewer import LocalViewer  # noqa: E402
 
 FAILURES: list[str] = []
@@ -146,7 +146,7 @@ def main() -> int:
     st = QSettings("ImageHunter", "ImageHunter")
     st.sync()
 
-    check("версия 0.8.23", app.__version__ == "0.8.23", app.__version__)
+    check("версия 0.8.24", app.__version__ == "0.8.24", app.__version__)
 
     # ---------- менеджер: чистые функции ----------
     check("is_installed() — булево", isinstance(watermark_manager.is_installed(), bool))
@@ -471,20 +471,36 @@ def main() -> int:
         results = []
         sig.uninstall_done.connect(
             lambda ok, info, mb: results.append((ok, info, mb)))
+        # v0.8.24: torch — общее достояние с модулем улучшения качества.
+        # Сосед жив → torch остаётся в системе, уходит только своё;
+        # соседа нет (или torch не стоит вовсе) → torch вычищается.
+        real_ups_installed = upscale_manager.is_installed
+        upscale_manager.is_installed = lambda: True
         QThreadPool.globalInstance().start(watermark_manager.UninstallTask(sig))
         wait_until(lambda: bool(results))
-        check("UninstallTask: сигнал дошёл", bool(results), str(results))
         args = uninstall_calls[0] if uninstall_calls else []
         check("UninstallTask: pip uninstall -y iopaint",
               args[:2] == ["uninstall", "-y"] and "iopaint" in args, str(args))
-        check("UninstallTask: torch вычищается", "torch" in args, str(args))
+        check("UninstallTask: torch остаётся при живом модуле улучшения",
+              "torch" not in args, str(args))
         check("UninstallTask: кэши моделей удалены",
               not os.path.exists(lama_fake) and not os.path.exists(flo_fake))
+        check("UninstallTask: освобождено ≥3 МБ (первый прогон)",
+              bool(results) and results[0][2] >= 3, str(results))
+        # соседа нет — torch больше ничей, вычищается (кэши уже пусты,
+        # поэтому счёт «освобождено» дальше не проверяется)
+        results.clear()
+        uninstall_calls.clear()
+        upscale_manager.is_installed = lambda: False
+        QThreadPool.globalInstance().start(watermark_manager.UninstallTask(sig))
+        wait_until(lambda: bool(results))
+        args = uninstall_calls[0] if uninstall_calls else []
+        check("UninstallTask: torch вычищается без модуля улучшения",
+              "torch" in args, str(args))
         check("UninstallTask: чужие кэши не тронуты",
               os.path.exists(alien_fake))
-        check("UninstallTask: освобождено ≥3 МБ",
-              bool(results) and results[0][2] >= 3, str(results))
     finally:
+        upscale_manager.is_installed = real_ups_installed
         watermark_manager._installed_dists = real_dists_fn
         watermark_manager.model_cache_globs = real_globs
         watermark_manager._run_pip = real_pip
@@ -1444,6 +1460,10 @@ def main() -> int:
     watermark_manager.is_installed = lambda: True
     try:
         viewer.btn_wm_sel.click()
+        # busy выставляется в обработчике кнопки синхронно: проверяем ДО
+        # processEvents, который может доставить уже готовые сигналы
+        # пачки и снять busy раньше проверки (флейм на загруженной машине)
+        check("вьюер-sel: busy на время работы", viewer._wm_busy is True)
         app_inst.processEvents()
         check("вьюер-sel: клик стартовал задачу с выделением",
               captured.get("sel") == (10, 8, 24, 12), str(captured.get("sel")))
@@ -1451,7 +1471,6 @@ def main() -> int:
               captured.get("jobs") == [(sel_src, os.path.join(sel_folder,
                                                              "selphoto_nowm.png"))],
               str(captured.get("jobs")))
-        check("вьюер-sel: busy на время работы", viewer._wm_busy is True)
         wait_until(lambda: not viewer._wm_busy, timeout_s=10)
         check("вьюер-sel: флаг открытия потреблён (итог прошёл через batch_done)",
               viewer._wm_sel_open == "", viewer._wm_sel_open)

@@ -54,7 +54,7 @@ def main() -> int:
     st.remove("window/geometry")   # старт всегда с чистого листа
     st.sync()
 
-    check("версия 0.8.23", __version__ == "0.8.23", __version__)
+    check("версия 0.8.24", __version__ == "0.8.24", __version__)
 
     # --- первый запуск: записи нет — окно со штатными 1280×820 ---
     win0 = MainWindow()
