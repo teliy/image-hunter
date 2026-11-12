@@ -759,6 +759,36 @@ _STRINGS: dict[str, dict[str, str]] = {
     "viewer.wm_ready": {
         "ru": "Модели готовы: {model}", "en": "Models are ready: {model}",
         "zh": "模型已就绪：{model}"},
+    # ---------- процесс модулей в статус-баре (v0.8.20) ----------
+    # пожелание: «сделай, чтобы можно было видеть в строке статуса процесс
+    # и/или статус работы модулей, особенно модуля удаления ватермарков»
+    "modstatus.elapsed": {
+        "ru": " · {sec} с", "en": " · {sec} s", "zh": " · {sec} 秒"},
+    "viewer.wm_phase": {
+        "ru": "Удаление водяных знаков: {done}/{n} — {name}: {phase}",
+        "en": "Removing watermarks: {done}/{n} — {name}: {phase}",
+        "zh": "去除水印：{done}/{n} — {name}：{phase}"},
+    "viewer.wm_phase_detect": {
+        "ru": "поиск знаков", "en": "detecting watermarks", "zh": "检测水印"},
+    "viewer.wm_phase_found": {
+        "ru": "знаков найдено: {n}", "en": "watermarks found: {n}",
+        "zh": "发现水印：{n}"},
+    "viewer.wm_phase_inpaint": {
+        "ru": "закраска", "en": "inpainting", "zh": "修复填充"},
+    "viewer.wm_phase_save": {
+        "ru": "сохранение", "en": "saving", "zh": "保存"},
+    "viewer.wm_dl_start": {
+        "ru": "Скачивается модель {model}…",
+        "en": "Downloading the {model} model…",
+        "zh": "正在下载模型 {model}…"},
+    "viewer.wm_dl_prog": {
+        "ru": "Скачивается модель {model}: {done} из {total} ({pct} %)",
+        "en": "Downloading the {model} model: {done} of {total} ({pct} %)",
+        "zh": "正在下载模型 {model}：{done}/{total}（{pct} %）"},
+    "viewer.wm_dl_prog_na": {
+        "ru": "Скачивается модель {model}: {done}",
+        "en": "Downloading the {model} model: {done}",
+        "zh": "正在下载模型 {model}：{done}"},
     "log.event.wm_start": {
         "ru": "🧽 Убираю водяные знаки: файлов {n}, модель {model}",
         "en": "🧽 Removing watermarks: {n} file(s), model {model}",

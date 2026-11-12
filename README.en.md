@@ -232,6 +232,14 @@ The Log diagnostics (⏱ lines and "⚠ The UI did not respond") showed that on 
 
 **6. Honest wording in the Log.** Slow operations from worker threads are marked "⏱ SLOW (in background, UI stays alive)", while "…this blocks the UI" remains only for operations that actually stalled the GUI thread — the log shows at a glance where the freeze was.
 
+## Module progress — in the status bar (v0.8.20)
+
+Module activity (especially watermark removal) is visible at the bottom of the window, in a permanent spot of the status bar next to the "My pictures" label: a progress bar and the current phase. The widget is hidden while modules are idle; its activity is never overwritten by viewer events (opening a folder, search), and if updates stop coming for a while it ticks " · N s" — you can see the process is alive and how long it has been running.
+
+The watermark pipeline is transparent phase by phase: "Removing watermarks: 3/12 — photo.webp: inpainting · 14 s" — Florence-2 detection, "watermarks found: N", LaMa inpainting, saving; the bar moves inside each file. rembg works the same: file N of M, model preparation and download with megabytes and percent. Install/uninstall/update of modules (pip, gigabytes of PyTorch) also live on the widget — a seconds counter instead of a frozen line.
+
+The first run of the watermark module downloads models with progress: big-lama (~200 MB) via our own streaming downloader with md5 verification (falling back to the stock path), Florence-2 (~0.5 GB) via a watchdog watching the Hugging Face downloader: the hub cache is untouched, the size of the "*.incomplete" files in blobs/ is the honest progress.
+
 ## Linux: network hang, davfs2 and file permissions (v0.8.19)
 
 The reports "hangs in Linux when touching the network" (with a py-spy dump) and "something with permissions, e.g. I can't delete files" (with a log from a cloud.mail.ru davfs2 mount) exposed a whole layer of Linux problems — all fixed:

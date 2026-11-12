@@ -141,6 +141,10 @@ class RembgSignals(QObject):
     file_done = Signal(str, str, bool, str)  # путь, результат, ok, ошибка
     batch_done = Signal(int, int)            # готово, с ошибками
     revert_done = Signal(list, list)         # удалённые результаты, [(путь, ошибка)]
+    # начало файла — процесс в строке статуса (v0.8.20, тот же сигнал,
+    # что у водяных знаков): модель inference на большой картинке идёт
+    # секунды, без file_start прогресс замирал на «N/M» до file_done
+    file_start = Signal(str, int)            # путь, номер в пачке (с 1)
     # жизнь модели (v0.7.15): статусная строка рассказывает про скачивание
     model_prepare = Signal(str)              # модель готовится (грузится в память)
     model_ready = Signal(str)                # модель готова — началась обработка
@@ -451,7 +455,10 @@ class RemoveBgTask(QRunnable):
             self.signals.batch_done.emit(0, len(self.jobs))
             return
         self.signals.model_ready.emit(self.model)
-        for path, out in self.jobs:
+        for idx, (path, out) in enumerate(self.jobs, 1):
+            # начало файла — в строку статуса (v0.8.20): до file_done
+            # модель inference идёт секунды, и прогресс замирал на «N/M»
+            self.signals.file_start.emit(path, idx)
             try:
                 with open(path, "rb") as f:
                     data = f.read()

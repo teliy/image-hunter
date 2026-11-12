@@ -24,13 +24,14 @@ from PySide6.QtWidgets import (
 )
 
 from app import __version__
-from app.core import applog, i18n, image_saver, updates
+from app.core import applog, i18n, image_saver, modstatus, updates
 from app.core.downloader import Downloader
 from app.core.i18n import lang_name, tr
 from app.ui.app_icon import icon as app_icon
 from app.ui.downloads import DownloadsView
 from app.ui.local_viewer import LocalViewer
 from app.ui.log_view import LogView
+from app.ui.modstatus import ModuleStatusWidget
 from app.ui.modules_menu import ModulesMenu
 from app.ui.search_tabs import SearchTabs
 
@@ -77,6 +78,16 @@ class MainWindow(QMainWindow):
         # статус вкладки «Мои картинки» (поиск по имени, копирование, удаление)
         # теперь живёт здесь, внизу: слева от языка и кнопки обновления (v0.7.7)
         self._status.addPermanentWidget(self.local.status)
+
+        # работа модулей — на постоянном месте статус-бара (v0.8.20): пожелание
+        # «видеть в строке статуса процесс и/или статус работы модулей, особенно
+        # модуля удаления ватермарков». Пока модули молчат — скрыт; активность
+        # (обработка пачки, загрузка моделей, pip) не затирается событиями
+        # вьюера и тикает секундами, когда обновлений долго нет
+        self._mod_status = ModuleStatusWidget()
+        self._status.addPermanentWidget(self._mod_status)
+        modstatus.bridge.activity.connect(self._mod_status.activity)
+        modstatus.bridge.finished.connect(self._mod_status.finished)
 
         # веб-сервер (v0.8.0): модуль app/server ленивый — до первого
         # действия (пункт меню «Модули», автостарт) не импортируется и не

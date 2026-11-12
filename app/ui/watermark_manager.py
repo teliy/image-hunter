@@ -71,6 +71,7 @@ local_viewer, который этими задачами распоряжает�
 
 from __future__ import annotations
 
+import hashlib
 import importlib.metadata
 import importlib.util
 import json
@@ -79,6 +80,8 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
+import time
 import urllib.request
 
 from PIL import Image, ImageDraw, ImageFilter, ImageOps
@@ -643,6 +646,30 @@ class WatermarkSignals(QObject):
     batch_done = Signal(int, int)            # с результатом, с ошибками
     model_prepare = Signal(str)              # модели готовятся (первый раз — качаются)
     model_ready = Signal(str)                # модели готовы — пошла обработка
+    # процесс в строке статуса (v0.8.20, пожелание: «видеть в строке
+    # статуса процесс и/или статус работы модулей, особенно модуля
+    # удаления ватермарков»)
+    file_start = Signal(str, int)            # путь, номер файла в пачке (с 1)
+    phase = Signal(str, str, int)            # путь, код фазы, счётчик (или -1)
+    model_dl_start = Signal(str, int)        # модель, всего байт (0 — неизвестно)
+    model_dl_progress = Signal(int, int)     # скачано байт, всего байт
+
+
+# активная задача с объектом сигналов: скачивания моделей докладывают ей
+# (тот же приём, что в rembg_manager — пачка ставит репортера на время
+# работы, глубоко лежащий код дергает _dl_emit, не зная про сигналы)
+_DL_REPORTER: "WatermarkSignals | None" = None
+
+
+def _dl_emit(ev: str, *args) -> None:
+    """Доложить о ходе работы активной задаче (если она есть)."""
+    rep = _DL_REPORTER
+    if rep is None:
+        return
+    try:
+        getattr(rep, ev).emit(*args)
+    except RuntimeError:
+        pass   # объект сигналов уже удалён — не беда
 
 
 # ---------- задачи: установка / удаление модуля ----------
@@ -859,6 +886,78 @@ def _torch_device() -> str:
         return "cpu"
 
 
+def _md5_of(path: str) -> str:
+    """MD5 файла потоково (модели — сотни мегабайт)."""
+    h = hashlib.md5()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _stream_lama() -> bool:
+    """Скачать big-lama сами, с докладом прогресса; True — успех.
+
+    Штатный ``LaMa.download()`` качает через torch.hub с прогрессом в
+    консоли, которой у pythonw-версии нет: пользователь сидит в тишине,
+    пока идут ~200 МБ. Здесь свой потоковый download (тот же приём, что
+    у rembg — v0.7.15): каждые ~0,3 с сигнал model_dl_progress доезжает
+    до статус-бара. Файл пишется в «.part» и переименовывается только
+    после проверки MD5 (он же — критерий успеха); при любой неудаче
+    «.part» подчищается и возвращается False — вызывающий код отдаёт
+    скачивание штатному ``LaMa.download()`` (он и путь, и md5 знает
+    сам, наша цель — только прогресс). Точка расчёта пути и md5 —
+    метаданные установленного iopaint (тот же адрес, что у него).
+    """
+    try:
+        from iopaint.helper import get_cache_path_by_url
+        from iopaint.model.lama import LAMA_MODEL_MD5, LAMA_MODEL_URL
+        target = get_cache_path_by_url(LAMA_MODEL_URL)
+    except Exception:                       # noqa: BLE001 — iopaint не стоит: не наша забота
+        return False
+    if os.path.exists(target):
+        return True                         # уже скачан (гонки не страшны)
+    import requests   # лениво: нужен только на этом пути
+
+    tmp = target + ".part"
+    try:
+        os.makedirs(os.path.dirname(target) or ".", exist_ok=True)
+        total = remote_content_length(LAMA_MODEL_URL)
+        _dl_emit("model_dl_start", "big-lama", total)
+        with requests.get(LAMA_MODEL_URL, stream=True, timeout=(10, 120),
+                          headers={"User-Agent": "ImageHunter"}) as r:
+            r.raise_for_status()
+            if total <= 0:
+                total = int(r.headers.get("Content-Length") or 0)
+                if total:
+                    _dl_emit("model_dl_start", "big-lama", total)
+            done, last = 0, 0.0
+            with open(tmp, "wb") as f:
+                for chunk in r.iter_content(65536):
+                    if not chunk:
+                        continue
+                    f.write(chunk)
+                    done += len(chunk)
+                    now = time.monotonic()
+                    if total > 0 and now - last >= 0.3:   # не заваливаем GUI-очередь
+                        last = now
+                        _dl_emit("model_dl_progress", done, total)
+        if total > 0:
+            _dl_emit("model_dl_progress", done, total)   # финальные 100 %
+        if LAMA_MODEL_MD5 and _md5_of(tmp) != LAMA_MODEL_MD5:
+            os.remove(tmp)
+            return False                        # битая скачка — штатный путь перепроверит
+        os.replace(tmp, target)
+        return True
+    except Exception:                           # noqa: BLE001 — сеть/диск любые
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
+        return False
+
+
 def _ensure_lama_downloaded() -> None:
     """big-lama.pt должен лежать на диске ДО ModelManager (v0.8.13).
 
@@ -866,13 +965,113 @@ def _ensure_lama_downloaded() -> None:
     (scan_models → LaMa.is_downloaded): без скачивания ModelManager
     встречает «lama» как неизвестную модель — «Unsupported model: lama.
     Available models: ['cv2']» — и все файлы падали бы с этой ошибкой на
-    первом же запуске. Качаем штатным ``LaMa.download()`` — файл ложится
-    ровно туда, куда смотрит iopaint; уже скачанный не перекачивается.
+    первом же запуске. Качаем сами с прогрессом в статус-бар (v0.8.20);
+    не вышло — штатный ``LaMa.download()`` (он же проверит md5). Уже
+    скачанный не перекачивается.
     """
     from iopaint.model.lama import LaMa
 
     if not LaMa.is_downloaded():
-        LaMa.download()
+        if not _stream_lama():
+            LaMa.download()
+
+
+# ---------- прогресс скачивания Florence-2 (HF) в статус-бар (v0.8.20) ----------
+
+# файлы меньше этого размера (config.json, токенизаторы) — без прогресса:
+# они качаются за мгновение, а HEAD-запрос на каждый дороже самих файлов
+_HF_BIG_BYTES = 10 * (1 << 20)
+_HF_PATCHED = False
+
+
+def _incomplete_bytes(blobs_dir: str) -> int:
+    """Сколько байт лежит в недокачанных «*.incomplete» кэша hf-hub.
+
+    hf-hub качает во временный файл «<etag>.incomplete» в blobs/ модели
+    и переименовывает по завершении — размер недокачанного и есть честный
+    прогресс. Папки нет (кэш пуст/другое место) — 0.
+    """
+    try:
+        total = 0
+        for name in os.listdir(blobs_dir):
+            if name.endswith(".incomplete"):
+                try:
+                    total += os.path.getsize(os.path.join(blobs_dir, name))
+                except OSError:
+                    pass   # файл успел исчезнуть/переименоваться — не беда
+        return total
+    except OSError:
+        return 0
+
+
+def _watch_hf_blob(repo_id: str, filename: str, stop: threading.Event) -> None:
+    """Watchdog скачивания: размер *.incomplete → сигналы прогресса.
+
+    Сам hf-hub-качальник трогать нельзя (кэш blobs/snapshots/refs — его
+    семантика), поэтому следим со стороны: раз в 0,3 с считаем размер
+    недокачанных файлов blobs/ выбранного репозитория и докладываем.
+    Тотал — из HEAD-запроса (метаданные файла на хабе); для мелких файлов
+    (< _HF_BIG_BYTES) прогресса нет — они мгновенные. Работает с любой
+    версией hf-hub: не зависит от tqdm_class/прогресс-баров хаба.
+    """
+    try:
+        from huggingface_hub import get_hf_file_metadata, hf_hub_url
+        url = hf_hub_url(repo_id, filename)
+        total = int(get_hf_file_metadata(url).size or 0)
+    except Exception:                       # noqa: BLE001 — сеть/версия хаба любые
+        total = 0
+    if total and total < _HF_BIG_BYTES:
+        return                              # мелочь — молча
+    short = repo_id.split("/")[-1]
+    _dl_emit("model_dl_start", short, total)
+    if not total:
+        return                              # без тотала тикать нечестно
+    blobs = os.path.join(_hf_hub_cache(),
+                         "models--" + repo_id.replace("/", "--"), "blobs")
+    last = -1
+    while not stop.wait(0.3):
+        done = _incomplete_bytes(blobs)
+        if done and done != last:
+            last = done
+            _dl_emit("model_dl_progress", min(done, total), total)
+
+
+def _patch_hf_downloads() -> None:
+    """Обернуть hf_hub_download: доклад о прогрессе во время пачки.
+
+    Florence-2 грузится через transformers → hf_hub_download; тот при
+    первом запуске качает ~0,5 ГБ (base) — раньше молча. Обёртка ставится
+    ОДИН раз за жизнь процесса и ДО импорта transformers: тот делает
+    «from huggingface_hub import hf_hub_download» при импорте, и должен
+    увидеть обёртку. Обёртка лишь запускает watchdog на время качания;
+    без активной пачки (репортера нет) — прямой проход, поведение не
+    меняется. Приём тот же, что у pooch в rembg_manager (v0.7.15).
+    """
+    global _HF_PATCHED
+    if _HF_PATCHED:
+        return
+    try:
+        import huggingface_hub
+        orig = huggingface_hub.hf_hub_download
+    except Exception:                       # noqa: BLE001 — перехватывать нечего
+        return
+
+    def patched(repo_id, filename, *args, **kwargs):
+        rep = _DL_REPORTER
+        if rep is None:
+            return orig(repo_id, filename, *args, **kwargs)
+        stop = threading.Event()
+        watch = threading.Thread(target=_watch_hf_blob,
+                                 args=(repo_id, filename, stop), daemon=True)
+        watch.start()
+        try:
+            return orig(repo_id, filename, *args, **kwargs)
+        finally:
+            stop.set()
+            watch.join(timeout=2.0)
+
+    huggingface_hub.hf_hub_download = patched
+    _HF_PATCHED = True
 
 
 def _load_inpainter(device: str):
@@ -941,6 +1140,10 @@ def _merge_detection(ocr: list, grounding: list) -> list:
 def _make_detector(model_id: str, device: str):
     """Florence-2 в память; возвращает detect(pil) -> [полигон, …].
 
+    Перед импортом transformers включается доклад о скачивании
+    (_patch_hf_downloads, v0.8.20): первая загрузка модели — сотни
+    МБ, без этого они шли молча.
+
     Полигон — список точек [(x, y), …]: OCR отдаёт повёрнутые
     четырёхугольники надписей, grounding — прямоугольники. Сначала
     ``<OCR_WITH_REGION>`` в два прохода (_ocr_passes): по оригиналу и по
@@ -959,6 +1162,8 @@ def _make_detector(model_id: str, device: str):
     """
     import numpy as np
     import torch
+
+    _patch_hf_downloads()   # ДО импорта transformers: тот свяжет обёртку при импорте
     from transformers import AutoModelForCausalLM, AutoProcessor
 
     processor = AutoProcessor.from_pretrained(model_id, trust_remote_code=True)
@@ -1028,11 +1233,18 @@ class RemoveWatermarkTask(QRunnable):
         self.signals = signals
 
     def run(self) -> None:  # рабочий поток
-        self._run_inner()
+        # на время пачки скачивания моделей докладывают её сигналам
+        # (v0.8.20: процесс в строке статуса) — тот же приём, что у rembg
+        global _DL_REPORTER
+        _DL_REPORTER = self.signals
+        try:
+            self._run_inner()
+        finally:
+            _DL_REPORTER = None
 
     def _run_inner(self) -> None:
         _ensure_stdio()          # pythonw: без этого падают HF-прогресс-бары
-        _disable_hf_progress()
+        _disable_hf_progress()   # свои прогресс-сигналы; консольных нет у pythonw
         self.signals.model_prepare.emit(self.model)
         try:
             inpainter, detect = _load_pipeline(self.model)
@@ -1043,8 +1255,13 @@ class RemoveWatermarkTask(QRunnable):
             return
         self.signals.model_ready.emit(self.model)
         ok = fail = 0
-        for path, out in self.jobs:
+        for idx, (path, out) in enumerate(self.jobs, 1):
+            # начало файла + фазы внутри него — в строку статуса (v0.8.20):
+            # детекция и закраска больших картинок идут секунды, без фаз
+            # прогресс замирал на «N/M» до завершения файла
+            self.signals.file_start.emit(path, idx)
             try:
+                self.signals.phase.emit(path, "detect", -1)
                 with Image.open(path) as im:
                     # EXIF-поворот: фото телефонов иначе уедут «головой вбок»
                     rgb = _exif_rgb(im)
@@ -1054,6 +1271,7 @@ class RemoveWatermarkTask(QRunnable):
                     # водяных знаков не нашлось — писать нечего, это не ошибка
                     self.signals.file_done.emit(path, "", True, "")
                     continue
+                self.signals.phase.emit(path, "found", len(polys))
                 cover = float((mask > 0).mean())
                 if cover > _MAX_MASK_COVER:
                     # маска-гигант не «удаляет знак», а уничтожает картинку
@@ -1064,7 +1282,9 @@ class RemoveWatermarkTask(QRunnable):
                         path, "", False,
                         tr("log.event.wm_cover", pct=round(cover * 100)))
                     continue
+                self.signals.phase.emit(path, "inpaint", -1)
                 result = inpainter(rgb, mask)
+                self.signals.phase.emit(path, "save", -1)
                 _save_array(result, out)
                 ok += 1
                 self.signals.file_done.emit(path, out, True, "")

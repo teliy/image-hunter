@@ -286,7 +286,7 @@ def main() -> int:
         mw_mod.QMessageBox.warning = orig_warn  # type: ignore[assignment]
 
     # ---- 7. кэш корзины ----------------------------------------------------
-    # v0.8.19: на Linux корзина есть на локальных ФС (moveToTrash работает),
+    # v0.8.20: на Linux корзина есть на локальных ФС (moveToTrash работает),
     # на сетевых маунтах (davfs2 и пр.) — нет; вызов стабилен и не пишет
     # виндовый кэш _TRASH_DRIVE_CACHE
     tmp_trash = tempfile.mkdtemp(prefix="ih_trash_")

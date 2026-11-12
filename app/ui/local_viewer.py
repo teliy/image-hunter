@@ -83,7 +83,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.core import applog, i18n, imgload, netfs
+from app.core import applog, i18n, imgload, modstatus, netfs
 from app.core.i18n import tr
 from app.ui import rembg_manager, watermark_manager
 
@@ -2903,6 +2903,8 @@ class LocalViewer(QWidget):
         self._rembg_signals.uninstall_done.connect(self._on_rembg_uninstall_done)
         self._rembg_signals.file_done.connect(self._on_rembg_file_done)
         self._rembg_signals.batch_done.connect(self._on_rembg_batch_done)
+        # начало файла — процесс в строке статуса (v0.8.20)
+        self._rembg_signals.file_start.connect(self._on_rembg_file_start)
         # жизнь модели и возврат оригиналов — статусная строка рассказывает
         # про модуль целиком: готовится, качается (сколько из скольких), готова
         self._rembg_signals.model_prepare.connect(self._on_rembg_model_prepare)
@@ -2935,6 +2937,13 @@ class LocalViewer(QWidget):
         self._wm_signals.uninstall_done.connect(self._on_wm_uninstall_done)
         self._wm_signals.file_done.connect(self._on_wm_file_done)
         self._wm_signals.batch_done.connect(self._on_wm_batch_done)
+        # процесс внутри пачки — в строку статуса (v0.8.20, пожелание:
+        # «видеть в строке статуса процесс и/или статус работы модулей,
+        # особенно модуля удаления ватермарков»)
+        self._wm_signals.file_start.connect(self._on_wm_file_start)
+        self._wm_signals.phase.connect(self._on_wm_phase)
+        self._wm_signals.model_dl_start.connect(self._on_wm_model_dl_start)
+        self._wm_signals.model_dl_progress.connect(self._on_wm_model_dl_progress)
         # модели готовятся/качаются при первом запуске — статус расскажет
         self._wm_signals.model_prepare.connect(self._on_wm_model_prepare)
         self._wm_signals.model_ready.connect(self._on_wm_model_ready)
@@ -2946,6 +2955,8 @@ class LocalViewer(QWidget):
         self._wm_fail = 0
         self._wm_total = 0
         self._wm_t0 = 0.0
+        self._wm_idx = 0               # какой файл пачки сейчас в работе (v0.8.20)
+        self._wm_dl_model = ""         # какая модель сейчас качается (v0.8.20)
         saved_wm_model = QSettings("ImageHunter", "ImageHunter").value(
             watermark_manager.MODEL_KEY, watermark_manager.DEFAULT_MODEL, type=str)
         self._wm_model = (saved_wm_model if saved_wm_model in
@@ -3479,6 +3490,7 @@ class LocalViewer(QWidget):
             return   # меню показывает пункт только у установленного модуля
         self._rembg_busy = True
         self.status.setText(tr("viewer.rembg_updating"))
+        modstatus.report("rembg", tr("viewer.rembg_updating"), frac=-1.0)
         applog.event("log.event.rembg_update_start")
         QThreadPool.globalInstance().start(
             rembg_manager.UpdateTask(self._rembg_signals))
@@ -3486,6 +3498,7 @@ class LocalViewer(QWidget):
     def _on_rembg_update_done(self, ok: bool, what: str, info: str) -> None:
         """Итог обновления rembg: что изменилось — в статус, журнал, диалог."""
         self._rembg_busy = False
+        modstatus.done("rembg")
         if ok:
             msg = tr("viewer.rembg_update_done", what=what)
             self.status.setText(msg)
@@ -3557,6 +3570,11 @@ class LocalViewer(QWidget):
         self._rembg_t0 = time.perf_counter()
         self.status.setText(tr("viewer.rembg_progress", done=0, n=len(jobs),
                                name=os.path.basename(jobs[0][0])))
+        # процесс модуля — на постоянном месте статус-бара (v0.8.20)
+        modstatus.report("rembg", tr("viewer.rembg_progress", done=0,
+                                     n=len(jobs),
+                                     name=os.path.basename(jobs[0][0])),
+                         frac=0.0)
         applog.event("log.event.rembg_start", n=len(jobs),
                      model=self._rembg_model)
         # чтение файлов — в самой задаче, GUI не ждёт; на сетевом диске —
@@ -3567,6 +3585,13 @@ class LocalViewer(QWidget):
                 else QThreadPool.globalInstance())
         pool.start(rembg_manager.RemoveBgTask(jobs, self._rembg_model,
                                               self._rembg_signals))
+
+    def _on_rembg_file_start(self, path: str, idx: int) -> None:
+        """Начался файл пачки: строка статуса оживает до file_done (v0.8.20)."""
+        modstatus.report("rembg", tr("viewer.rembg_progress", done=idx - 1,
+                                     n=self._rembg_total,
+                                     name=os.path.basename(path)),
+                         frac=(idx - 1) / max(1, self._rembg_total))
 
     def _on_rembg_file_done(self, path: str, out: str, ok: bool, err: str) -> None:
         """Промежуточный итог по файлу: прогресс в статусе, ошибки в журнал."""
@@ -3581,9 +3606,14 @@ class LocalViewer(QWidget):
         self.status.setText(tr("viewer.rembg_progress", done=done,
                                n=self._rembg_total,
                                name=os.path.basename(path)))
+        modstatus.report("rembg", tr("viewer.rembg_progress", done=done,
+                                     n=self._rembg_total,
+                                     name=os.path.basename(path)),
+                         frac=done / max(1, self._rembg_total))
 
     def _on_rembg_batch_done(self, ok: int, fail: int) -> None:
         self._rembg_busy = False
+        modstatus.done("rembg")   # активность снята; итог — в статусе и журнале
         ms = round((time.perf_counter() - self._rembg_t0) * 1000)
         tail = tr("viewer.rembg_done_fail", fail=fail) if fail else ""
         self.status.setText(tr("viewer.rembg_done", ok=ok) + tail)
@@ -3655,28 +3685,41 @@ class LocalViewer(QWidget):
     def _on_rembg_model_prepare(self, model: str) -> None:
         """Модель готовится: грузится в память, при отсутствии качается."""
         self.status.setText(tr("viewer.rembg_prepare", model=model))
+        modstatus.report("rembg", tr("viewer.rembg_prepare", model=model),
+                         frac=-1.0)
 
     def _on_rembg_model_ready(self, model: str) -> None:
         """Модель готова — дальше идут уже сообщения обработки файлов."""
         self.status.setText(tr("viewer.rembg_ready", model=model))
+        modstatus.report("rembg", tr("viewer.rembg_ready", model=model),
+                         frac=-1.0)
 
     def _on_rembg_model_dl_start(self, model: str, total: int) -> None:
         """Началось скачивание модели — имя запоминаем для тиков прогресса."""
         self._dl_model = model
         self.status.setText(tr("viewer.rembg_dl_start", model=model))
+        if total > 0:
+            modstatus.report("rembg", tr("viewer.rembg_dl_prog", model=model,
+                                         done=_fmt_bytes(0),
+                                         total=_fmt_bytes(total), pct=0),
+                             frac=0.0)
+        else:
+            modstatus.report("rembg", tr("viewer.rembg_dl_start", model=model),
+                             frac=-1.0)
 
     def _on_rembg_model_dl_progress(self, done: int, total: int) -> None:
         """Тик скачивания: только статусная строка, журнал не заваливаем."""
         if total > 0:
             pct = round(done * 100 / total)
-            self.status.setText(tr("viewer.rembg_dl_prog",
-                                   model=self._dl_model,
-                                   done=_fmt_bytes(done),
-                                   total=_fmt_bytes(total), pct=pct))
+            text = tr("viewer.rembg_dl_prog", model=self._dl_model,
+                      done=_fmt_bytes(done), total=_fmt_bytes(total), pct=pct)
+            self.status.setText(text)
+            modstatus.report("rembg", text, frac=done / total)
         else:
-            self.status.setText(tr("viewer.rembg_dl_prog_na",
-                                   model=self._dl_model,
-                                   done=_fmt_bytes(done)))
+            text = tr("viewer.rembg_dl_prog_na", model=self._dl_model,
+                      done=_fmt_bytes(done))
+            self.status.setText(text)
+            modstatus.report("rembg", text, frac=-1.0)
 
     def _on_rembg_model_dl_done(self, model: str, size: int, ms: int) -> None:
         """Модель скачана: строка в журнал и итог в статусной строке."""
@@ -3693,12 +3736,14 @@ class LocalViewer(QWidget):
         self._rembg_busy = True
         self._rembg_pending = list(pending or [])
         self.status.setText(tr("viewer.rembg_installing"))
+        modstatus.report("rembg", tr("viewer.rembg_installing"), frac=-1.0)
         applog.event("log.event.rembg_install_start")
         QThreadPool.globalInstance().start(
             rembg_manager.InstallTask(self._rembg_signals))
 
     def _on_rembg_install_done(self, ok: bool, info: str) -> None:
         self._rembg_busy = False
+        modstatus.done("rembg")
         pending, self._rembg_pending = self._rembg_pending, None
         if ok:
             applog.event("log.event.rembg_install_done")
@@ -3727,6 +3772,7 @@ class LocalViewer(QWidget):
             return
         self._rembg_busy = True
         self.status.setText(tr("viewer.rembg_uninstalling"))
+        modstatus.report("rembg", tr("viewer.rembg_uninstalling"), frac=-1.0)
         applog.event("log.event.rembg_uninstall_start")
         QThreadPool.globalInstance().start(
             rembg_manager.UninstallTask(self._rembg_signals))
@@ -3734,6 +3780,7 @@ class LocalViewer(QWidget):
     def _on_rembg_uninstall_done(self, ok: bool, info: str,
                                  freed_mb: int) -> None:
         self._rembg_busy = False
+        modstatus.done("rembg")
         if ok:
             freed = _fmt_bytes(freed_mb * 1024 * 1024)
             self.status.setText(tr("viewer.rembg_uninst_ok", mb=freed))
@@ -3795,6 +3842,7 @@ class LocalViewer(QWidget):
             return   # меню показывает пункт только у установленного модуля
         self._wm_busy = True
         self.status.setText(tr("viewer.wm_updating"))
+        modstatus.report("wm", tr("viewer.wm_updating"), frac=-1.0)
         applog.event("log.event.wm_update_start")
         QThreadPool.globalInstance().start(
             watermark_manager.UpdateTask(self._wm_signals, self._wm_model))
@@ -3802,6 +3850,7 @@ class LocalViewer(QWidget):
     def _on_wm_update_done(self, ok: bool, what: str, info: str) -> None:
         """Итог обновления модуля: что изменилось — в статус, журнал, диалог."""
         self._wm_busy = False
+        modstatus.done("wm")
         if ok:
             msg = tr("viewer.wm_update_done", what=what)
             self.status.setText(msg)
@@ -3865,6 +3914,10 @@ class LocalViewer(QWidget):
         self._wm_t0 = time.perf_counter()
         self.status.setText(tr("viewer.wm_progress", done=0, n=len(jobs),
                                name=os.path.basename(jobs[0][0])))
+        # процесс модуля — на постоянном месте статус-бара (v0.8.20)
+        modstatus.report("wm", tr("viewer.wm_progress", done=0, n=len(jobs),
+                                  name=os.path.basename(jobs[0][0])),
+                         frac=0.0)
         applog.event("log.event.wm_start", n=len(jobs), model=self._wm_model)
         # чтение файлов — в самой задаче, GUI не ждёт; на сетевом диске —
         # узкий отдельный пул, как у rembg (принцип v0.7.2)
@@ -3873,6 +3926,64 @@ class LocalViewer(QWidget):
                 else QThreadPool.globalInstance())
         pool.start(watermark_manager.RemoveWatermarkTask(
             jobs, self._wm_model, self._wm_signals))
+
+    def _on_wm_file_start(self, path: str, idx: int) -> None:
+        """Начался файл пачки: строка статуса оживает до file_done (v0.8.20)."""
+        self._wm_idx = idx
+        modstatus.report("wm", tr("viewer.wm_progress", done=idx - 1,
+                                  n=self._wm_total,
+                                  name=os.path.basename(path)),
+                         frac=(idx - 1) / max(1, self._wm_total))
+
+    def _on_wm_phase(self, path: str, code: str, extra: int) -> None:
+        """Фаза внутри файла — детекция/закраска/сохранение (v0.8.20).
+
+        Пожелание: «видеть в строке статуса процесс и/или статус работы
+        модулей, особенно модуля удаления ватермарков». Конвейер на одной
+        большой картинке идёт десятки секунд: без фаз прогресс замирал
+        на «N/M», и было не понять, что происходит и жив ли процесс.
+        Веса фаз двигают полосу внутри файла: детекция ~10 %, закраска —
+        до ~50 %, сохранение — до ~90 %.
+        """
+        if code == "detect":
+            phase, weight = tr("viewer.wm_phase_detect"), 0.1
+        elif code == "found":
+            phase, weight = tr("viewer.wm_phase_found", n=extra), 0.5
+        elif code == "inpaint":
+            phase, weight = tr("viewer.wm_phase_inpaint"), 0.5
+        else:   # "save"
+            phase, weight = tr("viewer.wm_phase_save"), 0.9
+        idx = self._wm_idx
+        modstatus.report(
+            "wm",
+            tr("viewer.wm_phase", done=idx - 1, n=self._wm_total,
+               name=os.path.basename(path), phase=phase),
+            frac=(idx - 1 + weight) / max(1, self._wm_total))
+
+    def _on_wm_model_dl_start(self, model: str, total: int) -> None:
+        """Началось скачивание модели модуля (LaMa/Florence-2, v0.8.20)."""
+        self._wm_dl_model = model
+        if total > 0:
+            modstatus.report("wm", tr("viewer.wm_dl_prog", model=model,
+                                      done=_fmt_bytes(0),
+                                      total=_fmt_bytes(total), pct=0),
+                             frac=0.0)
+        else:
+            modstatus.report("wm", tr("viewer.wm_dl_start", model=model),
+                             frac=-1.0)
+
+    def _on_wm_model_dl_progress(self, done: int, total: int) -> None:
+        """Тик скачивания модели: полоса и мегабайты в статус-виджете."""
+        model = self._wm_dl_model
+        if total > 0:
+            modstatus.report("wm", tr("viewer.wm_dl_prog", model=model,
+                                      done=_fmt_bytes(done),
+                                      total=_fmt_bytes(total),
+                                      pct=round(done * 100 / total)),
+                             frac=done / total)
+        else:
+            modstatus.report("wm", tr("viewer.wm_dl_prog_na", model=model,
+                                      done=_fmt_bytes(done)), frac=-1.0)
 
     def _on_wm_file_done(self, path: str, out: str, ok: bool, err: str) -> None:
         """Промежуточный итог по файлу: прогресс в статусе, ошибки в журнал."""
@@ -3889,9 +4000,14 @@ class LocalViewer(QWidget):
         self.status.setText(tr("viewer.wm_progress", done=done,
                                n=self._wm_total,
                                name=os.path.basename(path)))
+        modstatus.report("wm", tr("viewer.wm_progress", done=done,
+                                  n=self._wm_total,
+                                  name=os.path.basename(path)),
+                         frac=done / max(1, self._wm_total))
 
     def _on_wm_batch_done(self, ok: int, fail: int) -> None:
         self._wm_busy = False
+        modstatus.done("wm")   # активность снята; итог — в статусе и журнале
         ms = round((time.perf_counter() - self._wm_t0) * 1000)
         msg = tr("viewer.wm_done", ok=ok)
         if self._wm_clean:
@@ -3907,10 +4023,14 @@ class LocalViewer(QWidget):
     def _on_wm_model_prepare(self, model: str) -> None:
         """Модели готовятся: грузятся в память, при первом запуске качаются."""
         self.status.setText(tr("viewer.wm_prepare", model=model))
+        modstatus.report("wm", tr("viewer.wm_prepare", model=model),
+                         frac=-1.0)
 
     def _on_wm_model_ready(self, model: str) -> None:
         """Модели готовы — дальше идут уже сообщения обработки файлов."""
         self.status.setText(tr("viewer.wm_ready", model=model))
+        modstatus.report("wm", tr("viewer.wm_ready", model=model),
+                         frac=-1.0)
 
     def _wm_start_install(self, pending: list[str] | None = None) -> None:
         """Установить модуль в фоне; ``pending`` — что обработать после."""
@@ -3920,12 +4040,14 @@ class LocalViewer(QWidget):
         self._wm_busy = True
         self._wm_pending = list(pending or [])
         self.status.setText(tr("viewer.wm_installing"))
+        modstatus.report("wm", tr("viewer.wm_installing"), frac=-1.0)
         applog.event("log.event.wm_install_start")
         QThreadPool.globalInstance().start(
             watermark_manager.InstallTask(self._wm_signals))
 
     def _on_wm_install_done(self, ok: bool, info: str) -> None:
         self._wm_busy = False
+        modstatus.done("wm")
         pending, self._wm_pending = self._wm_pending, None
         if ok:
             applog.event("log.event.wm_install_done")
@@ -3954,6 +4076,7 @@ class LocalViewer(QWidget):
             return
         self._wm_busy = True
         self.status.setText(tr("viewer.wm_uninstalling"))
+        modstatus.report("wm", tr("viewer.wm_uninstalling"), frac=-1.0)
         applog.event("log.event.wm_uninstall_start")
         QThreadPool.globalInstance().start(
             watermark_manager.UninstallTask(self._wm_signals))
@@ -3961,6 +4084,7 @@ class LocalViewer(QWidget):
     def _on_wm_uninstall_done(self, ok: bool, info: str,
                               freed_mb: int) -> None:
         self._wm_busy = False
+        modstatus.done("wm")
         if ok:
             freed = _fmt_bytes(freed_mb * 1024 * 1024)
             self.status.setText(tr("viewer.wm_uninst_ok", mb=freed))
