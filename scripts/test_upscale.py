@@ -27,7 +27,7 @@
   установка-продолжение (отложенная пачка после install_done), выбор
   модели запоминается и валидируется при загрузке, меню «Модули» содержит
   раздел улучшения качества;
-- i18n: все новые ключи заполнены на ru/en/zh; версия — 0.8.24.
+- i18n: все новые ключи заполнены на ru/en/zh; версия — 0.8.25.
 
 Запуск: QT_QPA_PLATFORM=offscreen QTWEBENGINE_CHROMIUM_FLAGS="--no-sandbox --disable-gpu" \
         python scripts/test_upscale.py
@@ -83,7 +83,11 @@ TINY_SCALE = 4
 
 
 def make_tiny_weights(cache_dir: str) -> None:
-    """Крошечная настоящая RRDBNet: веса сохраняются как у релизов."""
+    """Крошечная настоящая RRDBNet: веса как у релизов — в обёртке тренера.
+
+    Официальный чекпоинт Real-ESRGAN — не голый state_dict, а
+    {"params_ema": {…}}; сохраняем в том же формате, чтобы весь конвейер
+    тестов (загрузка, задачи, e2e) шёл через реальный путь unwrap."""
     import torch
 
     os.makedirs(cache_dir, exist_ok=True)   # после UninstallTask кэша нет
@@ -91,7 +95,8 @@ def make_tiny_weights(cache_dir: str) -> None:
         num_in_ch=3, num_out_ch=3, scale=TINY_SCALE, num_feat=8,
         num_block=1, num_grow_ch=4)
     net = upscale_manager._build_rrdbnet(TINY)
-    torch.save(net.state_dict(), os.path.join(cache_dir, TINY))
+    torch.save({"params_ema": net.state_dict()},
+               os.path.join(cache_dir, TINY))
 
 
 def patch_tiny() -> str:
@@ -160,7 +165,7 @@ def main() -> int:
     st.sync()
 
     # ---------- чистые функции менеджера ----------
-    check("версия 0.8.24", __version__ == "0.8.24", __version__)
+    check("версия 0.8.25", __version__ == "0.8.25", __version__)
     check("is_installed возвращает bool",
           isinstance(upscale_manager.is_installed(), bool))
     check("model_scale: x4plus → 4",
@@ -222,6 +227,35 @@ def main() -> int:
     net, device, scale = upscale_manager._load_net(TINY)
     check("_load_net: строгая загрузка", net is not None and device == "cpu"
           and scale == TINY_SCALE, f"{device}, scale={scale}")
+
+    # формат официального чекпоинта: обёртка тренера basicsr разворачивается
+    import torch  # noqa: E402
+    sd = net.state_dict()
+    upscale_manager._NET_PARAMS["both.pth"] = dict(
+        upscale_manager._NET_PARAMS[TINY])
+    upscale_manager._NET_PARAMS["params.pth"] = dict(
+        upscale_manager._NET_PARAMS[TINY])
+    upscale_manager._NET_PARAMS["plain.pth"] = dict(
+        upscale_manager._NET_PARAMS[TINY])
+    wrapped = {"params_ema": {k: v.clone() for k, v in sd.items()},
+               "params": {k: v + 0.05 for k, v in sd.items()}}
+    torch.save(wrapped, os.path.join(tmp, "both.pth"))
+    net2, _d2, _s2 = upscale_manager._load_net("both.pth")
+    check("чекпоинт: при обоих ключах берутся EMA-веса (params_ema)",
+          torch.equal(net2.state_dict()["conv_first.weight"],
+                      wrapped["params_ema"]["conv_first.weight"]))
+    torch.save({"params": {k: v + 0.05 for k, v in sd.items()}},
+               os.path.join(tmp, "params.pth"))
+    net3, _d3, _s3 = upscale_manager._load_net("params.pth")
+    check("чекпоинт: обёртка params разворачивается",
+          torch.equal(net3.state_dict()["conv_first.weight"],
+                      wrapped["params"]["conv_first.weight"]))
+    torch.save({k: v.clone() for k, v in sd.items()},
+               os.path.join(tmp, "plain.pth"))
+    net4, _d4, _s4 = upscale_manager._load_net("plain.pth")
+    check("голый state_dict тоже грузится (совместимость)",
+          torch.equal(net4.state_dict()["conv_first.weight"],
+                      sd["conv_first.weight"]))
 
     sig = upscale_manager.UpscaleSignals()
     phases: list[tuple[str, int, int]] = []

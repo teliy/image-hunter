@@ -607,6 +607,14 @@ def _load_net(fname: str):
         state = torch.load(path, map_location="cpu", weights_only=True)
     except TypeError:   # noqa: BLE001 — torch < 1.13 без weights_only
         state = torch.load(path, map_location="cpu")
+    # официальный чекпоинт Real-ESRGAN — не голый state_dict, а словарь-
+    # обёртка тренера basicsr: {"params_ema": {…}} (EMA-веса — их берёт
+    # и штатный inference_realesrgan.py) или {"params": {…}}; внутри
+    # RRDBNet ключа "params" не бывает, так что путаницы не выйдет
+    if isinstance(state, dict) and "params_ema" in state:
+        state = state["params_ema"]
+    elif isinstance(state, dict) and "params" in state:
+        state = state["params"]
     net.load_state_dict(state, strict=True)
     device = _torch_device()
     net = net.to(device).eval()

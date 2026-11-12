@@ -86,7 +86,7 @@ python main.py
 
 **值得了解的细节。**大图按 256×256 的分块、10 px 重叠处理（与 Real-ESRGAN 官方流水线相同）：内存与图片大小无关，分块进度显示在状态栏（“分块 17/28”）。透明度不会丢失：模型放大 RGB 通道，蒙版用 Lanczos ×scale（PNG/WebP 保留 alpha；RGBA → JPEG 会平铺到白底上）；EXIF 旋转与显示一致。GIF、无扩展名文件和已有结果（“X_x4.jpg”）不会被处理；结果超过 50 百万像素时如实拒绝。
 
-测试：`scripts/test_upscale.py` —— 85 项检查，基于真实的微型 RRDBNet（真实 torch）：结果命名、官方流水线（×4、alpha、JPEG 白底、28 个分块、50 MP 保护）、UpscaleTask（批处理、无权重时拒绝）、从本地 HTTP 服务器下载（信号、“.part”清理、错误大小）、Install/Uninstall/Update/Revert、通过按钮的端到端流程与选择对话框、“模块”菜单的两种状态；相邻测试套件全绿（test_watermark 198、test_modules_menu 85）。
+—— 88 项检查，基于真实的微型 RRDBNet（真实 torch）：结果命名、官方流水线（×4、alpha、JPEG 白底、28 个分块、50 MP 保护）、UpscaleTask（批处理、无权重时拒绝）、从本地 HTTP 服务器下载（信号、“.part”清理、错误大小）、Install/Uninstall/Update/Revert、通过按钮的端到端流程与选择对话框、“模块”菜单的两种状态；相邻测试套件全绿（test_watermark 198、test_modules_menu 85）。注（v0.8.25）：官方 Real-ESRGAN 权重带有训练器包装（`{"params_ema": …}`）——加载时会自动展开（EMA 权重，与官方 `inference_realesrgan.py` 一致）；裸 state_dict 仍可直接加载。
 
 ## 窗口记住自己的大小和位置（v0.8.23）
 
