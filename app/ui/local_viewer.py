@@ -246,19 +246,20 @@ _REMOTE_DRIVE_CACHE: dict[str, bool] = {}
 # не должен 200 раз ходить в shell (на сетевом диске каждый не мгновенен)
 _TRASH_DRIVE_CACHE: dict[str, bool] = {}
 
-
 def _is_remote_path(path: str) -> bool:
     """Сетевой ли путь (WebDAV, SMB, NFS…).
 
     Windows — подключённый диск через GetDriveTypeW (v0.7.2). Linux —
-    fstype точки монтирования из /proc/mounts (v0.8.19): davfs2 и другие
-    FUSE-маунты раньше считались локальными, узкий сетевой пул (v0.7.2)
-    не включался, и davfs2 заваливали параллельными запросами — слоты
-    кончались, чтения провисали ~30 с и падали с Errno 11 (репорт
-    v0.8.19: маунт cloud.mail.ru, все операции «МЕДЛЕННО» по 700–30 000 мс).
-    Чтение таких файлов идёт через отдельный узкий пул: когда сервер
-    подвис, ждут одна-две задачи, а не весь пул сразу — локальные
-    миниатюры продолжают грузиться."""
+    fstype самой конкретной точки монтирования из /proc/self/mounts
+    (v0.8.19, вся механика в app/core/netfs.py): davfs2, rclone, sshfs,
+    CIFS, NFS, 9p/WSL, GVFS-пути GNOME. Раньше на Linux все пути
+    считались локальными, узкий сетевой пул (v0.7.2) не включался, и
+    davfs2 заваливали параллельными запросами — слоты кончались, чтения
+    провисали ~30 с и падали с Errno 11 (репорт v0.8.19: маунт
+    cloud.mail.ru, все операции «МЕДЛЕННО» по 700–30 000 мс). Чтение
+    таких файлов идёт через отдельный узкий пул: когда сервер подвис,
+    ждут одна-две задачи, а не весь пул сразу — локальные миниатюры
+    продолжают грузиться."""
     if not path:
         return False
     if sys.platform == "win32":
@@ -274,7 +275,7 @@ def _is_remote_path(path: str) -> bool:
             return remote
         except Exception:                   # noqa: BLE001 — не получилось — считаем локальным
             return False
-    if sys.platform == "linux":
+    if sys.platform.startswith("linux") or sys.platform == "darwin":
         try:
             return netfs.is_remote(path)
         except Exception:                   # noqa: BLE001 — не получилось — считаем локальным
@@ -1184,7 +1185,7 @@ class _ThumbTask(QRunnable):
         if self.cache_dir:
             key = _thumb_cache_key(self.path, self.size, self.mtime)
             cache_path = os.path.join(self.cache_dir, key + ".png")
-            cached = QImage(cache_path)
+            cached = imgload.load_cached_image(cache_path)   # под замком Qt-декода (v0.8.19)
             if not cached.isNull():
                 cache_hit = True
                 img = cached

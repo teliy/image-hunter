@@ -18,7 +18,14 @@
   GUI), синхронный вариант для фильтра работает;
 * удаление файлов выполняется в рабочем потоке и обновляет ленту;
 * формулировка «⏱ МЕДЛЕННО» зависит от потока: в GUI-потоке — «блокирует
-  интерфейс», из рабочего — «фоном, интерфейс жив».
+  интерфейс», из рабочего — «фоном, интерфейс жив»;
+* на Linux _is_remote_path распознаёт сетевые монтирования по
+  /proc/self/mounts (davfs2, rclone, sshfs, CIFS, NFS, 9p/WSL, GVFS) —
+  миниатюры и просмотр таких файлов уходят в узкий пул, подвисший
+  WebDAV-диск больше не занимает все потоки обычного пула (v0.8.19);
+* конкурентный декод битых/обрезанных данных (как после чтения с
+  подвисшего WebDAV) не клинит процесс: QImageReader сериализован
+  мьютексом, GUI-цикл жив (v0.8.19).
 
 Запуск: QT_QPA_PLATFORM=offscreen python scripts/test_network_freeze.py
 """
@@ -35,13 +42,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--no-sandbox --disable-gpu")
 
-from PySide6.QtCore import QSettings, Qt, QTimer
+from PySide6.QtCore import QBuffer, QSettings, Qt, QTimer
 from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QApplication
 
 app = QApplication(sys.argv)
 
-from app.core import applog, i18n, imgload
+from app.core import applog, i18n, imgload, netfs
 from app.core.i18n import tr
 from app.ui import local_viewer as lv
 
@@ -355,6 +362,196 @@ for key in ("log.event.timing_slow_worker", "viewer.folder_reading",
     row = i18n._STRINGS.get(key, {})
     check(f"i18n {key} (ru/en/zh)",
           all(row.get(l) for l in ("ru", "en", "zh")), str(sorted(row)))
+
+# ---------- 8. Linux: сетевые монтирования → узкий пул (v0.8.19) ----------
+
+if sys.platform.startswith("linux"):
+    check("Linux: временный каталог — локальный",
+          not lv._is_remote_path(tmp))
+    check("Linux: /usr/bin (корень ext4/overlay) — локальный",
+          not lv._is_remote_path("/usr/bin"))
+
+    fake = ("proc /proc proc rw 0 0\n"
+            "/dev/sda1 / ext4 rw 0 0\n"
+            "https://webdav.cloud.mail.ru /home/dima/cloud fuse.davfs2 rw 0 0\n"
+            "//nas/photo /mnt/nas-photo cifs rw 0 0\n"
+            "sshfs#dima@box:/ /mnt/box fuse.sshfs rw 0 0\n"
+            "rclone /mnt/моя\\040папка fuse.rclone rw 0 0\n"
+            "unionfs /mnt/union fuse.unionfs rw 0 0\n")
+    mounts = netfs.parse_mounts(fake)
+    check("mounts: строки разбираются (7 точек)", len(mounts) == 7, str(mounts))
+    check("mounts: \\040 раскрывается в пробел",
+          any(mnt == "/mnt/моя папка" for mnt, _f in mounts), str(mounts))
+    lens = [len(m) for m, _f in mounts]
+    check("mounts: конкретные точки первыми (по длине)",
+          lens == sorted(lens, reverse=True), str(lens))
+
+    check("fstype: davfs2/rclone/sshfs/cifs/nfs/9p/drvfs/gvfs — сеть",
+          all(netfs.fstype_is_remote(x) for x in
+              ("fuse.davfs2", "fuse.rclone", "fuse.sshfs", "cifs", "nfs4",
+               "9p", "drvfs", "fuse.gvfsd-fuse", "fuse.yandex.disk",
+               "fuse.s3fs")))
+    check("fstype: ext4/btrfs/xfs/tmpfs/fuseblk/encfs — локальные",
+          not any(netfs.fstype_is_remote(x) for x in
+                  ("ext4", "btrfs", "xfs", "tmpfs", "fuseblk",
+                   "fuse.encfs", "fuse.appimage", "", "ecryptfs")))
+
+    check("точка davfs2: файл внутри — сеть",
+          netfs.linux_is_remote("/home/dima/cloud/фото/1.jpg", mounts))
+    check("cifs — сеть", netfs.linux_is_remote("/mnt/nas-photo/x.webp", mounts))
+    check("sshfs — сеть", netfs.linux_is_remote("/mnt/box/y.png", mounts))
+    check("rclone с пробелом в точке — сеть",
+          netfs.linux_is_remote("/mnt/моя папка/z.png", mounts))
+    check("граница префикса: /home/dima/cloud-бэкап — НЕ сеть",
+          not netfs.linux_is_remote("/home/dima/cloud-бэкап/1.jpg", mounts))
+    check("unionfs (в имени спрятан nfs) — локальный",
+          not netfs.linux_is_remote("/mnt/union/q.png", mounts))
+    check("gvfs-путь GNOME (WebDAV в Nautilus) — сеть",
+          netfs.linux_is_remote(f"/run/user/{os.getuid()}/gvfs/"
+                              "dav:host=webdav.cloud.mail.ru,ssl=true/pic.jpg",
+                              mounts))
+    check("чужой /run/user/<uid>/gvfs — не сеть",
+          not netfs.linux_is_remote("/run/user/999999/gvfs/x.png", mounts))
+
+    # маршрутизация: «сетевые» файлы уходят в узкий пул, локальные — в обычный
+    real_remote2 = lv._is_remote_path
+
+    class _PoolSpy:
+        """Счётчик стартов поверх реального пула."""
+
+        def __init__(self, real):
+            self.real = real
+            self.started = 0
+
+        def start(self, runnable):
+            self.started += 1
+            return self.real.start(runnable)
+
+        def clear(self):
+            return self.real.clear()
+
+        def waitForDone(self, *a):
+            return self.real.waitForDone(*a)
+
+    w5 = lv.LocalViewer()
+    w5.resize(1200, 900)
+    w5.show()
+    rdir = tempfile.mkdtemp(prefix="ih_remote_")
+    rpaths = [os.path.join(rdir, f"r{i}.png") for i in range(4)]
+    for p in rpaths:
+        QImage(20, 20, QImage.Format.Format_RGB32).save(p, "PNG")
+    w5.load_folder(rdir, entries=[(p, 10, 0.0) for p in rpaths])
+    ok = wait_until(lambda: w5.list.count() == 4 and len(w5._thumb_queued) >= 4)
+    check("лента построена, очередь миниатюр заполнена", ok,
+          f"строк: {w5.list.count()}, в очереди: {len(w5._thumb_queued)}")
+    wait_until(lambda: all(not w5.list.item(i).icon().isNull()
+                           for i in range(4)), 8.0)   # обычная очередь отработала
+
+    spy_pool, spy_net = _PoolSpy(w5._pool), _PoolSpy(w5._net_pool)
+    w5._pool, w5._net_pool = spy_pool, spy_net
+
+    lv._is_remote_path = lambda p: True            # «весь диск — сеть»
+    w5._thumb_queued.clear()
+    w5._thumb_done_rows.clear()
+    w5._queue_visible_thumbs()
+    check("миниатюры сетевых файлов — через узкий пул",
+          spy_net.started > 0 and spy_pool.started == 0,
+          f"net={spy_net.started}, main={spy_pool.started}")
+    before = spy_net.started
+    w5._show_index(0)                              # полный просмотр (.png)
+    check("полный просмотр сетевого файла — тоже узкий пул",
+          spy_net.started > before, f"net={spy_net.started}")
+    ok = wait_until(lambda: w5._view_inflight == 0, 8.0)
+    check("просмотр сетевого файла завершается", ok,
+          f"inflight={w5._view_inflight}")
+
+    lv._is_remote_path = real_remote2              # флаг снят — снова общий
+    before_net, before_pool = spy_net.started, spy_pool.started
+    w5._thumb_queued.clear()
+    w5._thumb_done_rows.clear()
+    w5._queue_visible_thumbs()
+    check("локальные миниатюры — в обычный пул",
+          spy_pool.started > before_pool,
+          f"net={spy_net.started - before_net}, main={spy_pool.started - before_pool}")
+    w5._pool, w5._net_pool = spy_pool.real, spy_net.real
+else:
+    print("SKIP Linux-монтирования: не Linux")
+
+# ---------- 9. конкурентный декод не клинит процесс (v0.8.19) ----------
+
+# Как в живом зависании (py-spy): с подвисшего WebDAV приходят обрезанные/
+# битые данные, несколько рабочих потоков одновременно внутри QImageReader —
+# раньше это клинило процесс (мьютекс QtGui ↔ GIL). Теперь декод сериализован.
+
+ok_img = QImage(300, 200, QImage.Format.Format_RGB32)
+ok_img.fill(0x3366AA)
+_buf = QBuffer()
+_buf.open(QBuffer.OpenModeFlag.ReadWrite)
+ok_img.save(_buf, "PNG")
+GOOD = bytes(_buf.data())
+JUNK = b"\x89PNG\r\n\x1a\n junk"
+TRUNC = GOOD[:60]                     # валидная голова, тело обрезано
+
+_ndecoded = [0]
+_wedge = [False]
+
+
+def _decode_worker(idx: int) -> None:
+    try:
+        for i in range(30):
+            data = (JUNK, TRUNC, GOOD)[i % 3]
+            img, err = imgload.load_bytes(data, 128 if i % 5 == 0 else 0)
+            if (not img.isNull()) and idx == 0 and i % 3 == 2:
+                _ndecoded[0] += 1
+    except Exception:                              # noqa: BLE001
+        _wedge[0] = True
+
+
+# GUI-пульс: пока рабочие декодируют, цикл событий обязан дышать
+beat2 = [time.monotonic()]
+_bad_gap = [0.0]
+
+
+def _beat2():
+    now = time.monotonic()
+    _bad_gap[0] = max(_bad_gap[0], now - beat2[0])
+    beat2[0] = now
+
+
+beat_timer2 = QTimer()
+beat_timer2.setInterval(50)
+beat_timer2.timeout.connect(_beat2)
+beat_timer2.start()
+
+ths2 = [threading.Thread(target=_decode_worker, args=(i,), daemon=True)
+        for i in range(6)]
+t0 = time.perf_counter()
+for t in ths2:
+    t.start()
+for t in ths2:
+    t.join(timeout=15.0)               # раньше клин держал потоки бесконечно
+if any(t.is_alive() for t in ths2):
+    _wedge[0] = True                   # поток застрял — регрессия
+    for t in ths2:
+        t.join(timeout=0.1)
+ms2 = (time.perf_counter() - t0) * 1000
+check("конкурентный декод битых данных завершается", not _wedge[0],
+      f"за {ms2:.0f} мс")
+check("валидная картинка декодируется под замком", _ndecoded[0] == 10,
+      f"декодировано {_ndecoded[0]}/10")
+check("GUI-цикл жив во время декода", _bad_gap[0] <= 0.4,
+      f"макс. разрыв {round(_bad_gap[0] * 1000)} мс")
+beat_timer2.stop()
+
+# повторный прогон той же пачкой — замок не копит просрочек
+ths3 = [threading.Thread(target=_decode_worker, args=(i,), daemon=True)
+        for i in range(6)]
+for t in ths3:
+    t.start()
+for t in ths3:
+    t.join(timeout=15.0)
+check("повторный конкурентный декод — без зависаний",
+      not any(t.is_alive() for t in ths3))
 
 print()
 if FAILURES:

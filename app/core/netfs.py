@@ -8,27 +8,42 @@
 слоты запросов кончаются, сервер отвечает «занят», чтения подвисают на
 ~30 с и падают с Errno 11 (EAGAIN, «Ресурс временно недоступен») —
 репорт v0.8.19: маунт cloud.mail.ru через davfs2, все операции
-«МЕДЛЕННО (фоном)» по 700–30 000 мс.
+«МЕДЛЕННО (фоном)» по 700–30 000 мс. Другая сторона того же репорта —
+зависание «при обращении к сети»: на подвисшем WebDAV битые/обрезанные
+данные — норма, а их конкурентный Qt-декод клинил процесс (вторая часть
+v0.8.19, замок в imgload).
 
-Как: /proc/mounts — точный и мгновенный источник fstype; для пути ищем
-самый длинный смонтированный префикс, результат кэшируется по пути
-(одна операция на файл за сессию, повторные — словарь). Чтение
-/proc/mounts стоит десятки микросекунд, так что даже первая проверка
-тысячи файлов — незаметная.
+Как: /proc/self/mounts — точный и мгновенный источник fstype; его
+генерирует само ядро, чтение не подвисает даже когда сами монтирования
+мёртвые (в отличие от stat() по их файлам, поэтому realpath тут НЕ
+используется — только строковая абсолютизация). Для пути ищем самый
+длинный (самый конкретный) смонтированный префикс; таблица перечитывается
+не чаще раза в 2 с (перемонтировали — через 2 с видно), вердикт по
+конкретному пути кэшируется на сессию.
 
 Что считается сетевым:
-* fstype из явного списка — davfs2, cifs/smbfs, nfs*, sshfs, 9p, afs,
-  gfs/ocfs2, ceph, glusterfs, lustre и т. п.;
+* fstype из явного списка — davfs2, cifs/smbfs, nfs*, sshfs, 9p, drvfs
+  (WSL), общие папки виртуалок (vboxsf, vmhgfs, prl_fs), gfs/ocfs2,
+  ceph, glusterfs, beegfs, lustre, curlftpfs, mtpfs и т. п.;
 * fuse.<имя>, в имени которого виден сетевой бэкенд (fuse.davfs2,
-  fuse.sshfs, fuse.gvfsd-fuse, fuse.rclone…);
-* fuseblk и локальные FUSE-шифрования (gocryptfs, encfs, cryfs, ntfs-3g)
-  сетевыми НЕ считаются — это обычные локальные диски.
+  fuse.sshfs, fuse.gvfsd-fuse, fuse.rclone, fuse.yandex.disk,
+  fuse.s3fs…); для незнакомых fuse.* — эвристика по фрагментам имени
+  демона;
+* пути GVFS — Nautilus (GNOME) монтирует WebDAV/SFTP/SMB под
+  /run/user/<uid>/gvfs/, иногда под типом, которого нет в списках;
+  чужой uid — не наш маунт, не считается.
+
+Сугубо локальные слои сетью НЕ считаются, даже если в имени спрятан
+«сетевой» фрагмент: fuseblk/ntfs-3g — обычный диск через FUSE, gocryptfs,
+encfs, cryfs — шифрование, а unionfs прячет в имени «nfs», mergerfs,
+overlayfs, appimage, squashfuse — сборки/сидиобразы.
 """
 
 from __future__ import annotations
 
 import errno
 import os
+import re
 import threading
 import time
 
@@ -37,21 +52,39 @@ REMOTE_FSTYPES = {
     "davfs", "davfs2", "webdav", "wdfs",
     "cifs", "smb", "smbfs", "smb2", "smb3", "ncpfs",
     "nfs", "nfs4", "nfsd", "sshfs",
-    "9p", "afs", "coda", "arla",
-    "gfs", "gfs2", "ocfs2", "acfs", "ceph", "glusterfs", "lustre",
+    "9p", "drvfs",                    # WSL2 /mnt/… и WSL1 — чтения медленные
+    "afs", "openafs", "coda", "arla",
+    "gfs", "gfs2", "ocfs2", "acfs",
+    "ceph", "cephfs", "glusterfs", "glusterfs-fuse", "beegfs", "lustre",
+    "vboxsf", "vmhgfs", "prl_fs",     # общие папки виртуальных машин
+    "curlftpfs", "obexfs", "obexftpfs", "mtpfs",
 }
 
 # признаки сетевого бэкенда внутри "fuse.<имя>"
 _REMOTE_FUSE_TAGS = (
-    "dav", "ssh", "sftp", "gvfsd", "rclone", "webdav", "ftp", "s3",
-    "swift", "gcs", "smb", "cld", "cloud", "onedrive", "gdrive",
-    "dropbox", "yandex", "mailru", "afp", "coda",
+    "dav", "ssh", "sftp", "smb", "cifs", "nfs", "ftp", "webdav", "rclone",
+    "gvfs", "kio", "cloud", "nextcloud", "owncloud", "gdrive", "onedrive",
+    "dropbox", "s3", "swift", "gcs", "mega", "yandex", "mailru", "afp",
+    "obex", "mtp", "ceph", "cld", "coda",
 )
 
-# локальные FUSE-имена — обычные локальные диски, не сеть
-_LOCAL_FUSE = {"blk", "gocryptfs", "encfs", "cryfs"}
+# локальные FUSE-имена — обычные локальные диски, не сеть. Проверяются ДО
+# эвристики по тегам: в имени unionfs прячется «nfs», и без явного
+# исключения локальный слой считался бы сетью
+_LOCAL_FUSE = {
+    "blk", "gocryptfs", "encfs", "cryfs",
+    "unionfs", "mergerfs", "overlayfs", "appimage", "borgfs", "cramfs",
+    "squashfuse", "archivemount", "ext4", "zfs", "ecryptfs",
+}
 
-_CACHE: dict[str, bool] = {}              # realpath(path) → сетевой ли
+# пути GVFS (GNOME: Nautilus монтирует WebDAV/SFTP/SMB сюда)
+_GVFS_PREFIX = "/run/user/{uid}/gvfs"
+
+# /proc/self/mounts перечитывается не чаще раза в 2 с: перемонтировали —
+# через 2 с видно, а таблица у ядра читается мгновенно в любом случае
+MOUNTS_TTL_S = 2.0
+
+_CACHE: dict[str, bool] = {}              # abspath(path) → сетевой ли
 _CACHE_LOCK = threading.Lock()
 
 # паузы между повторами при EAGAIN: davfs2 уже сам ждал слот, обычно
@@ -59,16 +92,60 @@ _CACHE_LOCK = threading.Lock()
 EAGAIN_TRIES = 3
 EAGAIN_PAUSE_S = 0.4
 
+_OCT_ESCAPE_RE = re.compile(r"\\([0-7]{3})")
+
 
 def _proc_mounts_text() -> str:
-    """Текст /proc/mounts (подменяется в тестах)."""
-    with open("/proc/mounts", "r", encoding="utf-8", errors="replace") as f:
+    """Текст /proc/self/mounts (подменяется в тестах)."""
+    with open("/proc/self/mounts", "r", encoding="utf-8", errors="replace") as f:
         return f.read()
 
 
+_mounts_cache: list[tuple[str, str]] = []
+_mounts_at: float = -1e18
+
+
+def mounts_table() -> list[tuple[str, str]]:
+    """[(точка монтирования, fstype)] с коротким кэшем; длинные точки первыми.
+
+    Порядок важен: поиск префикса идёт сверху вниз, первый матч — самый
+    конкретный маунт (например /run/user/1000/gvfs перекрывает /run/user/1000).
+    """
+    global _mounts_cache, _mounts_at
+    now = time.monotonic()
+    if _mounts_cache and now - _mounts_at < MOUNTS_TTL_S:
+        return _mounts_cache
+    try:
+        parsed = parse_mounts(_proc_mounts_text())
+    except Exception:                       # noqa: BLE001 — /proc всегда есть, но вдруг
+        parsed = []
+    _mounts_cache, _mounts_at = parsed, now
+    return parsed
+
+
+def parse_mounts(text: str) -> list[tuple[str, str]]:
+    """[(точка монтирования, fstype)] из содержимого /proc/self/mounts.
+
+    Пробелы и прочие спецсимволы в точке монтирования ядро экранирует
+    восьмеричными последовательностями («\\040» — пробел, «\\011» — таб) —
+    раскрываем обратно. Чистая функция — в тестах подставляются готовые
+    строки; если ничего не сматчилось — таблица пуста.
+    """
+    out: list[tuple[str, str]] = []
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) < 3 or not parts[1].startswith("/"):
+            continue
+        mnt = _OCT_ESCAPE_RE.sub(
+            lambda m: chr(int(m.group(1), 8)), parts[1])
+        out.append((mnt, parts[2].strip().lower()))
+    out.sort(key=lambda t: len(t[0]), reverse=True)
+    return out
+
+
 def _unescape_mount(mp: str) -> str:
-    """«\\040» в /proc/mounts — пробел в имени точки монтирования."""
-    return mp.replace("\\040", " ").replace("\\011", "\t")
+    """Экранирование ядра («\\040» и соседние восьмеричные) → обычные символы."""
+    return _OCT_ESCAPE_RE.sub(lambda m: chr(int(m.group(1), 8)), mp)
 
 
 def _under(pn: str, mp: str) -> bool:
@@ -81,8 +158,8 @@ def _under(pn: str, mp: str) -> bool:
 def _mount_point_from_lines(lines: list[str], pn: str) -> tuple[str, str]:
     """Самый длинный смонтированный префикс пути: (точка, fstype).
 
-    Чистая функция — в тестах подставляются готовые строки /proc/mounts.
-    Если ничего не сматчилось — ("/", ""), то есть корень.
+    Классический разбор строк /proc/mounts — им пользуются тесты и
+    is_remote; если ничего не сматчилось — ("/", ""), то есть корень.
     """
     best_mp, best_type = "/", ""
     for line in lines:
@@ -102,6 +179,8 @@ def fstype_is_remote(fstype: str) -> bool:
     fs = (fstype or "").strip().lower()
     if not fs:
         return False
+    if fs in _LOCAL_FUSE:
+        return False
     if fs in REMOTE_FSTYPES:
         return True
     if fs.startswith("fuse.") or fs.startswith("fuseblk."):
@@ -112,17 +191,43 @@ def fstype_is_remote(fstype: str) -> bool:
     return False
 
 
+def linux_is_remote(path: str, mounts: "list[tuple[str, str]] | None" = None) -> bool:
+    """Сетевой ли путь на POSIX: fstype самого конкретного маунта + GVFS.
+
+    ``mounts`` — готовая таблица parse_mounts (для тестов); без неё
+    читается /proc/self/mounts с коротким кэшем. Пути GVFS под СВОИМ
+    uid — всегда сеть (Nautilus монтирует WebDAV/SFTP/SMB туда, иногда
+    под типом, которого нет в списках); чужой uid — не наш маунт.
+    os.path.abspath — только строковая операция: realpath здесь опасен,
+    lstat по мёртвому маунту может подвиснуть на десятки секунд.
+    """
+    if mounts is None:
+        mounts = mounts_table()
+    try:
+        p = os.path.abspath(path)
+    except Exception:                       # noqa: BLE001 — путь странный — локальный
+        return False
+    gvfs = _GVFS_PREFIX.format(uid=os.getuid())
+    if p == gvfs or p.startswith(gvfs + "/"):
+        return True
+    for mnt, fst in mounts:                 # самый длинный префикс первым
+        if p == mnt or p.startswith(mnt + "/"):
+            return fstype_is_remote(fst)
+    return False
+
+
 def is_remote(path: str) -> bool:
     """Сетевой (WebDAV/davfs2, SMB, NFS, FUSE-сеть) ли путь на POSIX.
 
-    Кэшируется по пути: первая проверка читает /proc/mounts, остальные —
-    словарь. Перезмонтировали с тем же fstype — кэш не мешает; сменили
-    fstype без перезапуска — редкий случай, виноват кэш на сессию (тот же
-    компромисс, что у _REMOTE_DRIVE_CACHE на Windows, v0.7.2)."""
+    Вердикт по пути кэшируется на сессию: первая проверка читает
+    /proc/self/mounts, остальные — словарь. Перезмонтировали с тем же
+    fstype — кэш не мешает; сменили fstype без перезапуска — редкий
+    случай, виноват кэш на сессию (тот же компромисс, что у
+    _REMOTE_DRIVE_CACHE на Windows, v0.7.2)."""
     if not path:
         return False
     try:
-        key = os.path.realpath(os.path.abspath(path))
+        key = os.path.abspath(path)   # без realpath: lstat мёртвого маунта подвисает
     except Exception:                       # noqa: BLE001 — путь странный
         return False
     with _CACHE_LOCK:
@@ -130,9 +235,7 @@ def is_remote(path: str) -> bool:
     if cached is not None:
         return cached
     try:
-        lines = _proc_mounts_text().splitlines()
-        _mp, fstype = _mount_point_from_lines(lines, key)
-        remote = fstype_is_remote(fstype)
+        remote = linux_is_remote(key)
     except Exception:                       # noqa: BLE001 — не читается — локальный
         remote = False
     with _CACHE_LOCK:
@@ -141,9 +244,11 @@ def is_remote(path: str) -> bool:
 
 
 def clear_cache() -> None:
-    """Сбросить кэш (для тестов)."""
+    """Сбросить кэши (для тестов)."""
+    global _mounts_cache, _mounts_at
     with _CACHE_LOCK:
         _CACHE.clear()
+    _mounts_cache, _mounts_at = [], -1e18
 
 
 def is_eagain(exc: BaseException) -> bool:
