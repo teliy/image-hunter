@@ -83,7 +83,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.core import applog, i18n, imgload
+from app.core import applog, i18n, imgload, netfs
 from app.core.i18n import tr
 from app.ui import rembg_manager, watermark_manager
 
@@ -248,26 +248,38 @@ _TRASH_DRIVE_CACHE: dict[str, bool] = {}
 
 
 def _is_remote_path(path: str) -> bool:
-    """Сетевой ли путь: подключённый диск (WebDAV, SMB) на Windows.
+    """Сетевой ли путь (WebDAV, SMB, NFS…).
 
-    Чтение таких файлов идёт через отдельный узкий пул (v0.7.2): когда
-    сервер подвис, ждут одна-две задачи, а не весь пул сразу — локальные
-    миниатюры продолжают грузиться. На других ОС путь считается локальным:
-    чтение файла обычным I/O отпускает GIL и интерфейс не трогает."""
-    if sys.platform != "win32" or not path:
+    Windows — подключённый диск через GetDriveTypeW (v0.7.2). Linux —
+    fstype точки монтирования из /proc/mounts (v0.8.19): davfs2 и другие
+    FUSE-маунты раньше считались локальными, узкий сетевой пул (v0.7.2)
+    не включался, и davfs2 заваливали параллельными запросами — слоты
+    кончались, чтения провисали ~30 с и падали с Errno 11 (репорт
+    v0.8.19: маунт cloud.mail.ru, все операции «МЕДЛЕННО» по 700–30 000 мс).
+    Чтение таких файлов идёт через отдельный узкий пул: когда сервер
+    подвис, ждут одна-две задачи, а не весь пул сразу — локальные
+    миниатюры продолжают грузиться."""
+    if not path:
         return False
-    try:
-        root = os.path.splitdrive(os.path.abspath(path))[0]
-        if len(root) < 2:
+    if sys.platform == "win32":
+        try:
+            root = os.path.splitdrive(os.path.abspath(path))[0]
+            if len(root) < 2:
+                return False
+            remote = _REMOTE_DRIVE_CACHE.get(root)
+            if remote is None:
+                import ctypes
+                remote = ctypes.windll.kernel32.GetDriveTypeW(root + "\\") == 4
+                _REMOTE_DRIVE_CACHE[root] = remote
+            return remote
+        except Exception:                   # noqa: BLE001 — не получилось — считаем локальным
             return False
-        remote = _REMOTE_DRIVE_CACHE.get(root)
-        if remote is None:
-            import ctypes
-            remote = ctypes.windll.kernel32.GetDriveTypeW(root + "\\") == 4
-            _REMOTE_DRIVE_CACHE[root] = remote
-        return remote
-    except Exception:                       # noqa: BLE001 — не получилось — считаем локальным
-        return False
+    if sys.platform == "linux":
+        try:
+            return netfs.is_remote(path)
+        except Exception:                   # noqa: BLE001 — не получилось — считаем локальным
+            return False
+    return False
 
 # виртуальные файловые системы и точки монтирования, которые не показываем в дереве
 _VIRTUAL_FS = {
@@ -985,56 +997,89 @@ def list_image_files(folder: str) -> list[str]:
 # ---------- удаление: корзина, а на дисках без неё — окончательно ----------
 
 def _drive_has_trash(path: str) -> bool | None:
-    """Есть ли на диске с этим файлом корзина (Windows; None — неизвестно).
+    """Есть ли на диске с этим файлом корзина (None — неизвестно).
 
     Сетевые и часть съёмных дисков корзины не имеют — там moveToTrash
     всегда падает, и честнее сразу спрашивать про окончательное удаление.
-    Отказ корзины спрашивает SHQueryRecycleBinW (0 — корзина есть)."""
-    if sys.platform != "win32" or not path:
-        return None
-    try:
-        import ctypes
-        from ctypes import wintypes
+    Windows: отказ корзины спрашивает SHQueryRecycleBinW (0 — корзина
+    есть). Linux (v0.8.19): корзина freedesktop живёт в скрытой папке НА
+    ТОМ ЖЕ диске — на davfs2 и прочих сетевых FUSE-маунтах её нет (mkdir
+    .Trash-<uid> в WebDAV сервера не делает), поэтому сетевые пути
+    отвечают False: приложение сразу предлагает окончательное удаление
+    вместо гарантированно неудачной попытки корзины и второго диалога."""
+    if sys.platform == "win32" and path:
+        try:
+            import ctypes
+            from ctypes import wintypes
 
-        class _RBInfo(ctypes.Structure):
-            _fields_ = [("cbSize", wintypes.DWORD),
-                        ("i64Size", ctypes.c_int64),
-                        ("i64NumItems", ctypes.c_int64)]
+            class _RBInfo(ctypes.Structure):
+                _fields_ = [("cbSize", wintypes.DWORD),
+                            ("i64Size", ctypes.c_int64),
+                            ("i64NumItems", ctypes.c_int64)]
 
-        root = os.path.splitdrive(path)[0]
-        if len(root) < 2:          # относительный путь или что-то странное
+            root = os.path.splitdrive(path)[0]
+            if len(root) < 2:          # относительный путь или что-то странное
+                return None
+            cached = _TRASH_DRIVE_CACHE.get(root)
+            if cached is not None:
+                return cached          # один запрос на диск за всю сессию (v0.7.11)
+            info = _RBInfo()
+            info.cbSize = ctypes.sizeof(info)
+            hr = ctypes.windll.shell32.SHQueryRecycleBinW(root + "\\",
+                                                          ctypes.byref(info))
+            _TRASH_DRIVE_CACHE[root] = (hr == 0)
+            return _TRASH_DRIVE_CACHE[root]
+        except Exception:              # noqa: BLE001 — не удалось выяснить
+            return None                # (не кэшируем — попробуем в следующий раз)
+    if sys.platform == "linux" and path:
+        try:
+            return not netfs.is_remote(path)
+        except Exception:              # noqa: BLE001 — неизвестно
             return None
-        cached = _TRASH_DRIVE_CACHE.get(root)
-        if cached is not None:
-            return cached          # один запрос на диск за всю сессию (v0.7.11)
-        info = _RBInfo()
-        info.cbSize = ctypes.sizeof(info)
-        hr = ctypes.windll.shell32.SHQueryRecycleBinW(root + "\\",
-                                                      ctypes.byref(info))
-        _TRASH_DRIVE_CACHE[root] = (hr == 0)
-        return _TRASH_DRIVE_CACHE[root]
-    except Exception:              # noqa: BLE001 — не удалось выяснить
-        return None                # (не кэшируем — попробуем в следующий раз)
+    return None
 
 
 def _remove_forever(path: str) -> tuple[bool, str]:
-    """Удалить файл окончательно. Сначала снимаем «только чтение» —
-    скачанные webp бывают read-only, и remove падает из-за атрибута."""
+    """Удалить файл окончательно.
+
+    Windows: сначала снимаем «только чтение» — скачанные webp бывают
+    read-only, и remove падает из-за атрибута. POSIX (v0.8.19): chmod
+    S_IWRITE — это 0o200 (только запись, без чтения) — так мы ломали
+    права на файл («что-то с правами», репорт v0.8.19); на POSIX удаление
+    зависит от прав на КАТАЛОГ, а не на файл, поэтому владельцу лишь
+    добавляется запись, если её не было, — биты никогда не отнимаются.
+    EAGAIN (davfs2 при исчерпании слотов запросов) повторяется после
+    короткой паузы; PermissionError поясняется подсказкой про маунт."""
     try:
         if not os.path.isfile(path):
             return False, tr("viewer.del_missing")
         try:
-            os.chmod(path, stat.S_IWRITE)
+            if os.name == "nt":
+                os.chmod(path, stat.S_IWRITE)
+            else:
+                mode = os.stat(path).st_mode
+                if not (mode & stat.S_IWUSR):
+                    os.chmod(path, mode | stat.S_IWUSR)
         except OSError:
             pass   # атрибут не критичен — попробуем удалить как есть
         try:
             os.remove(path)
             return True, ""
         except OSError as exc:
+            if netfs.is_eagain(exc):   # davfs2: слоты заняты — слот освободился, повторим
+                time.sleep(0.4)
+                try:
+                    os.remove(path)
+                    return True, ""
+                except OSError as retry_exc:
+                    exc = retry_exc
             f = QFile(path)        # запасной путь средствами Qt
             if f.remove():
                 return True, ""
-            return False, (f.errorString() or str(exc))
+            msg = f.errorString() or str(exc)
+            if isinstance(exc, PermissionError):
+                msg += " — " + tr("viewer.del_denied_hint")
+            return False, msg
     except Exception as exc:       # noqa: BLE001 — причина уйдёт в журнал
         return False, str(exc)
 
@@ -3050,12 +3095,15 @@ class LocalViewer(QWidget):
         self._start_delete(paths, phase=1)
 
     def _start_delete(self, paths: list[str], phase: int) -> None:
-        """Запустить фазу удаления в рабочем потоке (1 — корзина, 2 — навсегда)."""
+        """Запустить фазу удаления в рабочем потоке (1 — корзина, 2 — навсегда).
+
+        Сетевые пути — через узкий пул (v0.8.19, _io_pool): удаление не
+        должно плодить параллельные запросы к davfs2 и делить с ним слоты."""
         self._delete_phase = phase
         self._delete_t0 = time.perf_counter()
         self._set_view_busy(True)
         self.status.setText(tr("viewer.delete_busy"))
-        QThreadPool.globalInstance().start(
+        self._io_pool(*paths).start(
             _DeleteTask(paths, perm=(phase == 2 or self._delete_perm),
                         phase=phase, signals=self._delete_signals))
 
@@ -3192,7 +3240,9 @@ class LocalViewer(QWidget):
         self.status.setText(tr("viewer.moving", n=len(todo), target=tgt))
         applog.event("log.event.move_start", n=len(todo), target=target,
                      names=", ".join(os.path.basename(p) for p in todo[:3]))
-        QThreadPool.globalInstance().start(
+        # перенос по сети — через узкий пул (v0.8.19): не плодим параллельные
+        # запросы к davfs2 и не делим с ним слоты
+        self._io_pool(target, *todo).start(
             _MoveTask(todo, target, self._move_signals))
 
     def _on_move_done(self, ok: int, skipped: int, failed: int,
@@ -3298,8 +3348,9 @@ class LocalViewer(QWidget):
         new_path = os.path.join(os.path.dirname(path), new_name)
         self._rename_inflight = True
         self.status.setText(tr("viewer.rename_progress", name=new_name))
-        # os.rename по сети может держать тайм-аут — только в рабочем потоке
-        QThreadPool.globalInstance().start(
+        # os.rename по сети может держать тайм-аут — только в рабочем потоке;
+        # сетевые пути — через узкий пул (v0.8.19)
+        self._io_pool(path, new_path).start(
             _RenameTask(path, new_path, self._rename_signals))
 
     def _on_rename_done(self, old: str, new: str, ok: bool, err: str) -> None:
@@ -3974,7 +4025,9 @@ class LocalViewer(QWidget):
             self._scan_restore = False
             self._scan_sync_tree = sync_tree
             self.status.setText(tr("viewer.folder_reading"))
-            QThreadPool.globalInstance().start(
+            # скан по сети — через узкий пул (v0.8.19): не делит слоты davfs2
+            # с миниатюрами и не множит параллельные запросы к серверу
+            self._io_pool(folder).start(
                 _ScanTask(folder, self._gen, self._scan_signals))
             return
         self._fill_folder(folder, entries, sync_tree)
@@ -4423,6 +4476,19 @@ class LocalViewer(QWidget):
         elif not busy and self._view_busy:
             QApplication.restoreOverrideCursor()
             self._view_busy = False
+
+    def _io_pool(self, *paths: str) -> QThreadPool:
+        """Пул для файловых операций по путям.
+
+        Сетевые пути (WebDAV/davfs2, SMB, NFS — на Windows с v0.7.2, на
+        Linux с v0.8.19) идут через узкий сетевой пул (2 потока): davfs2
+        не выдерживает параллельности — слоты запросов кончаются, вызовы
+        провисают ~30 с и падают с Errno 11 (EAGAIN). Локальные пути —
+        через общий пул. Миниатюры/просмотр раскладывают задачи по пулам
+        так же (см. _queue_visible_thumbs и _show_index)."""
+        if any(_is_remote_path(p) for p in paths if p):
+            return self._net_pool
+        return QThreadPool.globalInstance()
 
     def _show_index(self, row: int) -> None:
         if not (0 <= row < len(self._paths)):
@@ -5419,7 +5485,7 @@ class LocalViewer(QWidget):
         while item.childCount():
             item.removeChild(item.child(0))   # убираем старую заглушку
         item.addChild(self._dummy_item())     # узел выглядит раскрываемым, пока читаем
-        QThreadPool.globalInstance().start(
+        self._io_pool(path).start(
             _SubdirsTask(path, token, item, self._subdir_signals))
 
     def _on_subdirs_ready(self, token: int, item, path: str, subs: list) -> None:
@@ -5556,7 +5622,7 @@ class LocalViewer(QWidget):
         self._update_fav_button()
         self._gen += 1
         self._sync_tree_async(last)
-        QThreadPool.globalInstance().start(
+        self._io_pool(last).start(
             _ScanTask(last, self._gen, self._scan_signals))
 
     @staticmethod

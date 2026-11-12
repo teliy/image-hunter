@@ -27,7 +27,7 @@ import re
 import threading
 import time
 
-from PySide6.QtCore import QObject, QRunnable, QThreadPool, Qt, Signal
+from PySide6.QtCore import QBuffer, QObject, QRunnable, QThreadPool, Qt, Signal
 from PySide6.QtGui import QImage, QPainter, QImageReader
 
 from app.core import applog
@@ -135,14 +135,29 @@ def _flatten_on_white(img: QImage) -> QImage:
 
 
 def save_image(img: QImage, out_path: str, fmt_name: str) -> tuple[int, int]:
-    """Записать QImage в файл выбранным форматом. Возвращает (ширина, высота)."""
+    """Записать QImage в файл выбранным форматом. Возвращает (ширина, высота).
+
+    Запись двухступенчатая (v0.8.19): сначала кодируем формат в память
+    (QBuffer), потом пишем байты через imgload.write_file_bytes — обычный
+    питоновский I/O с ретраями по EAGAIN. QImage.save(path…) писал средствами
+    Qt, который глотает системную ошибку и возвращает просто False: на
+    davfs2 в журнале оставался голый «ValueError» без причины (Errno 11,
+    «Ресурс временно недоступен») — теперь в журнал попадает настоящий
+    OSError с errno и путём."""
     qt_fmt, _ext, quality = SAVE_FORMATS[fmt_name]
     # JPEG и BMP не умеют в прозрачность: альфа → белый фон, иначе будет чёрный
     if img.hasAlphaChannel() and qt_fmt in ("JPEG", "BMP"):
         img = _flatten_on_white(img)
-    ok = img.save(out_path, qt_fmt) if quality is None else img.save(out_path, qt_fmt, quality)
+    buf = QBuffer()
+    buf.open(QBuffer.OpenModeFlag.WriteOnly)
+    ok = img.save(buf, qt_fmt) if quality is None else img.save(buf, qt_fmt, quality)
+    buf.close()
     if not ok:
-        raise ValueError(f"не удалось записать {fmt_name}")
+        raise ValueError(f"не удалось закодировать {fmt_name}")
+    from app.core import imgload
+    written, err = imgload.write_file_bytes(out_path, bytes(buf.data()))
+    if not written:
+        raise ValueError(f"не удалось записать {fmt_name}: {err}")
     return img.width(), img.height()
 
 
@@ -231,7 +246,10 @@ class ImageSaver(QObject):
             return
         if fmt_name not in SAVE_FORMATS:
             fmt_name = DEFAULT_FORMAT
-        os.makedirs(folder, exist_ok=True)
+        try:
+            os.makedirs(folder, exist_ok=True)
+        except OSError:
+            pass   # нет прав/сеть моргнула — каждую запись поймает честная ошибка
         self._stopped = False
         self._folder = folder
         self._pending = len(jobs)

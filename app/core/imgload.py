@@ -27,12 +27,22 @@ from __future__ import annotations
 
 import io
 import os
+import time
 
 from PySide6.QtCore import QBuffer, QByteArray, Qt
 from PySide6.QtGui import QImage, QImageReader
 
+from app.core import netfs
+
 # страховка от чудовищных файлов на сетевых дисках: не тащим в память >1 ГБ
 _MAX_FILE_BYTES = 1 << 30
+
+# davfs2 отвечает EAGAIN (Errno 11, «Ресурс временно недоступен»), когда
+# все слоты запросов заняты параллельными чтениями: сам вызов уже провисел
+# ~30 с в ожидании слота, а потом вернул ошибку. Короткая пауза и повтор
+# обычно проходят — слот к этому моменту освободился (v0.8.19).
+_EAGAIN_TRIES = netfs.EAGAIN_TRIES
+_EAGAIN_PAUSE_S = netfs.EAGAIN_PAUSE_S
 
 # --- Pillow + AVIF-кодек: ставится вместе с программой, но отсутствие
 # --- не должно ронять приложение — AVIF тогда просто не откроется.
@@ -92,12 +102,24 @@ def read_file_bytes(path: str) -> tuple[bytes | None, str]:
     файл блокирует только вызвавший поток — интерфейс и остальные потоки
     продолжают работать. Именно это спасает от 60-секундных зависаний на
     WebDAV/SMB-дисках (v0.7.2, см. докстринг модуля).
+
+    EAGAIN (davfs2 при исчерпании слотов запросов, v0.8.19) ретраится
+    с короткой паузой — см. netfs.is_eagain.
     """
-    try:
-        with open(path, "rb") as f:
-            data = f.read(_MAX_FILE_BYTES + 1)
-    except OSError as exc:
-        return None, str(exc) or "не удалось прочитать файл"
+    data: bytes | None = None
+    err = ""
+    for attempt in range(_EAGAIN_TRIES):
+        try:
+            with open(path, "rb") as f:
+                data = f.read(_MAX_FILE_BYTES + 1)
+            break
+        except OSError as exc:
+            err = str(exc) or "не удалось прочитать файл"
+            if not netfs.is_eagain(exc) or attempt == _EAGAIN_TRIES - 1:
+                return None, err
+            time.sleep(_EAGAIN_PAUSE_S)
+    if data is None:
+        return None, err or "не удалось прочитать файл"
     if not data:
         return None, "файл пуст"
     if len(data) > _MAX_FILE_BYTES:
@@ -158,6 +180,25 @@ def load_bytes(data: bytes, max_side: int = 0) -> tuple[QImage, str]:
     """
     img, err, _w, _h = load_bytes_ex(data, max_side)
     return img, err
+
+
+def write_file_bytes(path: str, data: bytes | bytearray | memoryview) -> tuple[bool, str]:
+    """Записать байты в файл обычным питоновским I/O, ретраями по EAGAIN.
+
+    Парная к read_file_bytes: QImage.save пишет средствами Qt, который
+    глотает системную ошибку и возвращает просто False — на davfs2
+    пользователь видел только «не удалось записать WebP» без причины
+    (v0.8.19). Здесь open() поднимает настоящий OSError с errno и путём —
+    этот текст и попадает в журнал. Возвращает ``(True, "")`` или
+    ``(False, причина)``.
+    """
+    try:
+        netfs.write_bytes(path, data)
+        return True, ""
+    except OSError as exc:
+        return False, str(exc) or "не удалось записать файл"
+    except Exception as exc:                    # noqa: BLE001 — в журнал
+        return False, str(exc)
 
 
 def load_file(path: str, max_side: int = 0) -> tuple[QImage, str]:

@@ -232,6 +232,18 @@ The Log diagnostics (⏱ lines and "⚠ The UI did not respond") showed that on 
 
 **6. Honest wording in the Log.** Slow operations from worker threads are marked "⏱ SLOW (in background, UI stays alive)", while "…this blocks the UI" remains only for operations that actually stalled the GUI thread — the log shows at a glance where the freeze was.
 
+## Linux, davfs2 and network mounts: same as Windows (v0.8.19)
+
+If your image folder is a network mount (davfs2 with cloud.mail.ru, a CIFS/SMB share, NFS, sshfs, rclone mount), the Linux version now detects it automatically via /proc/mounts and serves every operation (thumbnails, viewing, folder scans, the tree, delete, move, rename) through a narrow two-thread pool — exactly how the Windows version has treated mapped drives since v0.7.2. davfs2 cannot handle parallel requests: its slots run out, operations stall for ~30 s and fail with "[Errno 11] Resource temporarily unavailable" (EAGAIN) — the narrow pool plus automatic EAGAIN retries remove that.
+
+About deleting and permissions:
+
+- **There is no trash on a network mount** (the freedesktop trash lives in a hidden folder on the same disk, which WebDAV cannot provide), so the app immediately offers permanent deletion — instead of a guaranteed-failed trash attempt and a second dialog. Local folders keep the usual trash behavior.
+- **File permissions are no longer damaged**: after a failed deletion the file keeps its original permissions (older Linux builds set "write-only", leaving the file unreadable after a failure).
+- **Permission failures are explained**: if the mount is owned by another user (for example, mounted via sudo without uid/gid), the log shows a hint to check `uid`/`gid`/`file_mode` in `/etc/davfs2/davfs2.conf` or fstab — by default davfs2 shows files with the permissions of whoever mounted it.
+
+Saving images from the internet to a network drive writes files via Python I/O with retries: instead of a bare "ValueError" the log shows the real system error with errno and path.
+
 ## Checkboxes on Google and Mail.ru work again (v0.7.3)
 
 Neither case is "broken outright" — both search engines changed their markup, so the checkbox injection stopped reaching the tiles:

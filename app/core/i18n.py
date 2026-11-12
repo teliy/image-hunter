@@ -288,6 +288,12 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ru": "не удалось переместить в корзину (проверьте права доступа или наличие корзины на диске)",
         "en": "could not move to the Recycle Bin (check permissions or whether the drive has one)",
         "zh": "无法移入回收站（请检查权限或该磁盘是否有回收站）"},
+    "viewer.del_denied_hint": {
+        "ru": "нет прав доступа: папка смонтирована от другого пользователя "
+              "(davfs2 — uid/gid и file_mode в davfs2.conf/fstab)?",
+        "en": "permission denied: the folder is mounted by another user "
+              "(davfs2 — check uid/gid and file_mode in davfs2.conf/fstab)?",
+        "zh": "没有访问权限：文件夹由其他用户挂载（davfs2 — 请检查 davfs2.conf/fstab 中的 uid/gid 与 file_mode）"},
     "viewer.del_perm_title": {
         "ru": "На диске нет корзины", "en": "No Recycle Bin on this drive",
         "zh": "磁盘没有回收站"},

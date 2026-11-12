@@ -286,12 +286,15 @@ def main() -> int:
         mw_mod.QMessageBox.warning = orig_warn  # type: ignore[assignment]
 
     # ---- 7. кэш корзины ----------------------------------------------------
+    # v0.8.19: на Linux корзина есть на локальных ФС (moveToTrash работает),
+    # на сетевых маунтах (davfs2 и пр.) — нет; вызов стабилен и не пишет
+    # виндовый кэш _TRASH_DRIVE_CACHE
     tmp_trash = tempfile.mkdtemp(prefix="ih_trash_")
     try:
         a = lv._drive_has_trash(os.path.join(tmp_trash, "x.png"))
         b = lv._drive_has_trash(os.path.join(tmp_trash, "y.png"))
-        check("на Linux у дисков корзины нет (None), вызов стабилен",
-              a is None and b is None, f"{a}/{b}")
+        check("на Linux локальной папке корзина есть (True), вызов стабилен",
+              a is True and b is True, f"{a}/{b}")
         check("не-Windows путь не пишется в кэш", not lv._TRASH_DRIVE_CACHE)
     finally:
         shutil.rmtree(tmp_trash, ignore_errors=True)
