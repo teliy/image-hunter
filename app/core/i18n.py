@@ -984,6 +984,23 @@ _STRINGS: dict[str, dict[str, str]] = {
         "zh": "去除选区内的水印（v0.8.22）：LaMa 只填充所选区域——无需自动检测，不加载 Florence-2。\n"
              "结果为原图旁的单独文件“名称_nowm.ext”；对结果再次清除会得到\n"
              "“名称_nowm-1.ext”“-2”……原图永远不会被覆盖。"},
+    "viewer.wm_tiled": {
+        "ru": "🧽 Все повторы", "en": "🧽 All repeats", "zh": "🧽 所有重复"},
+    "viewer.wm_tiled_tip": {
+        "ru": "Убрать плиточный знак ВО ВСЕХ местах (v0.8.28): выделите ОДИН\n"
+              "экземпляр — остальные найдутся по решётке и закрасятся разом,\n"
+              "включая экземпляры на пёстрых фонах, где автопоиск слеп.\n"
+              "Если решётка не собралась, закрашивается ровно выделение.\n"
+              "Результат — отдельный файл «имя_nowm.ext» рядом с оригиналом.",
+        "en": "Erase a tiled watermark EVERYWHERE (v0.8.28): select ONE instance —\n"
+              "the others are found on the lattice and erased in one pass,\n"
+              "including instances on busy backgrounds where auto-detection\n"
+              "is blind. If no lattice emerges, exactly the selection is filled.\n"
+              "The result is a separate file “name_nowm.ext” next to the original.",
+        "zh": "一次性去除平铺水印的所有实例（v0.8.28）：框选一个实例——其余的会\n"
+             "按网格找到并一次擦除，包括自动检测失效的复杂背景上的实例。\n"
+             "若未能构建网格，则只填充所选区域。结果为原图旁的单独文件\n"
+             "“名称_nowm.ext”。"},
     "viewer.wm_busy": {
         "ru": "Идёт удаление водяных знаков — подождите",
         "en": "Watermark removal is already running — please wait",
@@ -1146,6 +1163,14 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ru": "🧽 Убираю водяные знаки в выделении {w}×{h}: {name}, модель {model}",
         "en": "🧽 Removing watermarks in the {w}×{h} selection: {name}, model {model}",
         "zh": "🧽 正在去除 {w}×{h} 选区内的水印：{name}，模型 {model}"},
+    "log.event.wm_tiled_start": {
+        "ru": "🧽 Убираю все повторы знака: {name}, семя {w}×{h}, модель {model}",
+        "en": "🧽 Removing all repeats of the mark: {name}, seed {w}×{h}, model {model}",
+        "zh": "🧽 正在去除该标志的所有重复：{name}，种子 {w}×{h}，模型 {model}"},
+    "log.event.wm_tiles": {
+        "ru": "🧽 Знак повторяется: в маску добавлено ещё {n} экземпляров по решётке",
+        "en": "🧽 The mark repeats: {n} more instances added to the mask on the lattice",
+        "zh": "🧽 标志重复：按网格向掩码额外添加了 {n} 个实例"},
     "log.event.wm_model": {
         "ru": "🧽 Модель детекции: {model}", "en": "🧽 Detection model: {model}",
         "zh": "🧽 检测模型：{model}"},

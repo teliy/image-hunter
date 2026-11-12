@@ -27,7 +27,7 @@
     смена папки закрывают; GIF и пустой просмотр — кнопка погашена;
     режимы «⇲ Размер» и «✂ Обрезать» взаимоисключающие;
 11. локализация ru/en/zh новых кнопок;
-12. смоук: версия 0.8.27.
+12. смоук: версия 0.8.28.
 
 Запуск: LD_LIBRARY_PATH=… .venv/bin/python scripts/test_image_crop.py
 (QT_QPA_PLATFORM=offscreen ставится ниже).
@@ -608,7 +608,7 @@ def main() -> int:
           viewer.btn_crop.text())
 
     # ---------- 12. смоук ----------
-    check("версия 0.8.27", __version__ == "0.8.27", __version__)
+    check("версия 0.8.28", __version__ == "0.8.28", __version__)
 
     print()
     if FAILURES:

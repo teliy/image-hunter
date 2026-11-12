@@ -27,7 +27,7 @@
   установка-продолжение (отложенная пачка после install_done), выбор
   модели запоминается и валидируется при загрузке, меню «Модули» содержит
   раздел улучшения качества;
-- i18n: все новые ключи заполнены на ru/en/zh; версия — 0.8.27.
+- i18n: все новые ключи заполнены на ru/en/zh; версия — 0.8.28.
 
 Запуск: QT_QPA_PLATFORM=offscreen QTWEBENGINE_CHROMIUM_FLAGS="--no-sandbox --disable-gpu" \
         python scripts/test_upscale.py
@@ -166,7 +166,7 @@ def main() -> int:
     st.sync()
 
     # ---------- чистые функции менеджера ----------
-    check("версия 0.8.27", __version__ == "0.8.27", __version__)
+    check("версия 0.8.28", __version__ == "0.8.28", __version__)
     check("is_installed возвращает bool",
           isinstance(upscale_manager.is_installed(), bool))
     check("model_scale: x4plus → 4",
@@ -311,7 +311,7 @@ def main() -> int:
           str(Image.open(out_t).size))
     upscale_manager.TILE, upscale_manager.TILE_PAD = 256, 10   # откат
 
-    # журнал плиток: первая, четверти, последняя (репорт v0.8.27 —
+    # журнал плиток: первая, четверти, последняя (репорт v0.8.28 —
     # 11 минут улучшения без единой строки в журнале)
     check("журнал плиток: 28 → 1, четверти и последняя",
           _tile_log_points(28) == {1, 8, 15, 22, 28},
@@ -326,7 +326,7 @@ def main() -> int:
           str(sorted(_tile_log_points(6))))
 
     # сохранение результата: «.part» + os.replace, пустая запись — отказ
-    # (репорт v0.8.27: M111A2-STD_x4.webp «файл пуст» после успешного
+    # (репорт v0.8.28: M111A2-STD_x4.webp «файл пуст» после успешного
     # по журналу улучшения)
     out_s = os.path.join(tmp, "save_ok.png")
     upscale_manager._save_result(Image.new("RGB", (8, 6), (5, 6, 7)), out_s)

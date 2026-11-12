@@ -2656,6 +2656,12 @@ class LocalViewer(QWidget):
         self.btn_wm_sel = btn("viewer.wm_sel", "viewer.wm_sel_tip",
                               self._wm_sel_start, lay=tools_lay)
         self.btn_wm_sel.setVisible(False)
+        # v0.8.28: убрать плиточный знак во ВСЕХ местах (репорт «TAIHO в
+        # круге и их много по всей фотографии»): выделение — семя,
+        # остальные экземпляры находятся решёткой и закрашиваются разом
+        self.btn_wm_tiled = btn("viewer.wm_tiled", "viewer.wm_tiled_tip",
+                                self._wm_tiled_start, lay=tools_lay)
+        self.btn_wm_tiled.setVisible(False)
         self.btn_crop_next = btn("viewer.crop_next", "viewer.crop_next_tip",
                                  self._on_crop_apply_next, lay=tools_lay)
         self.btn_crop_next.setVisible(False)
@@ -3976,12 +3982,15 @@ class LocalViewer(QWidget):
         self._wm_run(jobs)
 
     def _wm_run(self, jobs: list[tuple[str, str]],
-                sel: tuple[int, int, int, int] | None = None) -> None:
-        """Общий запуск конвейера (v0.8.22): пачка после автодетекции
+                sel: tuple[int, int, int, int] | None = None,
+                tiled: bool = False) -> None:
+        """Общий запуск конвейера (v0.8.22): пачка после автодетекции,
 
-        или одно убирание по выделению — sel (x, y, w, h) картинки.
-        Счётчики, статус-виджет и пул общие: процесс убирания по
-        выделению виден в строке статуса ровно как пачка (v0.8.20/21).
+        одно убирание по выделению — sel (x, y, w, h) картинки, либо
+        убирание всех повторов плиточного знака (v0.8.28, tiled=True):
+        sel тогда играет роль семени решётки. Счётчики, статус-виджет и
+        пул общие: процесс виден в строке статуса ровно как пачка
+        (v0.8.20/21).
         """
         self._wm_busy = True
         self._wm_total = len(jobs)
@@ -3999,11 +4008,12 @@ class LocalViewer(QWidget):
             task = watermark_manager.RemoveWatermarkTask(
                 jobs, self._wm_model, self._wm_signals)
         else:
-            applog.event("log.event.wm_sel_start", w=sel[2], h=sel[3],
+            applog.event("log.event.wm_tiled_start" if tiled
+                         else "log.event.wm_sel_start", w=sel[2], h=sel[3],
                          name=os.path.basename(jobs[0][0]),
                          model=self._wm_model)
             task = watermark_manager.RemoveWatermarkTask(
-                jobs, self._wm_model, self._wm_signals, sel=sel)
+                jobs, self._wm_model, self._wm_signals, sel=sel, tiled=tiled)
         # чтение файлов — в самой задаче, GUI не ждёт; на сетевом диске —
         # узкий отдельный пул, как у rembg (принцип v0.7.2)
         pool = (self._net_pool
@@ -4051,6 +4061,49 @@ class LocalViewer(QWidget):
         self._wm_sel_open = out   # откроется после пересканирования (_on_wm_batch_done)
         self._wm_run([(src, out)],
                      sel=(sel.x(), sel.y(), sel.width(), sel.height()))
+
+    def _wm_tiled_start(self) -> None:
+        """«🧽 Все повторы»: убирает плиточный знак во ВСЕХ местах (v0.8.28).
+
+        Репорт: «надпись TAIHO в круге и их много по всей фотографии» —
+        одиночное убирание оставляет остальные экземпляры сетки. Здесь
+        выделение — СЕМЯ: алгоритм (_tiled_boxes) находит решётку знака
+        (высокочастотная NCC семени + RANSAC по её пикам) и добавляет в
+        маску все узлы, включая экземпляры на пёстрых фонах, где
+        корреляция слепа (полупрозрачный знак на коробке/металле).
+        Если решётка не собралась, закрашивается ровно выделение —
+        не хуже одиночного убирания. Оригинал не трогается: результат —
+        отдельный файл «имя_nowm.ext» (принцип модуля); после готовности
+        открывается с рамкой на месте (_wm_sel_open), остатки можно
+        чистить не перекликивая.
+        """
+        if self._wm_busy:
+            self.status.setText(tr("viewer.wm_busy"))
+            return
+        if (not self._crop_mode or self._pixmap is None
+                or not self.view_label.has_selection()):
+            return
+        if not watermark_manager.is_installed():
+            # модуля нет — предложить установить, не отпуская в терминал,
+            # после установки продолжить ровно это выделение
+            ans = QMessageBox.question(self, tr("viewer.wm"),
+                                       tr("viewer.wm_inst_q"))
+            if ans == QMessageBox.StandardButton.Yes:
+                self._wm_sel_pending = True
+                self._wm_start_install()
+            return
+        row = self.list.currentRow()
+        src = self._paths[row] if 0 <= row < len(self._paths) else ""
+        out = watermark_manager.sel_result_path(src) if src else ""
+        if not out:
+            # GIF/без расширения в режим обрезки не попадают — защита честная
+            self.status.setText(tr("viewer.wm_already"))
+            return
+        sel = self.view_label.selection()
+        self._wm_sel_open = out   # откроется после пересканирования
+        self._wm_run([(src, out)],
+                     sel=(sel.x(), sel.y(), sel.width(), sel.height()),
+                     tiled=True)
 
     def _on_wm_file_start(self, path: str, idx: int) -> None:
         """Начался файл пачки: строка статуса оживает до file_done (v0.8.20)."""
@@ -5521,7 +5574,7 @@ class LocalViewer(QWidget):
         self.view_label.set_crop_mode(
             on, self._pixmap.size() if (on and self._pixmap is not None) else None)
         for b in (self.btn_crop_save, self.btn_crop_saveas, self.btn_fill,
-                  self.btn_wm_sel, self.btn_crop_next):
+                  self.btn_wm_sel, self.btn_wm_tiled, self.btn_crop_next):
             b.setVisible(on)
             b.setEnabled(False)   # включатся, когда появится выделение
         if on:
@@ -5537,7 +5590,7 @@ class LocalViewer(QWidget):
         sel = self.view_label.selection()
         has = not sel.isNull() and self._pixmap is not None
         for b in (self.btn_crop_save, self.btn_crop_saveas, self.btn_fill,
-                  self.btn_wm_sel, self.btn_crop_next):
+                  self.btn_wm_sel, self.btn_wm_tiled, self.btn_crop_next):
             b.setEnabled(has and not self._crop_saving and not self._fill_saving)
         if self._crop_saving:
             return
@@ -5607,7 +5660,7 @@ class LocalViewer(QWidget):
             return
         self._crop_saving = True
         for b in (self.btn_crop_save, self.btn_crop_saveas, self.btn_fill,
-                  self.btn_wm_sel, self.btn_crop_next):
+                  self.btn_wm_sel, self.btn_wm_tiled, self.btn_crop_next):
             b.setEnabled(False)
         self.status.setText(tr("viewer.crop_saving"))
         stem = os.path.splitext(os.path.basename(src))[0] if src else "image"
@@ -5652,7 +5705,7 @@ class LocalViewer(QWidget):
                 self._select_after_scan = path
         else:
             for b in (self.btn_crop_save, self.btn_crop_saveas, self.btn_fill,
-                      self.btn_wm_sel, self.btn_crop_next):
+                      self.btn_wm_sel, self.btn_wm_tiled, self.btn_crop_next):
                 b.setEnabled(self.view_label.has_selection()
                              and not self._fill_saving)
             self.status.setText(tr("viewer.crop_save_err", err=err))
@@ -5811,7 +5864,7 @@ class LocalViewer(QWidget):
         self._apply_mode()   # закрашенное видно сразу, до записи
         self._fill_saving = True
         for b in (self.btn_crop_save, self.btn_crop_saveas, self.btn_fill,
-                  self.btn_wm_sel, self.btn_crop_next):
+                  self.btn_wm_sel, self.btn_wm_tiled, self.btn_crop_next):
             b.setEnabled(False)
         self.status.setText(tr("viewer.fill_saving"))
         stem = os.path.splitext(os.path.basename(src))[0] if src else "image"
@@ -5831,7 +5884,7 @@ class LocalViewer(QWidget):
         self._fill_saving = False
         has = self.view_label.has_selection()
         for b in (self.btn_crop_save, self.btn_crop_saveas, self.btn_fill,
-                  self.btn_wm_sel, self.btn_crop_next):
+                  self.btn_wm_sel, self.btn_wm_tiled, self.btn_crop_next):
             b.setEnabled(has and not self._crop_saving)
         if ok:
             self._fill_prev_pixmap = None

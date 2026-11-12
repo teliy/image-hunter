@@ -86,6 +86,7 @@ import urllib.request
 
 from PIL import Image, ImageDraw, ImageFilter, ImageOps
 
+from app.core import applog
 from app.core.i18n import tr
 from app.core.updates import is_newer, pypi_latest
 from PySide6.QtCore import QObject, QRunnable, Signal
@@ -413,6 +414,301 @@ def mask_from_boxes(size, boxes, margin: int = MASK_MARGIN):
         if x2 > x1 and y2 > y1:
             mask[y1:y2, x1:x2] = 255
     return mask
+
+
+# ---------- плиточные водяные знаки (v0.8.28) ----------
+#
+# Репорт: «надпись TAIHO в круге и их много по всей фотографии» — знак
+# размножен сеткой, и одиночная детекция/выделение убирает лишь один
+# экземпляр. Идея: все экземпляры плиточного знака получают один и тот
+# же рисунок С ОДНИМ И ТЕМ ЖЕ СМЕЩЕНИЕМ (решётка), значит достаточно
+# одного семени (бокс Florence-2 или выделение человека), чтобы найти
+# остальные: NCC-карта семени даёт отклики-«бампы» на других
+# экземплярах, пара векторов решётки подбирается по бампам (RANSAC —
+# максимум объяснённых), и все узлы решётки в кадре закрашиваются.
+#
+# Два проверенных на реальном репорте факта учтены в алгоритме:
+# 1) полупрозрачный знак на пёстром фоне (красная коробка с напечатан-
+#    ными логотипами, металл подшипников) NCC «слепит» — но ПОЗИЦИЯ
+#    узла от фона не зависит: подтверждённая решётка принимает узлы
+#    вслепую (узел с ncc=−0.49 на коробке реально содержит знак);
+# 2) напечатанные логотипы товара похожи на знак и лежат на своей
+#    мелкой сетке — отсекаются порогом длины вектора (шаг знака ≥
+#    0.6 семени) и тем, что решётка должна объяснять СИЛЬНЫЕ бампы
+#    семени, а не чужую периодичность.
+#
+# Ничья/выбор RANSAC: плотная решётка «объясняет» больше случайных
+# бампов (боковые лепестки корреляции самого штампа, репорт на
+# синтетической сцене: 29 узлов с шагом 32 px против истинных 5),
+# поэтому отбор — по БАЛАНСУ: 2×объяснённые узлы − все узлы в кадре.
+# Решётка выигрывает, когда её узлы — это по возможности сами бампы,
+# без пустых мест; при ничьей — более редкая (больший |det|).
+# Подтверждение решётки — по БАМПАМ, не по балансу: слепые узлы на
+# пёстром фоне (полупрозрачный знак на коробке, репорт) бампа не
+# дают и баланс топят, но решётка всё равно истинная. Точное
+# разложение узла по базису — 2×2 система за O(1) (_tile_solve),
+# без перебора.
+
+_TILE_SIGMA = 4.0        # радиус гаусс-размытия HP-фильтра, px
+_TILE_POOL = 0.18        # бамп попадает в пул решётки
+_TILE_STRONG = 0.30      # «сильный» бамп; решётка подтверждена ≥2 такими
+_TILE_LOOSE = 0.20       # свободный бамп вне решётки → тоже в маску
+_TILE_EPS = 12           # допуск привязки бампа к узлу решётки, px
+_TILE_MIN_VEC = 1.0      # шаг решётки ≥ меньшей стороны семени: экземпляры
+                         # не перекрываются, более мелкий шаг — боковые
+                         # лепестки корреляции самого штампа, не сетка
+_TILE_MIN_VIS = 0.3      # узел/бамп жив, если ≥30 % прямоугольника в кадре
+_TILE_MAX_NODES = 300    # предохранитель от безумной решётки
+_TILE_MAX_SEEDS = 3      # сколько боксов детекции раскартировывать за файл
+
+
+def _hp_gray(rgb):
+    """Высокочастотная серая версия кадра: пиксели минус гаусс-размытие.
+
+    Полупрозрачный знак на любом фоне оставляет один и тот же
+    высокочастотный рисунок (тонкие штрихи, кольцо), а фон — белый
+    лист, металл, коробка — низкочастотный: вычитание размытия
+    поднимает межэкземплярную корреляцию (репорт: семя на белом нашло
+    знак на подшипниках с ncc 0.20, на белом дубле — 0.45).
+    """
+    import numpy as np
+    from PIL import ImageFilter
+
+    g = Image.fromarray(rgb).convert("L")
+    a = np.asarray(g, dtype=np.float32) / 255.0
+    bl = np.asarray(g.filter(ImageFilter.GaussianBlur(_TILE_SIGMA)),
+                    dtype=np.float32) / 255.0
+    return a - bl
+
+
+def _ncc_map(f, rect):
+    """NCC-карта семени rect=(x,y,w,h) по всему кадру (FFT, только numpy).
+
+    Возврат (карта, (h, w)): позиция (py, px) от −h..H и −w..W
+    отображается в карту[h + py, w + px] — экземпляры, обрезанные
+    границей кадра, тоже получают оценку. Паддинг НУЛЯМИ (HP-ноль —
+    нейтральный серый): репликация края зеркалила бы содержимое и
+    рождала ложные бампы у рамки, из которых RANSAC собирал ложную
+    решётку (репорт на синтетической сцене: 12 бампов, 10 на сетке
+    артефактов). Знаменатель — ||семя||·||окно − среднее||: плоские
+    окна (фон без текстуры) дают ровно 0, деление на ~0 отсечено.
+    """
+    import numpy as np
+
+    x, y, w, h = rect
+    H, W = f.shape
+    pad = np.pad(f, ((h, h), (w, w)), mode="constant")
+    T = f[max(0, y):y + h, max(0, x):x + w]
+    if T.shape != (h, w):   # семя целиком вне кадра — не бывает, защита
+        return np.zeros((H + h + 1, W + w + 1), np.float32), (h, w)
+    T0 = T - T.mean()
+    tn = float(np.sqrt((T0 * T0).sum()))
+    if tn < 1e-6:           # плоское семя — искать нечего
+        return np.zeros((H + h + 1, W + w + 1), np.float32), (h, w)
+    corr = np.fft.ifft2(np.fft.fft2(pad)
+                        * np.conj(np.fft.fft2(T0, s=pad.shape))).real
+    corr = corr[:H + h + 1, :W + w + 1]
+    ii = np.pad(pad, ((1, 0), (1, 0))).cumsum(0).cumsum(1)
+    ii2 = np.pad(pad * pad, ((1, 0), (1, 0))).cumsum(0).cumsum(1)
+    n = float(w * h)
+    s1 = (ii[h:, w:] - ii[:-h, w:] - ii[h:, :-w] + ii[:-h, :-w]) / n
+    s2 = (ii2[h:, w:] - ii2[:-h, w:] - ii2[h:, :-w] + ii2[:-h, :-w]) \
+        / n - s1 * s1
+    s2[s2 < 0] = 0          # численная погрешность cumsum²
+    out = np.zeros_like(corr)
+    den = np.sqrt(s2) * tn * np.sqrt(n)
+    ok = den > 1e-4 * np.sqrt(n)
+    out[ok] = corr[ok] / den[ok]
+    return out.astype(np.float32), (h, w)
+
+
+def _tile_bumps(ncc, oy, ox, thr, w, h, W, H, limit=12):
+    """Пики NCC-карты выше порога с подавлением соседей (NMS).
+
+    Возврат [(x, y, ncc)] в координатах «верхний-левый угол семени»;
+    подавление соседей — окно размером С ЦЕЛОЕ СЕМЯ в каждую сторону:
+    боковые лепестки корреляции самого штампа сидят в полсемени от
+    настоящего пика (репорт на синтетической сцене: плюс-штамп даёт
+    бампы на ±36 px при семени 40), и без широкого окна они плодят
+    ложные решётки. Экземпляры плитки не перекрываются, поэтому
+    настоящий соседний пик дальше семени и не подавляется. Пики с
+    видимой частью прямоугольника < _TILE_MIN_VIS отсекаются: за
+    кадром карта оценивает окно с нулевым паддингом, знаменатель там
+    мал и NCC завышена — без фильтра край рождал бы ложные бампы.
+    """
+    import numpy as np
+
+    m = ncc.copy()
+    out = []
+    for _ in range(limit):
+        dy, dx = np.unravel_index(int(m.argmax()), m.shape)
+        v = float(m[dy, dx])
+        if v < thr:
+            break
+        px, py = int(dx - ox), int(dy - oy)
+        m[max(0, dy - h):dy + h + 1,
+          max(0, dx - w):dx + w + 1] = 0
+        if _tile_vis(px, py, w, h, H, W) < _TILE_MIN_VIS:
+            continue
+        out.append((px, py, v))
+    return out
+
+
+def _tile_solve(u, v, dx, dy):
+    """Целевые коэффициенты (a, b) разложения (dx, dy) по (u, v) и
+    остаток: решение 2×2 системы за O(1) — без перебора узлов."""
+    det = u[0] * v[1] - u[1] * v[0]
+    if abs(det) < 1e-9:
+        return None
+    ca = (v[1] * dx - v[0] * dy) / det
+    cb = (u[0] * dy - u[1] * dx) / det
+    ia, ib = int(round(ca)), int(round(cb))
+    rx = dx - (ia * u[0] + ib * v[0])
+    ry = dy - (ia * u[1] + ib * v[1])
+    return ia, ib, rx, ry
+
+
+def _tile_nodes(u, v, x, y, w, h, W, H, limit=_TILE_MAX_NODES):
+    """Узлы решётки (u, v) от семени (x, y), видимые в кадре ≥ _TILE_MIN_VIS.
+
+    Диапазоны (a, b) — углы кадра, переведённые в индексы решётки
+    (_tile_solve), с запасом ±1; узлы за пределами кадра отсекаются
+    долей видимости. Возврат [(px, py)].
+    """
+    import numpy as np
+
+    ab = [_tile_solve(u, v, cx - x, cy - y)[:2]
+          for cx, cy in ((0, 0), (W, 0), (0, H), (W, H))]
+    alo = int(np.floor(min(c[0] for c in ab))) - 1
+    ahi = int(np.ceil(max(c[0] for c in ab))) + 1
+    blo = int(np.floor(min(c[1] for c in ab))) - 1
+    bhi = int(np.ceil(max(c[1] for c in ab))) + 1
+    out = []
+    for a in range(alo, ahi + 1):
+        for b in range(blo, bhi + 1):
+            px = x + a * u[0] + b * v[0]
+            py = y + a * u[1] + b * v[1]
+            if _tile_vis(px, py, w, h, H, W) >= _TILE_MIN_VIS:
+                out.append((px, py))
+            if len(out) > limit:
+                break
+    return out
+
+
+def _tile_lattice(pts, w, h, size):
+    """Пара векторов решётки с лучшим балансом узлов и бампов (RANSAC).
+
+    Якорь — первый (самый сильный) бамп. Отбор кандидата — БАЛАНСНЫЙ:
+    2 × (узлы, на которых лежит бамп) − (все узлы в кадре): плотная
+    решётка объясняет больше случайных бампов, но плодит пустые узлы
+    между настоящими экземплярами, и баланс её топит (репорт на
+    синтетической сцене: 29 узлов с шагом 32 px против истинных 5).
+    Возврат ((u, v), баланс, объяснено, из них сильных)
+    или (None, 0, 0, 0) — подтверждение решётки в _tiled_boxes идёт
+    по «объяснено ≥2 и сильных ≥2», НЕ по балансу: слепые узлы на
+    пёстром фоне бампа не дают и баланс топят, но решётка истинна.
+    """
+    import numpy as np
+
+    deltas = set()
+    for i, (ax, ay, _) in enumerate(pts):
+        for bx, by, _ in pts[i + 1:]:
+            vx, vy = bx - ax, by - ay
+            L = float(np.hypot(vx, vy))
+            if _TILE_MIN_VEC * min(w, h) <= L < 900:
+                # дельты БЕЗ скругления: скруглённые векторы сажают узлы
+                # мимо бампов на 2-8 px, и такая «дрейфующая» решётка в
+                # пределах _TILE_EPS объясняет те же бампы, что и
+                # истинная, выигрывая ничью по det (репорт на сцене)
+                deltas.add((int(vx), int(vy)))
+    deltas = sorted(deltas)
+    ax0, ay0 = pts[0][0], pts[0][1]
+    W, H = int(size[0]), int(size[1])
+    best, best_score, nexpl, nstrong, best_det = None, 0, 0, 0, 0.0
+    for i in range(len(deltas)):
+        for j in range(i + 1, len(deltas)):
+            u, v = deltas[i], deltas[j]
+            det = abs(u[0] * v[1] - u[1] * v[0])
+            if det < 0.15 * (np.hypot(*u) * np.hypot(*v)):
+                continue   # почти коллинеарны — не базис
+            nodes = _tile_nodes(u, v, ax0, ay0, w, h, W, H)
+            n = nstrong = 0
+            for nx, ny in nodes:
+                hit = next(((px, py, val) for px, py, val in pts
+                            if abs(px - nx) <= _TILE_EPS
+                            and abs(py - ny) <= _TILE_EPS), None)
+                if hit:
+                    n += 1
+                    if hit[2] >= _TILE_STRONG:
+                        nstrong += 1
+            score = 2 * n - len(nodes)
+            if score > best_score or (score == best_score
+                                      and det > best_det):
+                best, best_score, nexpl, nstrong, best_det = (
+                    (u, v), score, n, nstrong, det)
+    return best, best_score, nexpl, nstrong
+
+
+def _tile_vis(px, py, w, h, H, W):
+    """Доля прямоугольника семени, попадающая в кадр."""
+    ix = max(0, min(W, px + w) - max(0, px))
+    iy = max(0, min(H, py + h) - max(0, py))
+    return (ix * iy) / float(w * h)
+
+
+def _tiled_boxes(f, rect, size):
+    """Все экземпляры плиточного знака от семени rect. Возврат (боксы, инфо).
+
+    бокс = [x, y, w, h, ncc] — прямоугольник семени в позиции узла
+    (может выступать за кадр, mask_from_boxes обрезает); инфо:
+    bumps (пул бампов), lattice (решётка подтверждена), repeats
+    (узлов сверх семени). Пайплайн: NCC-карта → пул бампов ≥
+    _TILE_POOL → RANSAC-решётка → при ≥2 объяснённых сильных бампах
+    все узлы в кадре принимаются вслепую (фон под знаком не мешает
+    позиции узла), свободные бампы ≥ _TILE_LOOSE добавляются; кап
+    покрытия 60 % — лишние узлы с худшей ncc отбрасываются (тот же
+    _MAX_MASK_COVER, что у одиночных знаков). Без решётки (<3 бампов)
+    возвращаются только бампы ≥ _TILE_LOOSE — поведение не хуже
+    одиночной обработки.
+    """
+    import numpy as np
+
+    x, y, w, h = rect
+    W, H = int(size[0]), int(size[1])
+    ncc, (oy, ox) = _ncc_map(f, rect)
+    pool = _tile_bumps(ncc, oy, ox, _TILE_POOL, w, h, W, H)
+    lat, _score, nexpl, nstrong = (
+        _tile_lattice(pool, w, h, size) if len(pool) >= 3
+        else (None, 0, 0, 0))
+    confirmed = bool(lat and nexpl >= 2 and nstrong >= 2)
+    boxes: list[list] = []
+    if confirmed:
+        u, v = lat
+        for px, py in _tile_nodes(u, v, x, y, w, h, W, H):
+            # видимость ≥ 0.3 гарантирует индекс в пределах карты
+            boxes.append([int(px), int(py), w, h,
+                          float(ncc[oy + py, ox + px])])
+            if len(boxes) > _TILE_MAX_NODES:
+                break
+        # свободные бампы вне узлов решётки — отметки-соседи вне сетки
+        for px, py, v in _tile_bumps(ncc, oy, ox, _TILE_LOOSE, w, h,
+                                     W, H, 40):
+            if not any(abs(px - bx) <= _TILE_EPS
+                       and abs(py - by) <= _TILE_EPS for bx, by, _x, _y, _v
+                       in boxes):
+                boxes.append([px, py, w, h, v])
+    # без подтверждённой решётки — пусто: в выделении честно закрасится
+    # само выделение (WYSIWYG v0.8.22), в авто-режиме останется маска
+    # боксов детекции; случайные бампы маску не подменяют
+    area = float(w * h)
+    while len(boxes) * area > _MAX_MASK_COVER * W * H:
+        worst = min(boxes, key=lambda t: t[4])
+        boxes.remove(worst)
+        if not boxes:
+            break
+    repeats = max(0, len(boxes) - 1)
+    return boxes, {"bumps": len(pool), "lattice": confirmed,
+                   "repeats": repeats}
 
 
 # ---------- кэши моделей: размер и чистка (свои — только свои) ----------
@@ -1376,12 +1672,14 @@ class RemoveWatermarkTask(QRunnable):
 
     def __init__(self, jobs: list[tuple[str, str]], model: str,
                  signals: WatermarkSignals,
-                 sel: tuple[int, int, int, int] | None = None) -> None:
+                 sel: tuple[int, int, int, int] | None = None,
+                 tiled: bool = False) -> None:
         super().__init__()
         self.jobs = jobs            # (исходный путь, путь результата)
         self.model = model
         self.signals = signals
         self.sel = sel              # (x, y, w, h) выделения — None: автодетекция
+        self.tiled = tiled          # v0.8.28: выделение — семя плиточного знака
 
     def run(self) -> None:  # рабочий поток
         # на время пачки скачивания моделей докладывают её сигналам
@@ -1420,13 +1718,30 @@ class RemoveWatermarkTask(QRunnable):
                     # setAutoTransform — выделение совпадает с показом)
                     rgb = _exif_rgb(im)
                 if by_sel:
-                    # маска ровно выделение (v0.8.22): (x, y, w, h) →
+                    # маска из выделения (v0.8.22): (x, y, w, h) →
                     # срез numpy не включает правый/нижний край — пиксели
-                    # рамки x..x+w-1 / y..y+h-1, ровно то, что нарисовано
+                    # рамки x..x+w-1 / y..y+h-1, ровно то, что нарисовано.
+                    # tiled (v0.8.28): выделение — семя плиточного знака,
+                    # все повторы по решётке добавляются в маску
                     x, y, w, h = self.sel
-                    mask = mask_from_boxes(
-                        (rgb.shape[1], rgb.shape[0]),
-                        [(x, y, x + w, y + h)], margin=0)
+                    tile_boxes: list[list] = []
+                    tile_info: dict = {}
+                    if self.tiled:
+                        tile_boxes, tile_info = _tiled_boxes(
+                            _hp_gray(rgb), (x, y, w, h),
+                            (rgb.shape[1], rgb.shape[0]))
+                    if tile_boxes:
+                        mask = mask_from_boxes(
+                            (rgb.shape[1], rgb.shape[0]),
+                            [(bx, by, bx + bw, by + bh)
+                             for bx, by, bw, bh, _n in tile_boxes], margin=0)
+                        if tile_info.get("repeats"):
+                            applog.event("log.event.wm_tiles",
+                                         n=tile_info["repeats"])
+                    else:
+                        mask = mask_from_boxes(
+                            (rgb.shape[1], rgb.shape[0]),
+                            [(x, y, x + w, y + h)], margin=0)
                     if mask.max() == 0:   # выделение ≥1×1 — защита на всякий случай
                         self.signals.file_done.emit(path, "", True, "")
                         continue
@@ -1434,11 +1749,50 @@ class RemoveWatermarkTask(QRunnable):
                     self.signals.phase.emit(path, "detect", -1)
                     polys = detect(Image.fromarray(rgb))
                     mask = mask_from_polys((rgb.shape[1], rgb.shape[0]), polys)
+                    # плиточный знак (v0.8.28): до _TILE_MAX_SEEDS боксов
+                    # детекции раскартываются по решётке — повторяющийся
+                    # знак убирается целиком, а не по одному экземпляру.
+                    # Осторожно с регрессией: маска Florence подменяется
+                    # только ПОДТВЕРЖДЁННОЙ решёткой (≥2 сильных бампов) —
+                    # случайные NCC-бампы на произвольных фото маску не
+                    # портят; узлы решётки ОБЪЕДИНЯЮТСЯ с маской боксов
+                    import numpy as _npm
+                    tile_boxes = []
+                    tile_conf = False
+                    W, H = rgb.shape[1], rgb.shape[0]
+                    for poly in polys or ():
+                        if len(tile_boxes) >= _TILE_MAX_SEEDS:
+                            break
+                        xs = [float(p[0]) for p in poly]
+                        ys = [float(p[1]) for p in poly]
+                        x1, y1 = int(min(xs)), int(min(ys))
+                        bw = int(max(xs)) - x1
+                        bh = int(max(ys)) - y1
+                        if (bw < 16 or bh < 16 or bw > 0.8 * W
+                                or bh > 0.8 * H):
+                            continue   # слишком мелкое/огромное — не плитка
+                        try:
+                            found, _info = _tiled_boxes(
+                                _hp_gray(rgb), (x1, y1, bw, bh), (W, H))
+                        except Exception:   # noqa: BLE001 — FFT/решётка любые
+                            continue
+                        tile_boxes.extend(found)
+                        tile_conf = tile_conf or bool(_info.get("lattice"))
+                    if tile_conf and tile_boxes:
+                        tiled_mask = mask_from_boxes(
+                            (W, H), [(bx, by, bx + bw, by + bh)
+                                     for bx, by, bw, bh, _n in tile_boxes],
+                            margin=0)
+                        mask = _npm.maximum(mask, tiled_mask)
+                        extra_n = max(0, len(tile_boxes) - len(polys))
+                        if extra_n:
+                            applog.event("log.event.wm_tiles", n=extra_n)
                     if mask.max() == 0:
                         # водяных знаков не нашлось — писать нечего, это не ошибка
                         self.signals.file_done.emit(path, "", True, "")
                         continue
-                    self.signals.phase.emit(path, "found", len(polys))
+                    self.signals.phase.emit(path, "found",
+                                            max(len(polys), len(tile_boxes)))
                 cover = float((mask > 0).mean())
                 if cover > _MAX_MASK_COVER:
                     # маска-гигант не «удаляет знак», а уничтожает картинку

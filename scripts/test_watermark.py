@@ -68,7 +68,7 @@
   неудача проверки моделей не фатальна, подсказка о перезапуске;
   вьюер: wm_update стартует задачу с выбранным детектором, guard busy,
   итог в статусе, без модуля — не стартует;
-- i18n: все новые ключи заполнены на ru/en/zh; версия — 0.8.27.
+- i18n: все новые ключи заполнены на ru/en/zh; версия — 0.8.28.
 
 Раздел меню «Модули» проверяет scripts/test_modules_menu.py.
 Запуск: QT_QPA_PLATFORM=offscreen python scripts/test_watermark.py
@@ -146,7 +146,7 @@ def main() -> int:
     st = QSettings("ImageHunter", "ImageHunter")
     st.sync()
 
-    check("версия 0.8.27", app.__version__ == "0.8.27", app.__version__)
+    check("версия 0.8.28", app.__version__ == "0.8.28", app.__version__)
 
     # ---------- менеджер: чистые функции ----------
     check("is_installed() — булево", isinstance(watermark_manager.is_installed(), bool))
@@ -334,7 +334,7 @@ def main() -> int:
     watermark_manager._iopaint_requires = real_reqs
 
     # _repair_deps: pip ставит ВЕСЬ набор шага 2 установки, загруженные
-    # копии выкидываются (репорт 0.8.27: точечного хаба мало —
+    # копии выкидываются (репорт 0.8.28: точечного хаба мало —
     # transformers 5.x и хаб 0.25.2 несовместимы, набор надо
     # пересобрать целиком)
     real_pip_hub = watermark_manager._run_pip
@@ -491,6 +491,69 @@ def main() -> int:
     watermark_manager._load_inpainter = real_inp
     watermark_manager.installed_version = real_ver_wm
     watermark_manager._repair_deps = real_repair
+
+    # ---------- плиточные знаки (v0.8.28): решётка из одного семени ----------
+    # Сцена: плюс-штамп повторён решёткой (шаг 90×60 / 65×175) на ровном
+    # фоне; часть экземпляров обрезана краями кадра (как у репорта
+    # «TAIHO в круге и их много по всей фотографии»). Решётка заполняет
+    # весь кадр — у настоящей плитки метка есть на каждом узле.
+    import numpy as _np
+
+    rng = _np.random.default_rng(7)
+    bg = _np.full((260, 300, 3), 230, _np.uint8)
+    bg += rng.integers(-3, 4, bg.shape).astype(_np.uint8)
+    stamp = _np.full((40, 40, 3), 170, _np.uint8)
+    stamp[16:24, 6:34] = 150
+    stamp[6:34, 16:24] = 150
+    for sx, sy in ((20, 30), (110, 90), (200, 150), (85, 205), (-5, 145),
+                   (225, 35), (135, -25)):
+        x0, y0 = max(0, sx), max(0, sy)
+        x1 = min(300, sx + 40)
+        y1 = min(260, sy + 40)
+        bg[y0:y1, x0:x1] = stamp[y0 - sy:y1 - sy, x0 - sx:x1 - sx]
+    scene_f = watermark_manager._hp_gray(bg)
+    boxes, info = watermark_manager._tiled_boxes(scene_f, (20, 30, 40, 40),
+                                                 (300, 260))
+    check("плитка: решётка подтверждена по бампам",
+          info["lattice"] is True and info["bumps"] >= 3, str(info))
+    check("плитка: все экземпляры найдены, включая частичные у края",
+          len(boxes) >= 7 and info["repeats"] >= 6,
+          f"{len(boxes)} шт., {info}")
+
+    def _has_node(px, py):
+        return any(abs(bx - px) <= 2 and abs(by - py) <= 2
+                   for bx, by, _bw, _bh, _n in boxes)
+
+    check("плитка: узлы решётки на местах",
+          all(_has_node(x, y) for x, y in
+              ((20, 30), (110, 90), (200, 150), (85, 205), (-5, 145),
+               (225, 35), (135, -25))),
+          str([(bx, by) for bx, by, _bw, _bh, _n in boxes]))
+    check("плитка: бокс — [x, y, w, h, ncc]",
+          all(len(b) == 5 for b in boxes), str(boxes[0]) if boxes else "")
+
+    # плоское семя (фон без текстуры) — пусто, маска вернётся к выделению
+    boxes, info = watermark_manager._tiled_boxes(scene_f, (260, 100, 40, 40),
+                                                 (300, 260))
+    check("плитка: плоское семя — отказ без фантазий",
+          not boxes and not info["lattice"], str(info))
+
+    # кап покрытия: слишком широкая решётка теряет худшие узлы
+    real_cover = watermark_manager._MAX_MASK_COVER
+    watermark_manager._MAX_MASK_COVER = 0.001
+    boxes, info = watermark_manager._tiled_boxes(scene_f, (20, 30, 40, 40),
+                                                 (300, 260))
+    watermark_manager._MAX_MASK_COVER = real_cover
+    check("плитка: кап покрытия сбрасывает решётку честно",
+          not boxes and info["lattice"] is True, str(len(boxes)))
+
+    s = watermark_manager._tile_solve((90, 60), (65, 175), 155, 235)
+    check("плитка: разложение по базису точное",
+          s is not None and s[0] == 1 and s[1] == 1
+          and abs(s[2]) < 1e-6 and abs(s[3]) < 1e-6, str(s))
+    s = watermark_manager._tile_solve((90, 60), (65, 175), 50, 50)
+    check("плитка: внеплоскостная точка даёт большой остаток",
+          s is not None and (abs(s[2]) > 12 or abs(s[3]) > 12), str(s))
 
     # ---------- InstallTask: два pip-шага и доставка сигнала ----------
     calls: list[list[str]] = []
@@ -938,8 +1001,8 @@ def main() -> int:
     finally:
         watermark_manager._run_pip = real_pip_upd
 
-    # v0.8.27: одиночное обновление идёт с пином хаба — pip-ход не должен
-    # уводить huggingface-hub с пина iopaint (репорт v0.8.27)
+    # v0.8.28: одиночное обновление идёт с пином хаба — pip-ход не должен
+    # уводить huggingface-hub с пина iopaint (репорт v0.8.28)
     pip_calls = []
     ver_now = dict(ver_old)
 
@@ -1648,9 +1711,9 @@ def main() -> int:
     class StubSelTask(QRunnable):
         """Стаб sel-задачи: рисует файл-результат и докладывает успех."""
 
-        def __init__(self, jobs, model, signals, sel=None):
+        def __init__(self, jobs, model, signals, sel=None, tiled=False):
             super().__init__()
-            self.jobs, self.sel = jobs, sel
+            self.jobs, self.sel, self.tiled = jobs, sel, tiled
             self.signals = signals
             captured["jobs"], captured["sel"] = jobs, sel
             captured["signals"] = signals
