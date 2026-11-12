@@ -1090,6 +1090,14 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ru": "закраска", "en": "inpainting", "zh": "修复填充"},
     "viewer.wm_phase_save": {
         "ru": "сохранение", "en": "saving", "zh": "保存"},
+    "viewer.wm_phase_repair": {
+        "ru": "починка конвейера (pip)…",
+        "en": "repairing the pipeline (pip)…",
+        "zh": "修复流水线（pip）…"},
+    "viewer.wm_phase_repair_done": {
+        "ru": "зависимости восстановлены, загружаю модели",
+        "en": "dependencies restored, loading the models",
+        "zh": "依赖已恢复，正在加载模型"},
     "viewer.wm_dl_start": {
         "ru": "Скачивается модель {model}…",
         "en": "Downloading the {model} model…",
@@ -1110,6 +1118,14 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ru": "🧽 Не удалось убрать водяные знаки: {name} — {err}",
         "en": "🧽 Watermark removal failed: {name} — {err}",
         "zh": "🧽 去除水印失败：{name} — {err}"},
+    "log.event.wm_repair": {
+        "ru": "🧽 Конвейер сломан — восстанавливаю зависимости по пинам iopaint (pip), это может занять пару минут",
+        "en": "🧽 Pipeline broken — restoring dependencies to the iopaint pins (pip), this may take a couple of minutes",
+        "zh": "🧽 流水线损坏——正在按 iopaint 的版本锁定恢复依赖（pip），可能需要几分钟"},
+    "log.event.wm_repair_ok": {
+        "ru": "🧽 Зависимости восстановлены — пробую загрузить модели ещё раз",
+        "en": "🧽 Dependencies restored — trying to load the models again",
+        "zh": "🧽 依赖已恢复——再次尝试加载模型"},
     "log.event.wm_cover": {
         "ru": "маска заняла {pct}% кадра — детектор не отделил знак от картинки, файл не тронут",
         "en": "the mask covered {pct}% of the frame — the detector failed to separate the watermark; the file is untouched",

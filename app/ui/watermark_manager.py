@@ -696,22 +696,29 @@ def _run_pip(args: list[str]) -> tuple[bool, str]:
     return False, " | ".join(tail) if tail else f"pip exit {proc.returncode}"
 
 
-def _repair_hub() -> tuple[bool, str]:
-    """Вернуть huggingface-hub на пин iopaint (v0.8.26).
+def _repair_deps() -> tuple[bool, str]:
+    """Пересобрать зависимости конвейера, как на чистой установке (v0.8.27).
 
-    Репорт v0.8.25: «cannot import name 'cached_download' from
-    'huggingface_hub'» на первом же файле — хаб уехал с пина
-    iopaint (huggingface-hub==0.25.2), и его diffusers==0.27.2
-    перестал импортироваться. Возврат пина одним pip-ходом ставит
-    ровно ту версию, что просит iopaint. Уже загруженные копии
+    Секвел репорта 0.8.26: точечный возврат хаба на пин iopaint провёл
+    импорт diffusers мимо старого «cached_download» — и упёрся в
+    следующую рассинхронизацию: transformers в venv уехал до 5.x
+    (обновления прошлых месяцев), ему нужен хаб окна 0.30+, а iopaint
+    требует ровно 0.25.2 — ни один хаб обоим не угодит («cannot import
+    name 'ResolvedRevision' from 'huggingface_hub'», причём уже не на
+    первом ходу, а внутри diffusers.loaders.controlnet → transformers).
+    Чинится не хаб поодиночке, а весь набор: pip ставит ровно то, что
+    шаг 2 установки — diffusers и хаб возвращаются на пины iopaint,
+    transformers/timm резолвер подбирает совместимые с пинами
+    (нарушитель откатывается). Без --upgrade: работающие версии не
+    трогаются, исправляются только нарушающие пины. Загруженные копии
     модулей выкидываются из sys.modules: повторный импорт в том же
-    запуске увидит восстановленные файлы, перезапуск программы не
-    нужен (живых объектов нет — импорт конвейера как раз упал).
+    запуске видит восстановленные файлы, перезапуск не нужен.
     """
-    pin = _hub_pin()
-    if not pin:
-        return False, f"{_MAIN_PACKAGE}: в метаданных нет пина {_HUB_DIST}"
-    ok, info = _run_pip(["install", "--disable-pip-version-check", pin])
+    reqs = _module_requirements()
+    if not reqs:
+        return False, f"{_MAIN_PACKAGE}: нет зависимостей в метаданных"
+    ok, info = _run_pip(["install", "--disable-pip-version-check",
+                         *reqs, *_SIDE_PACKAGES, *_ENV_SHIMS])
     if ok:
         for mod in list(sys.modules):
             if mod.split(".", 1)[0] in ("huggingface_hub", "diffusers",
@@ -1297,15 +1304,17 @@ def _load_pipeline(model_id: str):
     return _load_inpainter(device), _make_detector(model_id, device)
 
 
-def _load_with_repair(by_sel: bool, model_id: str):
-    """Загрузка конвейера с авто-починкой хаба (v0.8.26). Точка подмены в тестах.
+def _load_with_repair(by_sel: bool, model_id: str,
+                      signals: "WatermarkSignals | None" = None):
+    """Загрузка конвейера с авто-пересборкой зависимостей (v0.8.27). Точка подмены в тестах.
 
-    ImportError с «huggingface_hub» при установленном iopaint — хаб
-    уехал с пина iopaint, и его diffusers не импортируется (репорт
-    v0.8.25: «cannot import name 'cached_download' from
-    'huggingface_hub'»). Возврат хаба на пин (_repair_hub) и повторная
-    попытка: перезапуск программы не нужен. Прочие ImportError и прочие
-    исключения — как были: модуль не ставился или сломан всерьёз.
+    ImportError с «huggingface_hub» при установленном iopaint — набор
+    пакетов конвейера разъехался (репорты 0.8.25/0.8.26: «cannot import
+    name 'cached_download'/'ResolvedRevision' from 'huggingface_hub'»).
+    Пересборка по пинам iopaint (_repair_deps) и повторная попытка:
+    перезапуск программы не нужен; о ходе починки докладывает
+    signals.phase («repair»). Прочие ImportError и прочие исключения —
+    как были: модуль не ставился или сломан всерьёз.
     """
     last: Exception | None = None
     for attempt in (1, 2):
@@ -1318,11 +1327,16 @@ def _load_with_repair(by_sel: bool, model_id: str):
             last = exc
             if (attempt == 1 and "huggingface_hub" in str(exc)
                     and installed_version(_MAIN_PACKAGE)):
-                if _repair_hub()[0]:
+                if signals is not None:
+                    signals.phase.emit("", "repair", 1)
+                done = _repair_deps()[0]
+                if signals is not None:
+                    signals.phase.emit("", "repair", 0)
+                if done:
                     continue   # sys.modules почищены — импорт пойдёт заново
                 last = RuntimeError(
-                    f"{exc}; авто-возврат {_HUB_DIST} на пин "
-                    f"{_MAIN_PACKAGE} не удался")
+                    f"{exc}; авто-пересборка зависимостей по пинам "
+                    f"{_MAIN_PACKAGE} не удалась")
             break
         except Exception as exc:   # noqa: BLE001 — сеть/веса/диск любые
             last = exc
@@ -1385,7 +1399,8 @@ class RemoveWatermarkTask(QRunnable):
         by_sel = self.sel is not None
         self.signals.model_prepare.emit(self.model)
         try:
-            inpainter, detect = _load_with_repair(by_sel, self.model)
+            inpainter, detect = _load_with_repair(by_sel, self.model,
+                                                  self.signals)
         except Exception as exc:   # noqa: BLE001 — модуль сломан/не стоит
             for path, _out in self.jobs:
                 self.signals.file_done.emit(path, "", False, str(exc))

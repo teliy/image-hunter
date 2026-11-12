@@ -4070,6 +4070,20 @@ class LocalViewer(QWidget):
         Веса фаз двигают полосу внутри файла: детекция ~10 %, закраска —
         до ~50 %, сохранение — до ~90 %.
         """
+        if code == "repair":
+            # v0.8.27: пересборка зависимостей конвейера (pip) перед
+            # загрузкой моделей — молча ждать pip недопустимо и тут.
+            # extra 1 — началась, 0 — закончилась (дальше или модели
+            # загрузятся, или по файлам уйдёт составная ошибка)
+            if extra:
+                modstatus.report("wm", tr("viewer.wm_phase_repair"),
+                                 frac=-1.0)
+                applog.event("log.event.wm_repair")
+            else:
+                modstatus.report("wm", tr("viewer.wm_phase_repair_done"),
+                                 frac=-1.0)
+                applog.event("log.event.wm_repair_ok")
+            return
         if code == "detect":
             phase, weight = tr("viewer.wm_phase_detect"), 0.1
         elif code == "found":

@@ -68,7 +68,7 @@
   неудача проверки моделей не фатальна, подсказка о перезапуске;
   вьюер: wm_update стартует задачу с выбранным детектором, guard busy,
   итог в статусе, без модуля — не стартует;
-- i18n: все новые ключи заполнены на ru/en/zh; версия — 0.8.26.
+- i18n: все новые ключи заполнены на ru/en/zh; версия — 0.8.27.
 
 Раздел меню «Модули» проверяет scripts/test_modules_menu.py.
 Запуск: QT_QPA_PLATFORM=offscreen python scripts/test_watermark.py
@@ -146,7 +146,7 @@ def main() -> int:
     st = QSettings("ImageHunter", "ImageHunter")
     st.sync()
 
-    check("версия 0.8.26", app.__version__ == "0.8.26", app.__version__)
+    check("версия 0.8.27", app.__version__ == "0.8.27", app.__version__)
 
     # ---------- менеджер: чистые функции ----------
     check("is_installed() — булево", isinstance(watermark_manager.is_installed(), bool))
@@ -333,24 +333,31 @@ def main() -> int:
           watermark_manager._hub_pin() == "")
     watermark_manager._iopaint_requires = real_reqs
 
-    # _repair_hub: pip ставит ровно пин, загруженные копии выкидываются
+    # _repair_deps: pip ставит ВЕСЬ набор шага 2 установки, загруженные
+    # копии выкидываются (репорт 0.8.27: точечного хаба мало —
+    # transformers 5.x и хаб 0.25.2 несовместимы, набор надо
+    # пересобрать целиком)
     real_pip_hub = watermark_manager._run_pip
-    real_pin = watermark_manager._hub_pin
+    real_reqs2 = watermark_manager._iopaint_requires
     pip_args: list[list[str]] = []
 
     def hub_pip(args):
         pip_args.append(list(args))
         return True, ""
 
-    watermark_manager._hub_pin = lambda: "huggingface-hub==0.25.2"
+    watermark_manager._iopaint_requires = lambda: [
+        "diffusers==0.27.2", "huggingface-hub==0.25.2", "Pillow==9.5.0"]
     watermark_manager._run_pip = hub_pip
     for m in ("diffusers", "diffusers.utils", "huggingface_hub", "iopaint"):
         sys.modules[m] = type(sys)("fake_" + m.replace(".", "_"))
-    ok, info = watermark_manager._repair_hub()
-    check("починка хаба: pip ставит ровно пин iopaint",
+    ok, info = watermark_manager._repair_deps()
+    check("починка: pip ставит весь набор шага 2 (без Pillow)",
           ok and pip_args == [["install", "--disable-pip-version-check",
-                               "huggingface-hub==0.25.2"]], str(pip_args))
-    check("починка хаба: загруженные модули выкинуты из sys.modules",
+                               "diffusers==0.27.2", "huggingface-hub==0.25.2",
+                               "transformers", "timm",
+                               "standard-imghdr", "setuptools"]],
+          str(pip_args))
+    check("починка: загруженные модули выкинуты из sys.modules",
           all(m not in sys.modules for m in
               ("diffusers", "diffusers.utils", "huggingface_hub", "iopaint")))
 
@@ -360,25 +367,26 @@ def main() -> int:
 
     sys.modules["huggingface_hub"] = type(sys)("fake_hf")
     watermark_manager._run_pip = hub_pip_fail
-    ok, info = watermark_manager._repair_hub()
-    check("починка хаба: неудача pip — честная информация",
+    ok, info = watermark_manager._repair_deps()
+    check("починка: неудача pip — честная информация",
           not ok and info == "pip недоступен", info)
-    check("починка хаба: при неудаче sys.modules не трогается",
+    check("починка: при неудаче sys.modules не трогается",
           "huggingface_hub" in sys.modules)
     sys.modules.pop("huggingface_hub", None)
-    watermark_manager._hub_pin = lambda: ""
+    watermark_manager._iopaint_requires = lambda: []
     n_before = len(pip_args)
-    ok, info = watermark_manager._repair_hub()
-    check("починка хаба: пина нет — отказ без pip",
-          not ok and "нет пина" in info and len(pip_args) == n_before, info)
+    ok, info = watermark_manager._repair_deps()
+    check("починка: метаданных нет — отказ без pip",
+          not ok and "нет зависимостей" in info
+          and len(pip_args) == n_before, info)
     watermark_manager._run_pip = real_pip_hub
-    watermark_manager._hub_pin = real_pin
+    watermark_manager._iopaint_requires = real_reqs2
 
-    # _load_with_repair: ImportError хаба → починка → повтор без перезапуска
+    # _load_with_repair: ImportError хаба → пересборка → повтор; фазы «repair»
     real_pipe = watermark_manager._load_pipeline
     real_inp = watermark_manager._load_inpainter
     real_ver_wm = watermark_manager.installed_version
-    real_repair = watermark_manager._repair_hub
+    real_repair = watermark_manager._repair_deps
     watermark_manager.installed_version = lambda n: "1.6.0"
     seq: list[str] = []
     state = {"n": 0}
@@ -387,66 +395,93 @@ def main() -> int:
         seq.append("load")
         state["n"] += 1
         if state["n"] == 1:
-            raise ImportError("cannot import name 'cached_download' from "
+            raise ImportError("cannot import name 'ResolvedRevision' from "
                               "'huggingface_hub' (…/__init__.py)")
         return "INPAINTER", "DETECT"
 
     def dead_pipeline(model_id):
         seq.append("load")
-        raise ImportError("cannot import name 'cached_download' from "
+        raise ImportError("cannot import name 'ResolvedRevision' from "
                           "'huggingface_hub' (…/__init__.py)")
 
+    class _FakePhase:
+        def __init__(self, log):
+            self._log = log
+
+        def emit(self, *args):
+            self._log.append(args)
+
+    class _FakeSignals:
+        def __init__(self):
+            self.phases = []
+            self.phase = _FakePhase(self.phases)
+
+    sig = _FakeSignals()
     watermark_manager._load_pipeline = flaky_pipeline
-    watermark_manager._repair_hub = (
+    watermark_manager._repair_deps = (
         lambda: (seq.append("repair"), (True, ""))[1])
-    got = watermark_manager._load_with_repair(False, "microsoft/Florence-2-base")
-    check("починка: ImportError хаба → repair → повтор успешен",
+    got = watermark_manager._load_with_repair(
+        False, "microsoft/Florence-2-base", sig)
+    check("починка: ImportError хаба → пересборка → повтор успешен",
           got == ("INPAINTER", "DETECT") and seq == ["load", "repair", "load"],
           str(seq))
+    check("починка: фазы «repair» ушли в сигналы",
+          sig.phases == [("", "repair", 1), ("", "repair", 0)],
+          str(sig.phases))
 
+    sig2 = _FakeSignals()
     seq.clear()
     watermark_manager._load_pipeline = dead_pipeline
-    watermark_manager._repair_hub = (
+    watermark_manager._repair_deps = (
         lambda: (seq.append("repair"), (False, "pip упал"))[1])
     try:
-        watermark_manager._load_with_repair(False, "m")
-        check("починка: repair не удался — честная составная ошибка",
+        watermark_manager._load_with_repair(False, "m", sig2)
+        check("починка: пересборка не удалась — честная составная ошибка",
               False, "не отказал")
     except RuntimeError as exc:
-        check("починка: repair не удался — честная составная ошибка",
-              "cached_download" in str(exc) and "не удался" in str(exc),
+        check("починка: пересборка не удалась — честная составная ошибка",
+              "ResolvedRevision" in str(exc) and "не удалась" in str(exc),
               str(exc)[:120])
-    check("починка: после неудачного repair повтор не идёт",
+    check("починка: после неудачной пересборки повтор не идёт",
           seq == ["load", "repair"], str(seq))
+    check("починка: фазы «repair» есть и при неудаче",
+          sig2.phases == [("", "repair", 1), ("", "repair", 0)],
+          str(sig2.phases))
 
     def other_pipeline(model_id):
         seq.append("load")
         raise ImportError("No module named 'torch'")
 
+    sig3 = _FakeSignals()
     seq.clear()
     watermark_manager._load_pipeline = other_pipeline
     try:
-        watermark_manager._load_with_repair(False, "m")
+        watermark_manager._load_with_repair(False, "m", sig3)
         check("починка: чужой ImportError проходит как был",
               False, "не отказал")
     except ImportError as exc:
         check("починка: чужой ImportError проходит как был",
               "torch" in str(exc), str(exc)[:80])
-    check("починка: чужой ImportError repair не зовёт",
+    check("починка: чужой ImportError пересборку не зовёт",
           seq == ["load"], str(seq))
+    check("починка: чужой ImportError без фаз «repair»",
+          sig3.phases == [], str(sig3.phases))
 
-    seq.clear()   # iopaint не установлен — repair не зовётся вовсе
+    sig4 = _FakeSignals()
+    seq.clear()   # iopaint не установлен — пересборка не зовётся вовсе
     watermark_manager._load_pipeline = dead_pipeline
     watermark_manager.installed_version = lambda n: ""
     try:
-        watermark_manager._load_with_repair(False, "m")
+        watermark_manager._load_with_repair(False, "m", sig4)
         check("починка: модуль не установлен — исходная ошибка",
               False, "не отказал")
     except ImportError as exc:
         check("починка: модуль не установлен — исходная ошибка",
-              "cached_download" in str(exc), str(exc)[:80])
-    check("починка: без установленного iopaint repair не зовётся",
+              "ResolvedRevision" in str(exc), str(exc)[:80])
+    check("починка: без установленного iopaint пересборка не зовётся",
           seq == ["load"], str(seq))
+    check("починка: без установленного iopaint фаз нет",
+          sig4.phases == [], str(sig4.phases))
 
     watermark_manager._load_inpainter = lambda dev: "INP"
     check("починка: выделение грузит только LaMa",
@@ -455,7 +490,7 @@ def main() -> int:
     watermark_manager._load_pipeline = real_pipe
     watermark_manager._load_inpainter = real_inp
     watermark_manager.installed_version = real_ver_wm
-    watermark_manager._repair_hub = real_repair
+    watermark_manager._repair_deps = real_repair
 
     # ---------- InstallTask: два pip-шага и доставка сигнала ----------
     calls: list[list[str]] = []
@@ -903,8 +938,8 @@ def main() -> int:
     finally:
         watermark_manager._run_pip = real_pip_upd
 
-    # v0.8.26: одиночное обновление идёт с пином хаба — pip-ход не должен
-    # уводить huggingface-hub с пина iopaint (репорт v0.8.26)
+    # v0.8.27: одиночное обновление идёт с пином хаба — pip-ход не должен
+    # уводить huggingface-hub с пина iopaint (репорт v0.8.27)
     pip_calls = []
     ver_now = dict(ver_old)
 
