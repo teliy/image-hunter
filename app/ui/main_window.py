@@ -43,6 +43,12 @@ class MainWindow(QMainWindow):
         self.setWindowIcon(app_icon())
         self.resize(1280, 820)
         self.setMinimumSize(QSize(960, 600))
+        # геометрия окна запоминается при закрытии (v0.8.23): пожелание
+        # «окно программы не запоминает свои последние размеры и местоположение
+        # на экране». restoreGeometry возвращает и размер, и позицию, и
+        # развёрнутое состояние; записи нет (первый запуск) или она битая —
+        # остаётся 1280×820, а позицию выберет оконный менеджер
+        self._restore_window_geometry()
 
         self._downloader = Downloader(self)
 
@@ -139,13 +145,39 @@ class MainWindow(QMainWindow):
         i18n.signals.changed.connect(self._retranslate)
 
     def closeEvent(self, event) -> None:  # noqa: N802 (Qt API)
-        """При закрытии запомнить последнюю папку и запрос поиска —
-        оба восстановятся при следующем запуске. Веб-сервер, если работал,
-        останавливается: после выхода программы доступ с телефона закрыт."""
+        """При закрытии запомнить геометрию окна (v0.8.23), последнюю папку
+        и запрос поиска — всё восстановится при следующем запуске. Веб-сервер,
+        если работал, останавливается: после выхода программы доступ
+        с телефона закрыт."""
+        self._save_window_geometry()
         self.local.save_state()
         if self._server_mgr is not None:
             self._server_mgr.stop()
         super().closeEvent(event)
+
+    # ---------- геометрия окна (v0.8.23) ----------
+
+    def _restore_window_geometry(self) -> None:
+        """Вернуть окно туда, где его закрыли: размер, позицию, развёрнутость.
+
+        Запись делает closeEvent (ключ window/geometry, родной формат Qt —
+        saveGeometry/restoreGeometry). Битая или посторонняя запись (строка
+        вместо байтов, нераспознанные байты) пропускается: окно стартует
+        со штатных 1280×820. Окно, оставшееся за пределами мониторов
+        (отключили экран), restoreGeometry на ближайший экран возвращает сам.
+        """
+        raw = QSettings("ImageHunter", "ImageHunter").value("window/geometry")
+        if raw is None or isinstance(raw, str) or len(raw) == 0:
+            return
+        try:
+            self.restoreGeometry(bytes(raw))
+        except Exception:
+            pass   # непонятные байты — обычный старт, программа не должна падать
+
+    def _save_window_geometry(self) -> None:
+        """Запомнить окно: размер, позицию и развёрнутое состояние (v0.8.23)."""
+        QSettings("ImageHunter", "ImageHunter").setValue(
+            "window/geometry", self.saveGeometry())
 
     # ---------- веб-сервер (удалённый доступ, v0.8.0) ----------
 
